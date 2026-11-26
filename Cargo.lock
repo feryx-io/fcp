@@ -3620,12 +3620,14 @@ name = "fcp-tts-server"
 version = "0.25.650"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum 0.7.9",
  "clap",
  "fcp-cluster",
  "fcp-core",
  "fcp-events",
  "fcp-media",
+ "fcp-storage-postgres",
  "fcp-storage-redis",
  "fcp-testkit",
  "futures-util",

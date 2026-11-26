@@ -493,6 +493,10 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (POST, "/firmware/targets", Needs(DeviceUpdate)),
     (PUT, "/firmware/targets/:id", Needs(DeviceUpdate)),
     (DELETE, "/firmware/targets/:id", Needs(DeviceUpdate)),
+    // Speech: what the tenant's prompts sound like (docs/TENANT_SPEECH.md).
+    (GET, "/speech/settings", Needs(PromptRead)),
+    (PUT, "/speech/settings", Needs(PromptManage)),
+    (DELETE, "/speech/settings", Needs(PromptManage)),
     (GET, "/branding", Needs(BrandingManage)),
     (PUT, "/branding", Needs(BrandingManage)),
     (DELETE, "/branding", Needs(BrandingManage)),

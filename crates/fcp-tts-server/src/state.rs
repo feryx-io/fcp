@@ -18,7 +18,22 @@ pub struct AppState {
     pub stt: HashMap<String, Arc<SttService>>,
     /// The speech provider a request naming none gets.
     pub stt_default: Option<String>,
+    /// Tenants' speech settings, where a database is configured.
+    pub speech: Option<Arc<dyn fcp_core::speech::SpeechSettingsStore>>,
+    /// What was read, for [`SPEECH_TTL`].
+    pub speech_cache: SpeechCache,
 }
+
+/// Tenants' settings as last read, and when.
+pub type SpeechCache = Arc<
+    std::sync::Mutex<
+        HashMap<fcp_core::TenantId, (std::time::Instant, Option<fcp_core::speech::TenantSpeech>)>,
+    >,
+>;
+
+/// How long a tenant's settings are kept here before they are read again:
+/// a change reaches calls within this.
+pub const SPEECH_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl AppState {
     /// Get the default TtsService.
@@ -32,6 +47,42 @@ impl AppState {
             Some(n) => self.services.get(n),
             None => self.default_service(),
         }
+    }
+
+    /// `tenant`'s speech settings (cached), when there is a database and the
+    /// tenant has saved some. A read that fails is none: the defaults.
+    pub async fn tenant_speech(
+        &self,
+        tenant: Option<&str>,
+    ) -> Option<fcp_core::speech::TenantSpeech> {
+        let store = self.speech.as_ref()?;
+        let raw = tenant?.trim();
+        let tenant: fcp_core::TenantId = raw
+            .parse()
+            .or_else(|_| format!("tenant-{raw}").parse())
+            .ok()?;
+        if let Some((at, cached)) = self
+            .speech_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&tenant)
+        {
+            if at.elapsed() < SPEECH_TTL {
+                return cached.clone();
+            }
+        }
+        let read = match store.get_tenant_speech(&tenant).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(tenant_id = %tenant, error = %e, "A tenant's speech settings could not be read");
+                None
+            }
+        };
+        self.speech_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(tenant, (std::time::Instant::now(), read.clone()));
+        read
     }
 
     /// A speech recognition service by name, or the default.
@@ -64,6 +115,7 @@ mod tests {
             stt: crate::config::SttSection::default(),
             logging: crate::config::LoggingSection::default(),
             cluster: crate::config::ClusterSection::default(),
+            storage: crate::config::StorageSection::default(),
         }
     }
 
@@ -95,6 +147,8 @@ mod tests {
             default_provider: "primary".to_string(),
             stt: HashMap::new(),
             stt_default: None,
+            speech: None,
+            speech_cache: Default::default(),
         };
 
         assert!(state.service(None).is_some());

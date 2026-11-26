@@ -58,6 +58,7 @@ pub mod rtmp;
 mod service_registry;
 pub mod sip_trace;
 pub mod sittings;
+mod speech;
 mod subject_erase;
 mod subject_export;
 mod subject_requests;

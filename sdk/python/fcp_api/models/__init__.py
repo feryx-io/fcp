@@ -523,6 +523,10 @@ from .softphone_media import SoftphoneMedia
 from .softphone_password import SoftphonePassword
 from .softphone_video import SoftphoneVideo
 from .softphone_video_send import SoftphoneVideoSend
+from .speech_settings_request import SpeechSettingsRequest
+from .speech_settings_request_voices import SpeechSettingsRequestVoices
+from .speech_settings_response import SpeechSettingsResponse
+from .speech_settings_response_voices import SpeechSettingsResponseVoices
 from .sso_exchange_request import SsoExchangeRequest
 from .start_recording_request import StartRecordingRequest
 from .status_response import StatusResponse
@@ -1153,6 +1157,10 @@ __all__ = (
     "SoftphonePassword",
     "SoftphoneVideo",
     "SoftphoneVideoSend",
+    "SpeechSettingsRequest",
+    "SpeechSettingsRequestVoices",
+    "SpeechSettingsResponse",
+    "SpeechSettingsResponseVoices",
     "SsoExchangeRequest",
     "StartRecordingRequest",
     "StatusResponse",
