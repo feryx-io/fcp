@@ -61,6 +61,16 @@ pub trait SpeechSettingsStore: Send + Sync {
     async fn put_tenant_speech(&self, speech: &TenantSpeech) -> anyhow::Result<()>;
     /// Whether there were any.
     async fn delete_tenant_speech(&self, tenant_id: &TenantId) -> anyhow::Result<bool>;
+
+    /// The platform's providers held back from tenants
+    /// (`docs/TENANT_SPEECH.md` S3): all are offered unless named here.
+    async fn held_back_providers(&self) -> anyhow::Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    async fn put_held_back_providers(&self, _providers: &[String]) -> anyhow::Result<()> {
+        anyhow::bail!("this store keeps no platform speech settings")
+    }
 }
 
 /// A tenant's own account with a TTS vendor (bring your own key,

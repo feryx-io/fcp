@@ -27,7 +27,12 @@ pub struct AppState {
     /// A service per account, built when first spoken with and again when
     /// the account changes; keyed by the account's id.
     pub account_services: AccountServices,
+    /// The platform's providers held back from tenants, as last read.
+    pub held_back: HeldBack,
 }
+
+/// When the held-back list was read, and what it said.
+pub type HeldBack = Arc<std::sync::Mutex<Option<(std::time::Instant, Vec<String>)>>>;
 
 /// Each account's service, with when it was read and the account's
 /// `updated_at` it was built from. Keyed by tenant and account, so a
@@ -64,6 +69,31 @@ impl AppState {
             Some(n) => self.services.get(n),
             None => self.default_service(),
         }
+    }
+
+    /// The platform's providers tenants may not choose (cached). A read
+    /// that fails holds nothing back.
+    pub async fn held_back(&self) -> Vec<String> {
+        let Some(store) = self.speech.as_ref() else {
+            return Vec::new();
+        };
+        if let Some((at, list)) = self
+            .held_back
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            if at.elapsed() < SPEECH_TTL {
+                return list.clone();
+            }
+        }
+        let list = store.held_back_providers().await.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "The platform's held-back providers could not be read");
+            Vec::new()
+        });
+        *self.held_back.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((std::time::Instant::now(), list.clone()));
+        list
     }
 
     /// `tenant`'s speech settings (cached), when there is a database and the
@@ -280,6 +310,7 @@ mod tests {
             speech_cache: Default::default(),
             accounts: None,
             account_services: Default::default(),
+            held_back: Default::default(),
         };
 
         assert!(state.service(None).is_some());

@@ -145,9 +145,33 @@ sealed again with the site's key; usage comes up with the site's records.
   of the hard-coded Kokoro list. Proved by `api_postgres`
   `speech_providers_voices_and_a_preview_come_from_the_tts_server` and
   `e2e/speech.spec.ts`.
-- **S3 — the tenant's own accounts.** Sealed keys, the server building a
-  provider per account, the cache per account, test, the platform's
-  offer list.
+- **S3 done (v0.25.654) — the tenant's own accounts.** `speech_accounts`
+  (migration 154: OpenAI, ElevenLabs, Azure, Polly, Google; the key in
+  `secret`, sealed at rest and in the re-encrypt list),
+  `fcp_core::speech::SpeechAccountStore`. `GET/POST /speech/accounts`,
+  `PUT/DELETE /speech/accounts/{id}` (`speech-<uuid>`; the key write-only,
+  `has_key`; a change without a key keeps it, another vendor needs its
+  own; at most 20; deleting one clears a choice of it) and
+  `POST …/{id}/test` (a sentence spoken through it). An account is the
+  provider `account:<uuid>` in the settings, previews and voice lists,
+  refused for any tenant but its own. The TTS server reads accounts with
+  the deployment's master key (`FCP_MASTER_KEY…`, now on the compose
+  service), builds a service per (tenant, account) read again every 30 s
+  and rebuilt when the account changed, its audio cached under the account
+  alone; a choice of an account that cannot speak is spoken by the
+  default, a request naming it (a preview, a test) is told why. The
+  platform's offer: `GET/PUT /system/speech` (platform administrators;
+  `platform_speech.held_back`, the default never held back), a held-back
+  provider left out of a tenant's list, refused in its settings and
+  previews, and spoken by the default for a tenant that chose it before.
+  The Speech page gains Your accounts (add, test, edit, delete) and, for a
+  platform administrator, Offered to tenants. Proved by
+  `a_tenants_speech_account_keeps_its_key_sealed` (Postgres),
+  `a_tenants_own_account_speaks_for_it_alone` and
+  `a_provider_held_back_from_tenants_is_not_theirs_to_choose` (the TTS
+  server, against `StandInTts`), `a_tenants_speech_account_is_made_chosen_and_deleted`
+  and `the_platform_holds_a_provider_back_from_tenants` (`api_postgres`),
+  `e2e/speech.spec.ts`.
 - **S4 — usage,** counted at the server, shown on the page.
 - **S5 — sites.**
 

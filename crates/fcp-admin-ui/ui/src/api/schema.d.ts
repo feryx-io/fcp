@@ -5246,6 +5246,83 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/speech/accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /speech/accounts */
+        get: operations["speech_list_accounts"];
+        put?: never;
+        /** POST /speech/accounts */
+        post: operations["speech_create_account"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/speech/accounts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** PUT /speech/accounts/{id} */
+        put: operations["speech_update_account"];
+        post?: never;
+        /**
+         * DELETE /speech/accounts/{id} — and the settings that chose it go back
+         *     to the platform's provider.
+         */
+        delete: operations["speech_delete_account"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/speech/accounts/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /speech/accounts/{id}/test — a sentence spoken through the
+         *     account, as WAV: whether its key works.
+         */
+        post: operations["speech_test_account"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/speech": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /system/speech */
+        get: operations["system_get_speech"];
+        /** PUT /system/speech — the providers held back from tenants. */
+        put: operations["system_put_speech"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/speech/providers": {
         parameters: {
             query?: never;
@@ -10484,6 +10561,13 @@ export interface components {
             /** Format: date-time */
             validated_at?: string | null;
         };
+        /** @description One of the TTS server's providers, as the platform offers it. */
+        OfferedProvider: {
+            name: string;
+            is_default: boolean;
+            /** @description Whether tenants may choose it. */
+            offered: boolean;
+        };
         /** @description A user's own statuses in a new order: every id, once. */
         OrderStatusesRequest: {
             ids: string[];
@@ -12731,11 +12815,45 @@ export interface components {
             total?: number | null;
         };
         /** @description A page of a list. */
+        Page_SpeechAccountView: {
+            data: {
+                /** @description `speech-<uuid>`. */
+                id: string;
+                name: string;
+                kind: components["schemas"]["SpeechAccountKind"];
+                /** @description What names it as a provider in the settings and requests. */
+                provider: string;
+                region?: string | null;
+                model?: string | null;
+                endpoint?: string | null;
+                access_key_id?: string | null;
+                /** @description Whether a key is kept; the key itself is never returned. */
+                has_key: boolean;
+                created_at: string;
+                updated_at: string;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
         Page_SpeechProvider: {
             data: {
+                /**
+                 * @description What names it in the settings and requests (`account:<id>` for one
+                 *     of the tenant's accounts).
+                 */
                 name: string;
+                /** @description What to show: the provider's name, or the account's. */
+                label: string;
                 /** @description The TTS server's default: what a tenant without a choice gets. */
                 is_default: boolean;
+                /** @description One of the tenant's own accounts (`docs/TENANT_SPEECH.md` S3). */
+                account: boolean;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -13454,6 +13572,18 @@ export interface components {
             subjects?: components["schemas"]["SubjectIdentifier"][];
             call_ids?: string[];
             classes?: components["schemas"]["DataClass"][];
+        };
+        /** @description Which of the TTS server's providers tenants may choose. */
+        PlatformSpeech: {
+            providers: components["schemas"]["OfferedProvider"][];
+            /**
+             * @description Held back from tenants (a provider the server no longer has may
+             *     still be named here).
+             */
+            held_back: string[];
+        };
+        PlatformSpeechRequest: {
+            held_back: string[];
         };
         /** @description A prompt played into the call. */
         PlayRequest: {
@@ -14847,6 +14977,42 @@ export interface components {
             kbps: number;
         };
         /**
+         * @description The vendors a tenant may bring an account with.
+         * @enum {string}
+         */
+        SpeechAccountKind: "openai" | "elevenlabs" | "azure" | "aws_polly" | "google_cloud";
+        /**
+         * @description An account to make or change. On a change, an unset `secret` keeps the
+         *     one kept.
+         */
+        SpeechAccountRequest: {
+            name: string;
+            kind: components["schemas"]["SpeechAccountKind"];
+            region?: string | null;
+            model?: string | null;
+            endpoint?: string | null;
+            access_key_id?: string | null;
+            /** @description Write-only: the API key, subscription key or AWS secret access key. */
+            secret?: string | null;
+        };
+        /** @description A tenant's account with a TTS vendor, its key never shown. */
+        SpeechAccountView: {
+            /** @description `speech-<uuid>`. */
+            id: string;
+            name: string;
+            kind: components["schemas"]["SpeechAccountKind"];
+            /** @description What names it as a provider in the settings and requests. */
+            provider: string;
+            region?: string | null;
+            model?: string | null;
+            endpoint?: string | null;
+            access_key_id?: string | null;
+            /** @description Whether a key is kept; the key itself is never returned. */
+            has_key: boolean;
+            created_at: string;
+            updated_at: string;
+        };
+        /**
          * @description What to speak for a preview; unset is the tenant's choice, then the
          *     TTS server's default.
          */
@@ -14858,9 +15024,17 @@ export interface components {
         };
         /** @description A provider the tenant may speak with. */
         SpeechProvider: {
+            /**
+             * @description What names it in the settings and requests (`account:<id>` for one
+             *     of the tenant's accounts).
+             */
             name: string;
+            /** @description What to show: the provider's name, or the account's. */
+            label: string;
             /** @description The TTS server's default: what a tenant without a choice gets. */
             is_default: boolean;
+            /** @description One of the tenant's own accounts (`docs/TENANT_SPEECH.md` S3). */
+            account: boolean;
         };
         /** @description The settings to keep; null or absent is the platform's default. */
         SpeechSettingsRequest: {
@@ -28896,6 +29070,228 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    speech_list_accounts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_SpeechAccountView"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    speech_create_account: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeechAccountRequest"];
+            };
+        };
+        responses: {
+            /** @description Made */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpeechAccountView"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    speech_update_account: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The account */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeechAccountRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpeechAccountView"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    speech_delete_account: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The account */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    speech_test_account: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The account */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The account spoke */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "audio/wav": number[];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    system_get_speech: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformSpeech"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    system_put_speech: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlatformSpeechRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformSpeech"];
+                };
             };
             /** @description An error */
             default: {

@@ -41,12 +41,20 @@ pub async fn synthesize(
 ) -> Response {
     // What the request leaves unset: the tenant's, else the server's.
     let tenant = state.tenant_speech(req.tenant_id.as_deref()).await;
+    let held_back = match tenant.as_ref().and_then(|t| t.provider.as_ref()) {
+        Some(_) => state.held_back().await,
+        None => Vec::new(),
+    };
     let tenant_provider = tenant
         .as_ref()
         .and_then(|t| t.provider.as_deref())
-        // A provider this server does not have is the default's business;
-        // one of the tenant's own accounts is its own.
-        .filter(|p| state.services.contains_key(*p) || fcp_core::speech::account_of(p).is_some());
+        // A provider this server does not have is the default's business,
+        // as is one the platform holds back from tenants; one of the
+        // tenant's own accounts is its own.
+        .filter(|p| {
+            fcp_core::speech::account_of(p).is_some()
+                || (state.services.contains_key(*p) && !held_back.iter().any(|h| h == *p))
+        });
     let provider_name = req.provider.as_deref().or(tenant_provider);
     let language = req
         .language
@@ -378,6 +386,7 @@ mod tests {
             speech_cache: Default::default(),
             accounts: None,
             account_services: Default::default(),
+            held_back: Default::default(),
         })
     }
 
@@ -513,6 +522,7 @@ mod tests {
             speech_cache: Default::default(),
             accounts: None,
             account_services: Default::default(),
+            held_back: Default::default(),
             config: base.config.clone(),
             default_provider: base.default_provider.clone(),
             stt: Default::default(),
@@ -687,6 +697,7 @@ mod tests {
             speech_cache: Default::default(),
             accounts: Some(Arc::new(Accounts(vec![account.clone()]))),
             account_services: Default::default(),
+            held_back: Default::default(),
             config: base.config.clone(),
             default_provider: base.default_provider.clone(),
             stt: Default::default(),
@@ -727,6 +738,56 @@ mod tests {
         assert_eq!(
             say("preview from b", b, Some(named)).await,
             StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn a_provider_held_back_from_tenants_is_not_theirs_to_choose() {
+        let heard: Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>> = Arc::default();
+        let base = test_state().await;
+        let mut services = std::collections::HashMap::new();
+        services.insert(
+            "primary".to_string(),
+            heard_by("primary", Arc::clone(&heard)).await,
+        );
+        services.insert(
+            "costly".to_string(),
+            heard_by("costly", Arc::clone(&heard)).await,
+        );
+        let a = fcp_core::TenantId::new();
+        let mut speech = fcp_core::speech::TenantSpeech::defaults(a);
+        speech.provider = Some("costly".into());
+        let state = Arc::new(AppState {
+            services,
+            speech: Some(Arc::new(Settings([(a, speech)].into_iter().collect()))),
+            speech_cache: Default::default(),
+            accounts: None,
+            account_services: Default::default(),
+            held_back: Arc::new(std::sync::Mutex::new(Some((
+                std::time::Instant::now(),
+                vec!["costly".to_string()],
+            )))),
+            config: base.config.clone(),
+            default_provider: base.default_provider.clone(),
+            stt: Default::default(),
+            stt_default: None,
+        });
+        let req = SynthesizeRequest {
+            text: "held back".into(),
+            language: None,
+            voice: None,
+            provider: None,
+            tenant_id: Some(a.as_uuid().to_string()),
+        };
+        assert_eq!(
+            synthesize(State(state), Json(req)).await.status(),
+            StatusCode::OK
+        );
+        let heard = heard.lock().unwrap();
+        assert_eq!(heard.len(), 1);
+        assert_eq!(
+            heard[0].0, "primary",
+            "the default speaks, not the held-back choice"
         );
     }
 }

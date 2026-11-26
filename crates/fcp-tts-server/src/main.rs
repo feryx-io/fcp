@@ -177,6 +177,7 @@ async fn main() -> Result<()> {
         speech_cache: Default::default(),
         accounts,
         account_services: Default::default(),
+        held_back: Default::default(),
     });
 
     // 5. Axum router

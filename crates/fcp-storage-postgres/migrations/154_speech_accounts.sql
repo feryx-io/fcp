@@ -13,3 +13,11 @@ CREATE TABLE IF NOT EXISTS speech_accounts (
     UNIQUE (tenant_id, name)
 );
 CREATE INDEX IF NOT EXISTS speech_accounts_tenant ON speech_accounts (tenant_id);
+
+-- The platform's TTS providers held back from tenants: every provider the
+-- TTS server has is offered unless named here. One row.
+CREATE TABLE IF NOT EXISTS platform_speech (
+    id BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),
+    held_back TEXT[] NOT NULL DEFAULT '{}',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

@@ -141,7 +141,7 @@ impl TtsProvider for RemoteTtsProvider {
     }
 
     async fn list_voices(&self, language: &str) -> Result<Vec<VoiceInfo>> {
-        self.voices_of(language, None).await
+        self.voices_of(language, None, None).await
     }
 
     async fn providers(&self) -> Result<Vec<crate::tts::ProviderInfo>> {
@@ -158,9 +158,17 @@ impl TtsProvider for RemoteTtsProvider {
         Ok(response.json().await?)
     }
 
-    async fn voices_of(&self, language: &str, provider: Option<&str>) -> Result<Vec<VoiceInfo>> {
+    async fn voices_of(
+        &self,
+        language: &str,
+        provider: Option<&str>,
+        tenant: Option<&str>,
+    ) -> Result<Vec<VoiceInfo>> {
         let url = format!("{}/v1/voices", self.url);
         let mut query_params = vec![("language", language.to_string())];
+        if let Some(tenant) = tenant {
+            query_params.push(("tenant_id", tenant.to_string()));
+        }
         if let Some(provider) = provider.or(self.provider_override.as_deref()) {
             query_params.push(("provider", provider.to_string()));
         }

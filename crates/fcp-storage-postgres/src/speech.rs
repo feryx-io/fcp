@@ -53,6 +53,25 @@ impl SpeechSettingsStore for PostgresStorage {
             .await?;
         Ok(done.rows_affected() > 0)
     }
+
+    async fn held_back_providers(&self) -> anyhow::Result<Vec<String>> {
+        let row: Option<(Vec<String>,)> =
+            sqlx::query_as("SELECT held_back FROM platform_speech WHERE id")
+                .fetch_optional(self.reads())
+                .await?;
+        Ok(row.map(|(h,)| h).unwrap_or_default())
+    }
+
+    async fn put_held_back_providers(&self, providers: &[String]) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO platform_speech (id, held_back, updated_at) VALUES (TRUE, $1, now())
+             ON CONFLICT (id) DO UPDATE SET held_back = EXCLUDED.held_back, updated_at = now()",
+        )
+        .bind(providers)
+        .execute(self.writes())
+        .await?;
+        Ok(())
+    }
 }
 
 const ACCOUNT_COLUMNS: &str = "id, tenant_id, name, kind, settings, secret, created_at, updated_at";
