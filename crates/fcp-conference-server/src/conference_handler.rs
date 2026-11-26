@@ -9150,6 +9150,14 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
         // names, in this room.
         let target = sip_parse::header(request.headers(), "Target-Dialog")
             .and_then(|v| parse_target_dialog(v.as_str()));
+        // A participant answered and listed in the room has its session
+        // stored only once its media is set up; a SUBSCRIBE just after the
+        // answer waits for it rather than being refused.
+        let named = target
+            .as_ref()
+            .map(|(c, _, _)| c.clone())
+            .unwrap_or_else(|| call_id.clone());
+        self.session_settled(&named).await;
         let (participant_call, within) = if self.sessions.contains_key(&call_id) {
             (call_id.clone(), true)
         } else if let Some((target_call, their_tag, our_tag)) = target {
@@ -9431,6 +9439,26 @@ fn truncate_for_filename(s: &str, max_len: usize) -> &str {
 impl ConferenceCallHandler {
     /// A SUBSCRIBE from someone not in the room, or naming no call of
     /// theirs in it: 403.
+    /// Wait, up to two seconds, for `call_id`'s session when the room
+    /// already counts the call (`room_sessions`) but its session is not
+    /// stored yet: a join answers and lists the participant before its
+    /// media and session are set up, and a busy node stretches that.
+    async fn session_settled(&self, call_id: &str) {
+        let joining = || {
+            !self.sessions.contains_key(call_id)
+                && self
+                    .room_sessions
+                    .iter()
+                    .any(|e| e.value().iter().any(|c| c == call_id))
+        };
+        for _ in 0..100 {
+            if !joining() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
     async fn refuse_subscribe(
         &self,
         request: &sip_core::Request,
