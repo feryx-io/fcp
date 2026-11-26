@@ -44,4 +44,13 @@ pub struct Cli {
         hide_env_values = true
     )]
     pub auth_tokens: Option<String>,
+    /// `[storage] database_url` from the environment: tenants' speech
+    /// settings are read there (`docs/TENANT_SPEECH.md`).
+    #[arg(
+        long = "database-url",
+        value_name = "URL",
+        env = "FCP_TTS_DATABASE_URL",
+        hide_env_values = true
+    )]
+    pub database_url: Option<String>,
 }

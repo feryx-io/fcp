@@ -17,14 +17,16 @@ use crate::state::AppState;
 #[derive(Debug, Deserialize)]
 pub struct SynthesizeRequest {
     pub text: String,
-    #[serde(default = "default_language")]
-    pub language: String,
+    /// Unset: the tenant's language, else `[tts] default_language`.
+    #[serde(default)]
+    pub language: Option<String>,
     #[serde(default)]
     pub voice: Option<String>,
     /// Optional provider name override (uses default if omitted).
     #[serde(default)]
     pub provider: Option<String>,
-    /// Tenant ID for usage tracking.
+    /// Whose words these are: what the request leaves unset is the
+    /// tenant's speech settings' (`docs/TENANT_SPEECH.md`).
     #[serde(default)]
     pub tenant_id: Option<String>,
 }
@@ -37,7 +39,20 @@ pub async fn synthesize(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SynthesizeRequest>,
 ) -> Response {
-    let provider_name = req.provider.as_deref();
+    // What the request leaves unset: the tenant's, else the server's.
+    let tenant = state.tenant_speech(req.tenant_id.as_deref()).await;
+    let tenant_provider = tenant
+        .as_ref()
+        .and_then(|t| t.provider.as_deref())
+        // A provider this server does not have is the default's business.
+        .filter(|p| state.services.contains_key(*p));
+    let provider_name = req.provider.as_deref().or(tenant_provider);
+    let language = req
+        .language
+        .clone()
+        .filter(|l| !l.trim().is_empty())
+        .or_else(|| tenant.as_ref().and_then(|t| t.language.clone()))
+        .unwrap_or_else(|| state.config.tts.default_language.clone());
     let service = match state.service(provider_name) {
         Some(s) => s,
         None => {
@@ -51,20 +66,24 @@ pub async fn synthesize(
         }
     };
 
+    // A tenant's voice belongs to its provider: kept only when the request
+    // did not name another.
+    let tenant_voice = tenant
+        .as_ref()
+        .filter(|_| req.provider.is_none() || req.provider.as_deref() == tenant_provider)
+        .and_then(|t| t.voice_for(&language));
     let voice = req
         .voice
         .as_deref()
+        .or(tenant_voice)
         .or(state.config.tts.default_voice.as_deref());
 
-    match service
-        .synthesize(&req.text, Some(&req.language), voice)
-        .await
-    {
+    match service.synthesize(&req.text, Some(&language), voice).await {
         Ok(path) => {
             let chars = req.text.len();
             info!(
                 text_len = chars,
-                language = %req.language,
+                language = %language,
                 voice = ?voice,
                 provider = provider_name.unwrap_or(&state.default_provider),
                 tenant_id = ?req.tenant_id,
@@ -302,11 +321,14 @@ mod tests {
                 stt: crate::config::SttSection::default(),
                 logging: crate::config::LoggingSection::default(),
                 cluster: crate::config::ClusterSection::default(),
+                storage: crate::config::StorageSection::default(),
             },
             services,
             default_provider: "primary".to_string(),
             stt: std::collections::HashMap::new(),
             stt_default: None,
+            speech: None,
+            speech_cache: Default::default(),
         })
     }
 
@@ -316,7 +338,7 @@ mod tests {
             State(test_state().await),
             Json(SynthesizeRequest {
                 text: "hello".to_string(),
-                language: "en-US".to_string(),
+                language: Some("en-US".to_string()),
                 voice: None,
                 provider: Some("missing".to_string()),
                 tenant_id: None,
@@ -351,5 +373,183 @@ mod tests {
         assert!(voices
             .iter()
             .all(|voice| voice.metadata.get("logical_provider") == Some(&"primary".to_string())));
+    }
+
+    /// A tenant's speech settings in memory.
+    struct Settings(std::collections::HashMap<fcp_core::TenantId, fcp_core::speech::TenantSpeech>);
+
+    #[async_trait::async_trait]
+    impl fcp_core::speech::SpeechSettingsStore for Settings {
+        async fn get_tenant_speech(
+            &self,
+            tenant_id: &fcp_core::TenantId,
+        ) -> anyhow::Result<Option<fcp_core::speech::TenantSpeech>> {
+            Ok(self.0.get(tenant_id).cloned())
+        }
+        async fn put_tenant_speech(
+            &self,
+            _: &fcp_core::speech::TenantSpeech,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn delete_tenant_speech(&self, _: &fcp_core::TenantId) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+    }
+
+    /// A provider's service that answers a WAV and keeps what it was asked.
+    async fn heard_by(
+        name: &'static str,
+        heard: Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>,
+    ) -> Arc<fcp_media::tts::TtsService> {
+        let router = axum::Router::new().route(
+            "/v1/synthesize",
+            axum::routing::post(move |Json(body): Json<serde_json::Value>| {
+                let heard = Arc::clone(&heard);
+                async move {
+                    heard.lock().unwrap().push((name.to_string(), body));
+                    let mut wav = b"RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00\x40\x1f\x00\x00\x80\x3e\x00\x00\x02\x00\x10\x00data\x00\x00\x00\x00".to_vec();
+                    wav.truncate(44);
+                    wav
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        Arc::new(
+            fcp_media::tts::TtsService::new(fcp_media::tts::TtsConfig {
+                provider: fcp_media::tts::TtsProviderConfig::Remote {
+                    url,
+                    auth_token: "t".into(),
+                    provider: None,
+                    tenant_id: None,
+                },
+                cache_dir: std::env::temp_dir()
+                    .join(format!("fcp-tts-tenant-{name}-{}", uuid::Uuid::new_v4())),
+                cache_max_size_mb: 10,
+                default_language: "en-US".into(),
+                default_voice: None,
+            })
+            .await
+            .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_tenants_settings_fill_what_a_request_leaves_unset() {
+        let heard: Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>> = Arc::default();
+        let base = test_state().await;
+        let mut services = std::collections::HashMap::new();
+        services.insert(
+            "primary".to_string(),
+            heard_by("primary", Arc::clone(&heard)).await,
+        );
+        services.insert("alt".to_string(), heard_by("alt", Arc::clone(&heard)).await);
+        let a = fcp_core::TenantId::new();
+        let ghost = fcp_core::TenantId::new();
+        let mut speech = fcp_core::speech::TenantSpeech::defaults(a);
+        speech.provider = Some("alt".into());
+        speech.voice = Some("lucie".into());
+        speech.language = Some("fr-CA".into());
+        speech.voices.insert("es".into(), "davefx".into());
+        let mut other = fcp_core::speech::TenantSpeech::defaults(ghost);
+        other.provider = Some("gone".into());
+        let state = Arc::new(AppState {
+            services,
+            speech: Some(Arc::new(Settings(
+                [(a, speech), (ghost, other)].into_iter().collect(),
+            ))),
+            speech_cache: Default::default(),
+            config: base.config.clone(),
+            default_provider: base.default_provider.clone(),
+            stt: Default::default(),
+            stt_default: None,
+        });
+        let say = |text: &str,
+                   tenant: Option<String>,
+                   language: Option<&str>,
+                   voice: Option<&str>,
+                   provider: Option<&str>| {
+            let state = Arc::clone(&state);
+            let req = SynthesizeRequest {
+                text: text.to_string(),
+                language: language.map(String::from),
+                voice: voice.map(String::from),
+                provider: provider.map(String::from),
+                tenant_id: tenant,
+            };
+            async move { synthesize(State(state), Json(req)).await.status() }
+        };
+        let tenant = || Some(a.as_uuid().to_string());
+
+        assert_eq!(say("one", tenant(), None, None, None).await, StatusCode::OK);
+        assert_eq!(
+            say("two", tenant(), Some("es-ES"), None, None).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            say("three", tenant(), None, Some("own"), None).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            say(
+                "four",
+                Some(fcp_core::TenantId::new().to_string()),
+                None,
+                None,
+                None
+            )
+            .await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            say("five", tenant(), None, None, Some("primary")).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            say("six", Some(ghost.to_string()), None, None, None).await,
+            StatusCode::OK
+        );
+
+        let heard = heard.lock().unwrap().clone();
+        let at = |i: usize| {
+            (
+                heard[i].0.as_str(),
+                heard[i].1["voice"].as_str(),
+                heard[i].1["language"].as_str(),
+            )
+        };
+        assert_eq!(heard.len(), 6, "{heard:?}");
+        assert_eq!(
+            at(0),
+            ("alt", Some("lucie"), Some("fr-CA")),
+            "the tenant's provider, voice and language"
+        );
+        assert_eq!(
+            at(1),
+            ("alt", Some("davefx"), Some("es-ES")),
+            "its voice for Spanish"
+        );
+        assert_eq!(
+            at(2),
+            ("alt", Some("own"), Some("fr-CA")),
+            "the request's voice wins"
+        );
+        assert_eq!(
+            at(3),
+            ("primary", None, Some("en-US")),
+            "a tenant with no settings: the server's"
+        );
+        assert_eq!(
+            at(4),
+            ("primary", None, Some("fr-CA")),
+            "another provider named: not the tenant's voice"
+        );
+        assert_eq!(
+            at(5),
+            ("primary", None, Some("en-US")),
+            "a provider this server lacks: its default"
+        );
     }
 }

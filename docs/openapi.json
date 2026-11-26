@@ -16965,6 +16965,98 @@
         }
       }
     },
+    "/api/v1/speech/settings": {
+      "get": {
+        "tags": [
+          "speech"
+        ],
+        "summary": "GET /speech/settings",
+        "operationId": "speech_get_settings",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpeechSettingsResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "speech"
+        ],
+        "summary": "PUT /speech/settings",
+        "operationId": "speech_put_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpeechSettingsResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "speech"
+        ],
+        "summary": "DELETE /speech/settings — back to the platform's defaults.",
+        "operationId": "speech_delete_settings",
+        "responses": {
+          "204": {
+            "description": "Back to the platform's defaults"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/branding": {
       "get": {
         "tags": [
@@ -45946,6 +46038,93 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          }
+        }
+      },
+      "SpeechSettingsRequest": {
+        "type": "object",
+        "description": "The settings to keep; null or absent is the platform's default.",
+        "properties": {
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "voice": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "voices": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "SpeechSettingsResponse": {
+        "type": "object",
+        "description": "The tenant's speech settings; nothing set is the platform's defaults.",
+        "required": [
+          "tenant_id",
+          "voices",
+          "configured",
+          "updated_at"
+        ],
+        "properties": {
+          "tenant_id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "One of the TTS server's providers; null is its default."
+          },
+          "voice": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The voice where no language below names one; null is the provider's."
+          },
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What a request without a language is spoken in; null is `en-US`."
+          },
+          "voices": {
+            "type": "object",
+            "description": "A voice per language (`es` or `es-ES`), over `voice`.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "configured": {
+            "type": "boolean",
+            "description": "False until the tenant saved settings."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },

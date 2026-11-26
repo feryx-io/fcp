@@ -120,6 +120,21 @@ sealed again with the site's key; usage comes up with the site's records.
 - **S2 — settings.** `tenant_speech`, the API, the server resolving
   defaults per tenant, `/speech/voices`, preview, the Speech page, the
   real voice lists in Prompts and the flow builder.
+  **S2a done (v0.25.648):** `fcp_core::speech::TenantSpeech` (provider,
+  voice, language, a voice per language — `es` names every Spanish) in
+  `tenant_speech` (migration 153); `GET/PUT/DELETE /api/v1/speech/settings`
+  under `prompt_read`/`prompt_manage` rather than a permission of its own
+  (speech is what the tenant's prompts sound like); `fcp-tts-server`
+  reading them from `[storage] database_url` (`FCP_TTS_DATABASE_URL`,
+  cached 30 s) and filling what a request leaves unset — the provider (one
+  it has), the language, then the voice (the tenant's only with the
+  tenant's provider) — before its own defaults; the client leaving a
+  tenant's language and voice unset when the caller did, so the server's
+  choice is the tenant's. The compose TTS server reads the platform's
+  database. Proved by `fcp-tts-server` `a_tenants_settings_fill_what_a_request_leaves_unset`
+  and `api_postgres` `a_tenants_speech_settings_are_kept_and_cleared`.
+  **S2b:** the voices and preview routes, the Speech page, the real voice
+  lists in Prompts and the flow builder.
 - **S3 — the tenant's own accounts.** Sealed keys, the server building a
   provider per account, the cache per account, test, the platform's
   offer list.
