@@ -13206,6 +13206,56 @@
         }
       }
     },
+    "/api/v1/presence/people": {
+      "get": {
+        "tags": [
+          "presence"
+        ],
+        "summary": "GET /presence/people — every person in the tenant with their presence\n(D8 finding 69: `/presence` lists only what this process's presence\ntable holds, which phones subscribing to the call managers never fill).",
+        "operationId": "presence_list_people",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_PersonPresenceResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/presence/{aor}": {
       "get": {
         "tags": [
@@ -37848,6 +37898,87 @@
           }
         }
       },
+      "Page_PersonPresenceResponse": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One person's presence as the tenant's people see it\n(`docs/PRESENCE.md`): what they chose, a call, DND, idle and whether any\nof their phones is registered, worked out by the admin.",
+              "required": [
+                "user_id",
+                "username",
+                "idle"
+              ],
+              "properties": {
+                "user_id": {
+                  "type": "string"
+                },
+                "username": {
+                  "type": "string"
+                },
+                "display_name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "extension": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "state": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "`available`, `away`, `busy`, `dnd`, `on_call`, `offline`; null when\nthis admin does not work presence out."
+                },
+                "label": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Their own status's label (\"WFH\")."
+                },
+                "note": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "idle": {
+                  "type": "boolean",
+                  "description": "Away because idle, not because they said so."
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
       "Page_PersonalContactResponse": {
         "type": "object",
         "description": "A page of a list.",
@@ -39160,6 +39291,13 @@
                   "type": "integer",
                   "format": "int64",
                   "minimum": 0
+                },
+                "node_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The node that took the registration (its `[service] node_id`);\nnull for one written before v0.25.644 that has not re-registered."
                 }
               }
             }
@@ -41856,6 +41994,59 @@
           }
         }
       },
+      "PersonPresenceResponse": {
+        "type": "object",
+        "description": "One person's presence as the tenant's people see it\n(`docs/PRESENCE.md`): what they chose, a call, DND, idle and whether any\nof their phones is registered, worked out by the admin.",
+        "required": [
+          "user_id",
+          "username",
+          "idle"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "extension": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`available`, `away`, `busy`, `dnd`, `on_call`, `offline`; null when\nthis admin does not work presence out."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Their own status's label (\"WFH\")."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "idle": {
+            "type": "boolean",
+            "description": "Away because idle, not because they said so."
+          }
+        }
+      },
       "PersonalContactRequest": {
         "type": "object",
         "description": "A contact, as written.",
@@ -44002,6 +44193,13 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "node_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node that took the registration (its `[service] node_id`);\nnull for one written before v0.25.644 that has not re-registered."
           }
         }
       },

@@ -216,6 +216,82 @@ pub async fn list_presences(
     )?))
 }
 
+/// One person's presence as the tenant's people see it
+/// (`docs/PRESENCE.md`): what they chose, a call, DND, idle and whether any
+/// of their phones is registered, worked out by the admin.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct PersonPresenceResponse {
+    pub user_id: String,
+    pub username: String,
+    pub display_name: Option<String>,
+    pub extension: Option<String>,
+    /// `available`, `away`, `busy`, `dnd`, `on_call`, `offline`; null when
+    /// this admin does not work presence out.
+    pub state: Option<String>,
+    /// Their own status's label ("WFH").
+    pub label: Option<String>,
+    pub note: Option<String>,
+    /// Away because idle, not because they said so.
+    pub idle: bool,
+}
+
+/// GET /presence/people — every person in the tenant with their presence
+/// (D8 finding 69: `/presence` lists only what this process's presence
+/// table holds, which phones subscribing to the call managers never fill).
+#[utoipa::path(
+    get,
+    path = "/api/v1/presence/people",
+    tag = "presence",
+    operation_id = "presence_list_people",
+    params(crate::page::PageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<PersonPresenceResponse>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn list_people(
+    State(state): State<ApiState>,
+    tenant: TenantContext,
+    axum::extract::Query(page): axum::extract::Query<crate::page::PageQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    use fcp_core::storage::CredentialStore;
+    let storage = state
+        .storage
+        .as_ref()
+        .ok_or_else(|| ApiError::Internal("Storage not configured".to_string()))?;
+    let users = storage
+        .list_users_in_tenant(&tenant.0, &fcp_core::storage::UserFilter::default())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let people = match &state.people_presence {
+        Some(p) => Some(p.tenant_presence(&tenant.0).await),
+        None => None,
+    };
+    let rows = users
+        .iter()
+        .filter(|u| u.may_use_services())
+        .map(|u| {
+            let shown = people.as_ref().and_then(|p| p.get(&u.id));
+            PersonPresenceResponse {
+                user_id: u.id.to_string(),
+                username: u.username.clone(),
+                display_name: u.shown_name(),
+                extension: u.extension.clone(),
+                state: shown.map(|p| p.state.as_str().to_string()),
+                label: shown.and_then(|p| p.label.clone()),
+                note: shown.and_then(|p| p.note.clone()),
+                idle: shown.is_some_and(|p| p.idle),
+            }
+        })
+        .collect();
+    Ok(Json(crate::page::paginate(
+        rows,
+        &page,
+        crate::page::Order::Ascending,
+        |r: &PersonPresenceResponse| r.username.clone(),
+    )?))
+}
+
 /// Resolve an extension's target to device AOR(s).
 async fn resolve_ext_to_device_aors(
     ext: &fcp_core::Extension,

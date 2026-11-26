@@ -132,6 +132,20 @@ the platform sees a site's trouble without reaching into it.
   handler's call span recording the tenant, the flow, IVR, voicemail,
   conference and queue paths; measured by a test placing a call and
   counting how many of its lines carry the tenant.
+  **L2a done (v0.25.646):** every SIP request the call manager handles
+  runs in a `sip` span (method, SIP Call-ID, and `tenant_id`/`call_id`
+  recorded once known: `Call::note_on_span` at the call's creation and
+  wherever an in-dialog request finds its call, the registrar on
+  resolving a REGISTER's tenant, ACKs too); work the handlers spawn keeps
+  the span (`fcp_sip::spawn_here`), so the forking race, media and flows
+  name the call; the mid-dialog spans carry the tenant; the standalone
+  registrar's requests get the same span; the API's request span takes
+  the tenant `TenantContext` resolves (its path left out, since some
+  carry a key). Measured by `fcp-call-manager/tests/calls.rs`
+  `a_calls_log_lines_name_its_tenant`: of 113 lines shipped for a call
+  between two phones, all 27 naming the call name its tenant. A SIP
+  library's `call_id` field is the SIP Call-ID, not the node's call.
+  **L2b:** the conference server, IVR, voicemail server and queues.
 - **L3 — the API.** Query, tail, levels, export, the permissions and the
   tenant clamp; proved across two tenants.
   **L3a done (v0.25.647):** `log_read` (tenant administrators and

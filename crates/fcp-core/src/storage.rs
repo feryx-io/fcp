@@ -841,6 +841,12 @@ pub struct Registration {
     /// another node reaches it through.
     #[serde(default)]
     pub flow_node: Option<String>,
+
+    /// The node that took the REGISTER (its `[service] node_id`), shown on
+    /// the Registrations page. Unlike `flow_node`, every binding has one,
+    /// and nothing is routed by it.
+    #[serde(default)]
+    pub node_id: Option<String>,
 }
 
 /// Storage backend for user credentials.
@@ -5946,6 +5952,7 @@ mod tests {
             reg_id: None,
             push: None,
             flow_node: None,
+            node_id: None,
         };
 
         storage.put_registration(reg.clone()).await.unwrap();

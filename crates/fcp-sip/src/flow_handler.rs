@@ -444,7 +444,7 @@ impl FlowCallHandler {
                 elapsed_ms,
             };
             let store = Arc::clone(store);
-            tokio::spawn(async move {
+            crate::spawn_here(async move {
                 if let Err(e) = store.insert_flow_trace(&entry).await {
                     error!(error = %e, "Failed to persist flow trace");
                 }
@@ -654,7 +654,7 @@ impl FlowCallHandler {
             });
 
             let events = Arc::clone(events);
-            tokio::spawn(async move {
+            crate::spawn_here(async move {
                 if let Err(e) = events.publish(event).await {
                     error!(error = %e, "Failed to publish FlowEvent::Started");
                 }
@@ -681,7 +681,7 @@ impl FlowCallHandler {
         // 2 MB. A spawned task is polled from the top of a stack.
         let handler = Arc::clone(self);
         let call_id = call.id;
-        tokio::spawn(async move { handler.execute_next_node(call_id).await })
+        crate::spawn_here(async move { handler.execute_next_node(call_id).await })
             .await
             .map_err(|e| anyhow::anyhow!("Flow task did not finish: {e}"))??;
 
@@ -2056,7 +2056,7 @@ impl FlowCallHandler {
                 let cancel_tm = Arc::clone(transaction_manager);
                 let cancel_inv = cancel_invite.clone();
                 let cancel_c = cancel_ctx.clone();
-                tokio::spawn(async move {
+                crate::spawn_here(async move {
                     if let Err(e) = send_cancel(&cancel_tm, &cancel_inv, cancel_c).await {
                         warn!(error = %e, "Failed to send CANCEL for timed-out B-leg INVITE");
                     }
@@ -2286,7 +2286,7 @@ impl FlowCallHandler {
                     let voicemail_service = Arc::clone(&voicemail_service);
                     let events = self.events.clone();
                     let message = message.clone();
-                    tokio::spawn(async move {
+                    crate::spawn_here(async move {
                         match voicemail_service.transcribe_message(&message).await {
                             Ok(Some((mailbox, transcript))) => {
                                 let Some(events) = events else { return };
@@ -2337,7 +2337,7 @@ impl FlowCallHandler {
                     });
 
                     let events = Arc::clone(events);
-                    tokio::spawn(async move {
+                    crate::spawn_here(async move {
                         if let Err(e) = events.publish(event).await {
                             error!(error = %e, "Failed to publish VoicemailEvent::MessageRecorded");
                         }
@@ -4118,7 +4118,7 @@ impl FlowCallHandler {
             });
 
             let events = Arc::clone(events);
-            tokio::spawn(async move {
+            crate::spawn_here(async move {
                 if let Err(e) = events.publish(event).await {
                     error!(error = %e, "Failed to publish FlowEvent::NodeExecuted");
                 }
@@ -4171,7 +4171,7 @@ impl FlowCallHandler {
                     });
 
                     let events = Arc::clone(events);
-                    tokio::spawn(async move {
+                    crate::spawn_here(async move {
                         if let Err(e) = events.publish(event).await {
                             error!(error = %e, "Failed to publish FlowEvent::Completed");
                         }
@@ -4282,7 +4282,7 @@ impl FlowCallHandler {
                     });
 
                     let events = Arc::clone(events);
-                    tokio::spawn(async move {
+                    crate::spawn_here(async move {
                         if let Err(e) = events.publish(event).await {
                             error!(error = %e, "Failed to publish FlowEvent::WaitingForInput");
                         }
@@ -4878,7 +4878,7 @@ impl FlowCallHandler {
                 });
 
                 let events = Arc::clone(events);
-                tokio::spawn(async move {
+                crate::spawn_here(async move {
                     if let Err(e) = events.publish(event).await {
                         error!(error = %e, "Failed to publish FlowEvent::Completed");
                     }

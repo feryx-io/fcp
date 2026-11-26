@@ -962,3 +962,66 @@ async fn a_mailbox_greets_callers_by_its_owners_name() {
     assert_eq!(after.json["greeting_heard"], "own");
     app.finish().await;
 }
+
+/// D8 finding 68: a spoken prompt whose file this admin does not hold (or
+/// that was never made) is spoken for its preview, as a call would hear it;
+/// with no TTS service the preview is refused, saying why.
+#[tokio::test]
+async fn a_spoken_prompt_with_no_file_here_is_previewed_by_tts() {
+    let (url, said) = stand_in_tts().await;
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    // Made with no TTS: no file.
+    let made = app
+        .admin(
+            Method::POST,
+            "/api/v1/prompts",
+            Some(
+                json!({ "name": "after-hours", "source_type": "tts", "tts_text": "We are closed" }),
+            ),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    assert_eq!(made.json["has_audio"], false, "{}", made.text);
+    let audio = format!(
+        "/api/v1/prompts/{}/audio",
+        made.json["id"].as_str().unwrap()
+    );
+
+    let refused = app.admin(Method::GET, &audio, None).await;
+    assert_eq!(
+        refused.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        refused.text
+    );
+    assert!(refused.text.contains("[tts]"), "{}", refused.text);
+
+    let app = app.with_tts(&url).await;
+    let played = app.admin(Method::GET, &audio, None).await;
+    assert_eq!(played.status, StatusCode::OK, "{}", played.text);
+    assert!(played.text.starts_with("RIFF"), "a WAV comes back");
+    assert!(said.lock().unwrap().iter().any(|t| t == "We are closed"));
+
+    // A file prompt with no file is still not found.
+    let file = app
+        .admin(
+            Method::POST,
+            "/api/v1/prompts",
+            Some(json!({ "name": "hold", "source_type": "file", "category": "ivr" })),
+        )
+        .await;
+    let missing = app
+        .admin(
+            Method::GET,
+            &format!(
+                "/api/v1/prompts/{}/audio",
+                file.json["id"].as_str().unwrap()
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND, "{}", missing.text);
+    app.finish().await;
+}

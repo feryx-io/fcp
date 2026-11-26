@@ -201,7 +201,21 @@ pub mod redact {
     }
 
     /// `text` with secrets hidden.
+    /// Whether `text` could hold anything [`scrub`] hides: one pass, so the
+    /// patterns run only on the few lines that might (every line a busy
+    /// node writes goes through here).
+    fn may_hold_secret(text: &str) -> bool {
+        static ANY: OnceLock<Regex> = OnceLock::new();
+        ANY.get_or_init(|| {
+            Regex::new(r"(?i)token|passw|secret|api_?key|pin|bearer|basic|digest|enc:v1:").unwrap()
+        })
+        .is_match(text)
+    }
+
     pub fn scrub(text: &str) -> Cow<'_, str> {
+        if !may_hold_secret(text) {
+            return Cow::Borrowed(text);
+        }
         let mut out = Cow::Borrowed(text);
         for (re, with) in patterns() {
             if re.is_match(&out) {
@@ -410,6 +424,14 @@ where
     }
 
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
+        // Nowhere to put it (no beacon has started shipping, or Redis is
+        // behind): building the record would only throw it away.
+        if self.tx.capacity() == 0 {
+            if let Some(shipping) = SHIPPING.get() {
+                shipping.dropped.fetch_add(1, Ordering::Relaxed);
+            }
+            return;
+        }
         let meta = event.metadata();
         if level_rank(Some(*meta.level())) > SHIP_LEVEL.load(Ordering::Relaxed) {
             return;

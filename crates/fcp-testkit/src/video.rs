@@ -136,9 +136,19 @@ impl VideoLeg {
         mode: VideoMode,
         codec: VideoCodec,
     ) -> Result<Self> {
-        let pair = crate::media::allocate_port_pair_at(bind);
-        let rtp = Arc::new(UdpSocket::bind((bind, pair.rtp_port)).await?);
-        let rtcp = Arc::new(UdpSocket::bind((bind, pair.rtp_port + 1)).await?);
+        // As the audio leg: a pair found free may be taken before it is
+        // bound again; another is tried.
+        let mut tries = 0;
+        let (pair, rtp, rtcp) = loop {
+            let pair = crate::media::allocate_port_pair_at(bind);
+            let rtp = UdpSocket::bind((bind, pair.rtp_port)).await;
+            let rtcp = UdpSocket::bind((bind, pair.rtp_port + 1)).await;
+            match (rtp, rtcp) {
+                (Ok(rtp), Ok(rtcp)) => break (pair, Arc::new(rtp), Arc::new(rtcp)),
+                (Err(e), _) | (_, Err(e)) if tries >= 20 => return Err(e.into()),
+                _ => tries += 1,
+            }
+        };
         let keys = Arc::new(Mutex::new(match mode {
             VideoMode::Plain => Keys::Plain,
             VideoMode::Srtp => Keys::Mine(SrtpOffer::generate().map_err(|e| anyhow!("{e}"))?),

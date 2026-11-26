@@ -360,7 +360,10 @@ fn create_registrar(
     // Devices' own credentials, and who a credential may register as
     // (docs/ENTERPRISE_CALLING.md §3.8).
     .with_identity(Arc::clone(storage))
-    .with_digest_uri_check(config.registrar.digest_uri_check);
+    .with_digest_uri_check(config.registrar.digest_uri_check)
+    // Who took each registration, for the admin's Registrations page; a
+    // flow is never named after this node, which relays no calls.
+    .with_node_label(config.service.node_id.clone());
     // Phone apps the call managers can wake (docs/PUSH.md §2.1).
     Arc::new(match &config.push {
         Some(push) => registrar.with_push(push.clone()),
@@ -402,9 +405,20 @@ async fn handle_packet(
         let registrar = Arc::clone(registrar);
         let admission = Arc::clone(admission);
         let peer = packet.peer();
-        tokio::spawn(async move {
-            dispatcher::dispatch_request(&req, handle, &registrar, Some(&admission), peer).await;
-        });
+        // The request's lines name its tenant once the registrar knows it
+        // (`docs/LOG_VIEWER.md` L2).
+        let span = tracing::info_span!(
+            "sip",
+            method = %req.method().as_str(),
+            tenant_id = tracing::field::Empty,
+        );
+        tokio::spawn(tracing::Instrument::instrument(
+            async move {
+                dispatcher::dispatch_request(&req, handle, &registrar, Some(&admission), peer)
+                    .await;
+            },
+            span,
+        ));
         return;
     }
 

@@ -564,6 +564,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     // Presence.
     (GET, "/presence", Needs(PresenceRead)),
     (GET, "/presence/stats", Needs(PresenceRead)),
+    (GET, "/presence/people", Needs(PresenceRead)),
     // The services' logs (`docs/LOG_VIEWER.md`): a tenant's caller sees
     // its own lines; levels are a platform administrator's (fcp-admin).
     (GET, "/logs", Needs(LogRead)),

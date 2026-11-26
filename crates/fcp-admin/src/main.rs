@@ -122,6 +122,9 @@ async fn main() -> Result<()> {
     if let Some(v) = &cli.conference_join_secret {
         config.conference.join_secret = Some(v.clone());
     }
+    if let (Some(v), Some(tts)) = (&cli.tts_auth_token, config.tts.as_mut()) {
+        tts.auth_token = Some(v.clone());
+    }
 
     // Apply CLI overrides
     if let Some(log_level) = cli.log_level {
@@ -718,16 +721,33 @@ async fn main() -> Result<()> {
     };
 
     // Initialize TTS service for prompt audio synthesis (optional)
-    let api_state = if let Some(ref tts_config) = config.tts {
-        match fcp_media::tts::TtsService::new(fcp_media::tts::TtsConfig {
-            provider: fcp_media::tts::TtsProviderConfig::Local {
-                engine: tts_config.engine.clone(),
-                executable_path: tts_config
-                    .python_path
-                    .as_ref()
-                    .map(std::path::PathBuf::from),
+    let tts_provider = config
+        .tts
+        .as_ref()
+        .and_then(|tts| match (&tts.remote_url, &tts.engine) {
+            (Some(url), _) => Some(fcp_media::tts::TtsProviderConfig::Remote {
+                url: url.clone(),
+                auth_token: tts.auth_token.clone().unwrap_or_default(),
+                provider: None,
+                tenant_id: None,
+            }),
+            (None, Some(engine)) => Some(fcp_media::tts::TtsProviderConfig::Local {
+                engine: engine.clone(),
+                executable_path: tts.python_path.as_ref().map(std::path::PathBuf::from),
                 device: None,
-            },
+            }),
+            (None, None) => {
+                warn!("[tts] names neither remote_url nor engine — prompt synthesis unavailable");
+                None
+            }
+        });
+    let api_state = if let (Some(tts_config), Some(provider)) = (&config.tts, tts_provider) {
+        let described = match &provider {
+            fcp_media::tts::TtsProviderConfig::Remote { url, .. } => url.clone(),
+            _ => tts_config.engine.clone().unwrap_or_default(),
+        };
+        match fcp_media::tts::TtsService::new(fcp_media::tts::TtsConfig {
+            provider,
             cache_dir: std::path::PathBuf::from(&tts_config.cache_dir),
             cache_max_size_mb: 500,
             default_language: "en-US".to_string(),
@@ -736,7 +756,7 @@ async fn main() -> Result<()> {
         .await
         {
             Ok(tts_service) => {
-                info!(engine = %tts_config.engine, "TTS service initialized for prompt synthesis");
+                info!(tts = %described, "TTS service initialized for prompt synthesis");
                 api_state.with_tts_service(std::sync::Arc::new(tts_service))
             }
             Err(e) => {
