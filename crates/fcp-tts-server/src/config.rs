@@ -20,6 +20,19 @@ pub struct TtsServerConfig {
     pub logging: LoggingSection,
     #[serde(default)]
     pub cluster: ClusterSection,
+    /// Tenants' speech settings (`docs/TENANT_SPEECH.md`): without a
+    /// database every tenant is spoken with the defaults below.
+    #[serde(default)]
+    pub storage: StorageSection,
+}
+
+/// Where tenants' speech settings are read.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageSection {
+    /// The platform's Postgres; `FCP_TTS_DATABASE_URL` wins.
+    #[serde(default)]
+    pub database_url: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -339,6 +352,7 @@ pub fn load_config(path: Option<&str>) -> anyhow::Result<TtsServerConfig> {
             stt: SttSection::default(),
             logging: LoggingSection::default(),
             cluster: ClusterSection::default(),
+            storage: StorageSection::default(),
         }),
     }
 }
@@ -403,6 +417,7 @@ mod tests {
             stt: SttSection::default(),
             logging: LoggingSection::default(),
             cluster: ClusterSection::default(),
+            storage: crate::config::StorageSection::default(),
         }
     }
 

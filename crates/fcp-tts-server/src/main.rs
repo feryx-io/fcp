@@ -44,6 +44,9 @@ async fn main() -> Result<()> {
     if let Some(v) = &cli.auth_tokens {
         config.auth.tokens = split_tokens(v);
     }
+    if let Some(v) = &cli.database_url {
+        config.storage.database_url = Some(v.clone());
+    }
     if let Some(ref level) = cli.log_level {
         config.logging.level = level.clone();
     }
@@ -144,12 +147,29 @@ async fn main() -> Result<()> {
         stt.insert(name.clone(), Arc::new(service));
     }
 
+    // Tenants' speech settings (`docs/TENANT_SPEECH.md`), where the
+    // platform's database is named.
+    let speech: Option<Arc<dyn fcp_core::speech::SpeechSettingsStore>> =
+        match &config.storage.database_url {
+            Some(url) => {
+                let storage = fcp_storage_postgres::PostgresStorage::new(
+                    fcp_storage_postgres::PostgresConfig::new(url.clone()),
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("[storage] database_url: {e:#}"))?;
+                info!("Tenants' speech settings read from the database");
+                Some(Arc::new(storage))
+            }
+            None => None,
+        };
     let app_state = Arc::new(AppState {
         default_provider: config.tts.default_provider.clone(),
         services,
         stt,
         stt_default: config.stt.default_name().map(String::from),
         config: config.clone(),
+        speech,
+        speech_cache: Default::default(),
     });
 
     // 5. Axum router

@@ -21,6 +21,7 @@ async fn a_line_reaches_its_services_stream_tagged_and_redacted() {
         key_prefix: prefix.clone(),
     };
     let beacon = ServiceBeacon::new(ServiceIdentity::new("logs-node-1", "call_manager"))
+        .with_intervals(Duration::from_millis(200), 5)
         .start(config.clone());
 
     {
@@ -95,6 +96,64 @@ async fn a_line_reaches_its_services_stream_tagged_and_redacted() {
     assert!(records
         .iter()
         .all(|r| !r.message.contains("below the ship")));
+
+    // A level set from the page: debug lines are kept until it goes.
+    let level = storage.key(&logging::level_key("logs-node-1"));
+    let _: () = redis::cmd("SET")
+        .arg(&level)
+        .arg("debug")
+        .arg("EX")
+        .arg(60)
+        .query_async(&mut conn)
+        .await
+        .unwrap();
+    let reader = conn.clone();
+    let shipped = |text: &'static str| {
+        let key = key.clone();
+        let mut conn = reader.clone();
+        async move {
+            for _ in 0..30 {
+                let entries: Vec<(String, Vec<(String, String)>)> = redis::cmd("XRANGE")
+                    .arg(&key)
+                    .arg("-")
+                    .arg("+")
+                    .query_async(&mut conn)
+                    .await
+                    .unwrap_or_default();
+                if entries
+                    .iter()
+                    .flat_map(|(_, f)| f)
+                    .any(|(_, v)| v.contains(text))
+                {
+                    return true;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            false
+        }
+    };
+    let mut raised = false;
+    for _ in 0..20 {
+        tracing::debug!("debug while raised");
+        if shipped("debug while raised").await {
+            raised = true;
+            break;
+        }
+    }
+    assert!(raised, "a level set in Redis is taken up");
+    let _: () = redis::cmd("DEL")
+        .arg(&level)
+        .query_async(&mut conn)
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    tracing::debug!("debug after it went");
+    tracing::info!("info after it went");
+    assert!(shipped("info after it went").await);
+    assert!(
+        !shipped("debug after it went").await,
+        "back to the configured level"
+    );
 
     beacon.shutdown().await;
     let _: () = redis::cmd("DEL")

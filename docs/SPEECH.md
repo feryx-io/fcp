@@ -262,3 +262,11 @@ was recorded by Piper through `record_a_prompt_when_asked` in the
 provider's tests. The provider's own tests run the real engine when
 `FCP_PIPER` and `FCP_PIPER_VOICES` name it.
 
+## A tenant's speech
+
+Since v0.25.648 a tenant chooses the provider, voice and language its
+words are spoken with (`GET/PUT /api/v1/speech/settings`,
+`docs/TENANT_SPEECH.md`). `fcp-tts-server` reads the choice from the
+platform's database (`[storage] database_url`, `FCP_TTS_DATABASE_URL`) and
+applies it to any request naming the tenant that leaves those unset;
+without a database every tenant gets `[tts]`'s defaults, as before.

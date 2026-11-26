@@ -963,6 +963,68 @@ async fn a_mailbox_greets_callers_by_its_owners_name() {
     app.finish().await;
 }
 
+/// `docs/TENANT_SPEECH.md` S2: a tenant's speech settings are kept, read
+/// back, checked, held to their tenant, and taken back to the defaults.
+#[tokio::test]
+async fn a_tenants_speech_settings_are_kept_and_cleared() {
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let fresh = app
+        .admin(Method::GET, "/api/v1/speech/settings", None)
+        .await;
+    assert_eq!(fresh.status, StatusCode::OK, "{}", fresh.text);
+    assert_eq!(fresh.json["configured"], false);
+    assert!(fresh.json["voice"].is_null());
+
+    let put = app
+        .admin(
+            Method::PUT,
+            "/api/v1/speech/settings",
+            Some(json!({
+                "provider": "elevenlabs",
+                "voice": "Rachel",
+                "language": "en-GB",
+                "voices": { "es": "es_ES-davefx-medium" },
+            })),
+        )
+        .await;
+    assert_eq!(put.status, StatusCode::OK, "{}", put.text);
+    let got = app
+        .admin(Method::GET, "/api/v1/speech/settings", None)
+        .await;
+    assert_eq!(got.json["configured"], true);
+    assert_eq!(got.json["provider"], "elevenlabs");
+    assert_eq!(got.json["voice"], "Rachel");
+    assert_eq!(got.json["language"], "en-GB");
+    assert_eq!(got.json["voices"]["es"], "es_ES-davefx-medium");
+
+    // Another tenant's are its own.
+    let theirs = app
+        .admin_in(app.tenant_b, Method::GET, "/api/v1/speech/settings", None)
+        .await;
+    assert_eq!(theirs.json["configured"], false, "{}", theirs.text);
+
+    let bad = app
+        .admin(
+            Method::PUT,
+            "/api/v1/speech/settings",
+            Some(json!({ "voice": "Rachel; DROP TABLE" })),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.text);
+
+    let cleared = app
+        .admin(Method::DELETE, "/api/v1/speech/settings", None)
+        .await;
+    assert_eq!(cleared.status, StatusCode::NO_CONTENT, "{}", cleared.text);
+    let back = app
+        .admin(Method::GET, "/api/v1/speech/settings", None)
+        .await;
+    assert_eq!(back.json["configured"], false);
+    app.finish().await;
+}
+
 /// D8 finding 68: a spoken prompt whose file this admin does not hold (or
 /// that was never made) is spoken for its preview, as a call would hear it;
 /// with no TTS service the preview is refused, saying why.

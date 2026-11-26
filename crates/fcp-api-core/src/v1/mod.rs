@@ -58,6 +58,7 @@ pub mod signup;
 pub mod sip_trace;
 pub mod sites;
 pub mod softphone;
+pub mod speech;
 pub mod sso;
 pub mod supervision;
 pub mod system;
@@ -857,6 +858,13 @@ pub fn router() -> Router<ApiState> {
         .route(
             "/firmware/targets/:id",
             axum::routing::put(firmware::update_target).delete(firmware::delete_target),
+        )
+        // The tenant's speech settings (docs/TENANT_SPEECH.md).
+        .route(
+            "/speech/settings",
+            get(speech::get_settings)
+                .put(speech::put_settings)
+                .delete(speech::delete_settings),
         )
         // The tenant's brand (docs/BRANDING.md): assets up to 5 MB.
         .route(

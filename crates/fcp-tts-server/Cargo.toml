@@ -20,6 +20,8 @@ path = "src/main.rs"
 fcp-core = { path = "../fcp-core" }
 fcp-media = { path = "../fcp-media" }
 fcp-events = { path = "../fcp-events" }
+# Tenants' speech settings (docs/TENANT_SPEECH.md).
+fcp-storage-postgres = { path = "../fcp-storage-postgres" }
 fcp-storage-redis = { path = "../fcp-storage-redis", optional = true }
 fcp-cluster = { path = "../fcp-cluster", optional = true }
 
@@ -50,6 +52,7 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+async-trait = "0.1"
 hound = "3"
 fcp-testkit = { path = "../fcp-testkit" }
 reqwest = { version = "0.12", default-features = false, features = ["json"] }

@@ -5227,6 +5227,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/speech/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /speech/settings */
+        get: operations["speech_get_settings"];
+        /** PUT /speech/settings */
+        put: operations["speech_put_settings"];
+        post?: never;
+        /** DELETE /speech/settings — back to the platform's defaults. */
+        delete: operations["speech_delete_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/branding": {
         parameters: {
             query?: never;
@@ -7115,6 +7134,74 @@ export interface paths {
         put?: never;
         post?: never;
         delete: operations["services_forget"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /logs */
+        get: operations["logs_list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/logs/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /logs/export — JSON Lines, audited. */
+        get: operations["logs_export"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/logs/levels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /logs/levels — the levels set for now. */
+        get: operations["logs_levels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/logs/levels/{service}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** PUT /logs/levels/{service} — a level for an hour, or null for back. */
+        put: operations["logs_set_level"];
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -9852,6 +9939,35 @@ export interface components {
             /** Format: date-time */
             validated_at?: string | null;
         };
+        /** @description A service's level, as set from here for now. */
+        LogLevel: {
+            service: string;
+            /** @description Set for now; null is the service's configured level. */
+            level?: string | null;
+            /**
+             * Format: int64
+             * @description Seconds before it goes back.
+             */
+            expires_in_secs?: number | null;
+        };
+        /** @description One line. */
+        LogLine: {
+            /** @description Its id in the service's stream; a page's cursor. */
+            id: string;
+            service: string;
+            /** @description The service's node type, when it is up. */
+            kind?: string | null;
+            /** Format: date-time */
+            time: string;
+            level: string;
+            target: string;
+            message: string;
+            fields: {
+                [key: string]: string;
+            };
+            tenant_id?: string | null;
+            call_id?: string | null;
+        };
         LoginRequest: {
             username: string;
             password: string;
@@ -11405,6 +11521,33 @@ export interface components {
                 created_at: string;
                 /** Format: date-time */
                 updated_at: string;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_LogLine: {
+            data: {
+                /** @description Its id in the service's stream; a page's cursor. */
+                id: string;
+                service: string;
+                /** @description The service's node type, when it is up. */
+                kind?: string | null;
+                /** Format: date-time */
+                time: string;
+                level: string;
+                target: string;
+                message: string;
+                fields: {
+                    [key: string]: string;
+                };
+                tenant_id?: string | null;
+                call_id?: string | null;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -14294,6 +14437,10 @@ export interface components {
         SetLayoutRequest: {
             layout: string;
         };
+        /** @description A level to set for an hour; null goes back now. */
+        SetLogLevel: {
+            level?: string | null;
+        };
         /**
          * @description What others see of a person.
          * @enum {string}
@@ -14613,6 +14760,33 @@ export interface components {
             height: number;
             /** Format: int32 */
             kbps: number;
+        };
+        /** @description The settings to keep; null or absent is the platform's default. */
+        SpeechSettingsRequest: {
+            provider?: string | null;
+            voice?: string | null;
+            language?: string | null;
+            voices?: {
+                [key: string]: string;
+            };
+        };
+        /** @description The tenant's speech settings; nothing set is the platform's defaults. */
+        SpeechSettingsResponse: {
+            tenant_id: string;
+            /** @description One of the TTS server's providers; null is its default. */
+            provider?: string | null;
+            /** @description The voice where no language below names one; null is the provider's. */
+            voice?: string | null;
+            /** @description What a request without a language is spoken in; null is `en-US`. */
+            language?: string | null;
+            /** @description A voice per language (`es` or `es-ES`), over `voice`. */
+            voices: {
+                [key: string]: string;
+            };
+            /** @description False until the tenant saved settings. */
+            configured: boolean;
+            /** Format: date-time */
+            updated_at: string;
         };
         /** @description The one-time code the login page was handed. */
         SsoExchangeRequest: {
@@ -28537,6 +28711,95 @@ export interface operations {
             };
         };
     };
+    speech_get_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpeechSettingsResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    speech_put_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeechSettingsRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpeechSettingsResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    speech_delete_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Back to the platform's defaults */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     branding_get_brand: {
         parameters: {
             query?: never;
@@ -32929,6 +33192,172 @@ export interface operations {
                 content?: never;
             };
             /** @description An error; 409 for a service that is up */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    logs_list: {
+        parameters: {
+            query?: {
+                /** @description One service, by id. */
+                service?: string;
+                /** @description Services of this node type (`call_manager`, `sbc`…). */
+                kind?: string;
+                /** @description This level and worse: `error`, `warn`, `info`, `debug`, `trace`. */
+                level?: string;
+                /**
+                 * @description Platform administrators: a tenant's lines, or `none` for the
+                 *     platform's own.
+                 */
+                tenant?: string;
+                /** @description Lines about this call. */
+                call_id?: string;
+                /** @description Text in the message or a field, any case. */
+                q?: string;
+                /** @description RFC 3339: lines at or after. */
+                since?: string;
+                /** @description RFC 3339: lines before. */
+                until?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_LogLine"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    logs_export: {
+        parameters: {
+            query?: {
+                /** @description One service, by id. */
+                service?: string;
+                /** @description Services of this node type (`call_manager`, `sbc`…). */
+                kind?: string;
+                /** @description This level and worse: `error`, `warn`, `info`, `debug`, `trace`. */
+                level?: string;
+                /**
+                 * @description Platform administrators: a tenant's lines, or `none` for the
+                 *     platform's own.
+                 */
+                tenant?: string;
+                /** @description Lines about this call. */
+                call_id?: string;
+                /** @description Text in the message or a field, any case. */
+                q?: string;
+                /** @description RFC 3339: lines at or after. */
+                since?: string;
+                /** @description RFC 3339: lines before. */
+                until?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description JSON Lines, one LogLine each */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/x-ndjson": string;
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    logs_levels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogLevel"][];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    logs_set_level: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                service: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetLogLevel"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogLevel"];
+                };
+            };
+            /** @description An error */
             default: {
                 headers: {
                     [name: string]: unknown;

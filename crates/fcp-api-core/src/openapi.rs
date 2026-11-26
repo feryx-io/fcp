@@ -397,6 +397,9 @@ use utoipa::{Modify, OpenApi};
         crate::v1::firmware::create_target,
         crate::v1::firmware::update_target,
         crate::v1::firmware::delete_target,
+        crate::v1::speech::get_settings,
+        crate::v1::speech::put_settings,
+        crate::v1::speech::delete_settings,
         crate::v1::branding::get_brand,
         crate::v1::branding::put_brand,
         crate::v1::branding::delete_brand,
@@ -679,7 +682,10 @@ mod tests {
         let documented = operations(&doc);
         let mut bound = BTreeSet::new();
         for (method, path, _) in crate::route_permissions::ROUTES {
-            if path.starts_with("/cluster/") || path.starts_with("/system/services") {
+            if path.starts_with("/cluster/")
+                || path.starts_with("/system/services")
+                || path.starts_with("/logs")
+            {
                 continue; // fcp-admin's, documented there
             }
             bound.insert((method.to_string(), format!("/api/v1{path}")));
