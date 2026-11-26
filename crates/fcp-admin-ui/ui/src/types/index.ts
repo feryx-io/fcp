@@ -127,6 +127,7 @@ export type CallDetailRecord = S['CdrResponse']
 export type ActiveCall = S['CallInfo']
 
 export type Registration = S['RegistrationResponse']
+export type PersonPresence = S['PersonPresenceResponse']
 
 export type DashboardSummary = S['DashboardSummary']
 

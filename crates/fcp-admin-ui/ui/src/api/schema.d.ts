@@ -4267,6 +4267,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/presence/people": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /presence/people — every person in the tenant with their presence
+         *     (D8 finding 69: `/presence` lists only what this process's presence
+         *     table holds, which phones subscribing to the call managers never fill).
+         */
+        get: operations["presence_list_people"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/presence/{aor}": {
         parameters: {
             query?: never;
@@ -11811,6 +11832,32 @@ export interface components {
             total?: number | null;
         };
         /** @description A page of a list. */
+        Page_PersonPresenceResponse: {
+            data: {
+                user_id: string;
+                username: string;
+                display_name?: string | null;
+                extension?: string | null;
+                /**
+                 * @description `available`, `away`, `busy`, `dnd`, `on_call`, `offline`; null when
+                 *     this admin does not work presence out.
+                 */
+                state?: string | null;
+                /** @description Their own status's label ("WFH"). */
+                label?: string | null;
+                note?: string | null;
+                /** @description Away because idle, not because they said so. */
+                idle: boolean;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
         Page_PersonalContactResponse: {
             data: {
                 id: string;
@@ -13076,6 +13123,27 @@ export interface components {
             firmware?: string | null;
             /** Format: int32 */
             fetches: number;
+        };
+        /**
+         * @description One person's presence as the tenant's people see it
+         *     (`docs/PRESENCE.md`): what they chose, a call, DND, idle and whether any
+         *     of their phones is registered, worked out by the admin.
+         */
+        PersonPresenceResponse: {
+            user_id: string;
+            username: string;
+            display_name?: string | null;
+            extension?: string | null;
+            /**
+             * @description `available`, `away`, `busy`, `dnd`, `on_call`, `offline`; null when
+             *     this admin does not work presence out.
+             */
+            state?: string | null;
+            /** @description Their own status's label ("WFH"). */
+            label?: string | null;
+            note?: string | null;
+            /** @description Away because idle, not because they said so. */
+            idle: boolean;
         };
         /** @description A contact, as written. */
         PersonalContactRequest: {
@@ -25790,6 +25858,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PresenceStatsResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    presence_list_people: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_PersonPresenceResponse"];
                 };
             };
             /** @description An error */

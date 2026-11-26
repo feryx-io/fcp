@@ -973,6 +973,7 @@ pub fn router() -> Router<ApiState> {
         // Presence
         .route("/presence", get(presence::list_presences))
         .route("/presence/stats", get(presence::get_stats))
+        .route("/presence/people", get(presence::list_people))
         .route(
             "/presence/:aor",
             get(presence::get_presence)

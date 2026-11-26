@@ -564,6 +564,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     // Presence.
     (GET, "/presence", Needs(PresenceRead)),
     (GET, "/presence/stats", Needs(PresenceRead)),
+    (GET, "/presence/people", Needs(PresenceRead)),
     (GET, "/presence/:aor", Needs(PresenceRead)),
     (PUT, "/presence/:aor", Needs(PresenceManage)),
     (DELETE, "/presence/:aor", Needs(PresenceManage)),

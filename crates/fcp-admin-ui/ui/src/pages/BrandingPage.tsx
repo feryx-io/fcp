@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Download, Music, Plus, Save, Trash2, Upload } from 'lucide-react'
+import { Download, Music, Plus, Save, Trash2, Upload, X } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -149,19 +150,22 @@ function AssetPicker({
   onUpload: (file: File) => Promise<BrandAsset>
 }) {
   const input = useRef<HTMLInputElement>(null)
+  // min-w-0 throughout: a long file name in the select must shrink, not
+  // push the buttons out of the column and over the next picker.
   return (
-    <div className="space-y-2">
+    <div className="min-w-0 space-y-2">
       <Label>{label}</Label>
-      <div className="flex h-20 items-center justify-center rounded border bg-muted/40">
+      <div className="flex h-20 items-center justify-center overflow-hidden rounded border bg-muted/40">
         {value ? (
           <img src={assetSrc(value)} alt={label} className="max-h-16 max-w-full object-contain" />
         ) : (
           <span className="text-xs text-muted-foreground">{hint}</span>
         )}
       </div>
-      <div className="flex gap-2">
+      <div className="flex min-w-0 gap-2">
         <select
-          className="h-8 flex-1 rounded-md border bg-background px-2 text-xs"
+          aria-label={label}
+          className="h-8 min-w-0 flex-1 truncate rounded-md border bg-background px-2 text-xs"
           value={value}
           onChange={(e) => onChange(e.target.value)}
         >
@@ -172,7 +176,17 @@ function AssetPicker({
             </option>
           ))}
         </select>
-        <Button size="sm" variant="outline" type="button" title={`Upload the ${label.toLowerCase()}`} onClick={() => input.current?.click()}>
+        {value && (
+          <Button size="sm" variant="outline" type="button" className="shrink-0"
+            title={`Remove the ${label.toLowerCase()} (save to apply)`}
+            aria-label={`Remove the ${label.toLowerCase()}`}
+            onClick={() => onChange('')}>
+            <X className="h-4 w-4" />
+          </Button>
+        )}
+        <Button size="sm" variant="outline" type="button" className="shrink-0"
+          title={`Upload the ${label.toLowerCase()}`} aria-label={`Upload the ${label.toLowerCase()}`}
+          onClick={() => input.current?.click()}>
           <Upload className="h-4 w-4" />
         </Button>
         <input
@@ -237,6 +251,14 @@ export function BrandingPage() {
     onError: (e) => alert((e as Error).message),
   })
 
+  // What the saved brand names, which the server will not delete.
+  const inUse = new Map<string, string>()
+  if (brand) {
+    if (brand.logo) inUse.set(brand.logo, 'Logo')
+    if (brand.logo_dark) inUse.set(brand.logo_dark, inUse.has(brand.logo_dark) ? 'Logos' : 'Logo on dark')
+    if (brand.icon) inUse.set(brand.icon, inUse.has(brand.icon) ? 'Logo and icon' : 'Icon')
+    for (const r of brand.ringtones) inUse.set(r.sha256, `Ringtone: ${r.name}`)
+  }
   const images = assets.filter((a) => a.kind === 'image')
   const rasters = images.filter((a) => a.mime !== 'image/svg+xml')
   const audio = assets.filter((a) => a.kind === 'audio')
@@ -473,7 +495,10 @@ export function BrandingPage() {
       <Card>
         <CardHeader>
           <CardTitle>Uploaded files</CardTitle>
-          <CardDescription>Public by their hash. One the brand names cannot be deleted.</CardDescription>
+          <CardDescription>
+            Public by their hash. A file the saved brand uses cannot be deleted: remove it from the
+            brand above and save first.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <Table>
@@ -498,13 +523,16 @@ export function BrandingPage() {
                     ) : (
                       <Music className="h-4 w-4 text-muted-foreground" />
                     )}
-                    {a.file_name ?? '-'}
+                    <span className="truncate">{a.file_name ?? '-'}</span>
+                    {inUse.has(a.sha256) && <Badge variant="secondary">{inUse.get(a.sha256)}</Badge>}
                   </TableCell>
                   <TableCell className="text-xs">{a.mime}{a.width ? ` ${a.width}×${a.height}` : ''}</TableCell>
                   <TableCell className="text-xs">{(a.size / 1024).toFixed(1)} KB</TableCell>
                   <TableCell className="font-mono text-xs">{a.sha256.slice(0, 16)}…</TableCell>
                   <TableCell className="text-right">
                     <Button size="sm" variant="ghost" aria-label="Delete"
+                      disabled={inUse.has(a.sha256)}
+                      title={inUse.has(a.sha256) ? 'In use: remove it from the brand and save first' : 'Delete this file'}
                       onClick={() => { if (confirm('Delete this file?')) removeAsset.mutate(a.sha256) }}>
                       <Trash2 className="h-4 w-4" />
                     </Button>
