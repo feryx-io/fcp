@@ -1445,6 +1445,9 @@ pub async fn run_video_bridge(
         "video_bridge",
         participant = %participant_id,
         room = %room.id(),
+        // The room's tenant: its id is `tenant-<uuid>:<room>`
+        // (`docs/LOG_VIEWER.md` L2).
+        tenant_id = %room.id().split(':').next().unwrap_or_default(),
         stream = %kind,
         codec = %negotiated.codec,
         srtp = srtp_context.is_some(),

@@ -133,5 +133,7 @@ futures = "0.3"
 async-stream = "0.3"
 
 [dev-dependencies]
+# The node's shipped log lines, read back (tests/rooms.rs, docs/LOG_VIEWER.md L2b).
+redis = { version = "0.27", features = ["tokio-comp"] }
 fcp-testkit = { path = "../fcp-testkit" }
 tempfile = "3"
