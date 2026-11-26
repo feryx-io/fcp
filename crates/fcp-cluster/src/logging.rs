@@ -43,6 +43,20 @@ pub fn stream_key(service_id: &str) -> String {
     format!("logs:{service_id}")
 }
 
+/// The stream a site's service's lines are kept in, in the cloud: its
+/// warnings and errors, carried up the link (`docs/LOG_VIEWER.md` §5).
+/// Read back as the service `site:<site id>:<service id>`.
+pub fn site_stream_key(site_id: &str, service_id: &str) -> String {
+    format!("logs:site:{site_id}:{service_id}")
+}
+
+/// A site's service's lines, as its link carries them up.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShippedLogs {
+    pub service: String,
+    pub lines: Vec<LogRecord>,
+}
+
 /// The key a platform administrator sets, with an expiry, to change a
 /// service's level for a while (`docs/LOG_VIEWER.md` §2): `error`, `warn`,
 /// `info`, `debug` or `trace`. Gone, the configured level is back.

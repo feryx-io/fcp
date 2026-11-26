@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 fcp-core = { path = "../fcp-core" }
 fcp-cluster = { path = "../fcp-cluster" }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 fcp-storage-redis = { path = "../fcp-storage-redis", features = ["event-bus"] }
 fcp-events = { path = "../fcp-events" }
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }
