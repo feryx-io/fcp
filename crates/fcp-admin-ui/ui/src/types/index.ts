@@ -135,6 +135,8 @@ export type SpeechAccount = S['SpeechAccountView']
 export type SpeechAccountRequest = S['SpeechAccountRequest']
 export type SpeechAccountKind = S['SpeechAccountKind']
 export type PlatformSpeech = S['PlatformSpeech']
+export type LogLine = S['LogLine']
+export type LogLevel = S['LogLevel']
 export type PersonPresence = S['PersonPresenceResponse']
 
 export type DashboardSummary = S['DashboardSummary']

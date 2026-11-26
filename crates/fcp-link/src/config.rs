@@ -149,6 +149,11 @@ pub struct SiteConfig {
     /// the tenant's webhooks fire there.
     #[serde(default = "default_true")]
     pub forward_events: bool,
+    /// Carry the site's services' warnings and errors to the cloud, so the
+    /// platform sees a site's trouble on its Logs page
+    /// (`docs/LOG_VIEWER.md` §5). Needs `redis_url`.
+    #[serde(default = "default_true")]
+    pub forward_logs: bool,
     /// Where the firmware images the tenant's targets name are kept, fetched
     /// from the cloud: the site admin's `[api.firmware] directory`
     /// (`docs/PROVISIONING.md` §11). Unset, the site's phones get no
@@ -184,6 +189,7 @@ impl Default for SiteConfig {
             ship_batch: default_ship_batch(),
             file_roots: Vec::new(),
             forward_events: true,
+            forward_logs: true,
             firmware_dir: None,
             push_token: None,
         }

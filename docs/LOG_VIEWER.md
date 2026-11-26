@@ -172,7 +172,25 @@ the platform sees a site's trouble without reaching into it.
   and `fcp-cluster/tests/logs.rs`. **L3b:** the live tail
   (`WS /logs/tail`), with the page.
 - **L4 — the page,** with a Playwright spec.
+  **L4 done (v0.25.650):** System › Logs (`LogsPage`): the newest 200
+  lines followed every two seconds (Pause/Follow) or paged back (Older
+  lines), filtered by level and worse, time (15 minutes to everything
+  kept), text, service, call and — for a platform administrator — tenant;
+  a line opened shows its target, tenant, call (a click filters by it)
+  and fields; Export downloads the view as JSON Lines; a platform
+  administrator's Levels card raises a service's level for an hour and
+  takes it back. The live tail is the API polled; `WS /logs/tail` (L3b)
+  is not needed for it. Proved by `e2e/logs.spec.ts`.
 - **L5 — sites,** `warn` and above up the link.
+  **Done (v0.25.651):** `fcp-link`'s `LogForwarder` (`[site]
+  forward_logs`, on by default; needs `redis_url`) reads the site's
+  services' streams every five seconds after where it was — a stream seen
+  at its start from its end, one that appears later from its beginning —
+  and posts what is `WARN` or worse to the cloud's `POST /link/v1/logs`,
+  which keeps each service's lines as `fcp:logs:site:<site>:<service>`
+  (100,000 at most), every line the site's tenant's whatever it says. The
+  Logs API lists them as the service `site:<site>:<service>`. Proved by
+  `fcp-link/tests/logs.rs`.
 - **L6 — OTLP export** (optional): the same layer sending to an
   operator's collector.
 

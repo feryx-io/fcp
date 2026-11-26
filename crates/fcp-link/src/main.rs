@@ -17,6 +17,7 @@ mod config;
 mod events;
 mod firmware;
 mod link;
+mod logs;
 mod requests;
 mod ship;
 mod sync;
