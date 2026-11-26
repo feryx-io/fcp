@@ -3753,6 +3753,7 @@ pub struct DynStorage {
     group_store: Option<Arc<dyn crate::group::GroupStore>>,
     brand_store: Option<Arc<dyn crate::branding::BrandStore>>,
     speech_store: Option<Arc<dyn crate::speech::SpeechSettingsStore>>,
+    speech_account_store: Option<Arc<dyn crate::speech::SpeechAccountStore>>,
     contact_store: Option<Arc<dyn crate::contact::ContactStore>>,
     presence_status_store: Option<Arc<dyn crate::presence_status::PresenceStatusStore>>,
     parking_lot_store: Option<Arc<dyn crate::parking::ParkingLotStore>>,
@@ -3843,6 +3844,7 @@ impl DynStorage {
             group_store: None,
             brand_store: None,
             speech_store: None,
+            speech_account_store: None,
             contact_store: None,
             presence_status_store: None,
             parking_lot_store: None,
@@ -3942,6 +3944,7 @@ impl DynStorage {
             group_store: None,
             brand_store: None,
             speech_store: None,
+            speech_account_store: None,
             contact_store: None,
             presence_status_store: None,
             parking_lot_store: None,
@@ -4385,6 +4388,18 @@ impl DynStorage {
     }
 
     /// Tenants' brands, when attached.
+    pub fn with_speech_account_store(
+        mut self,
+        store: Arc<dyn crate::speech::SpeechAccountStore>,
+    ) -> Self {
+        self.speech_account_store = Some(store);
+        self
+    }
+
+    pub fn speech_account_store(&self) -> Option<&Arc<dyn crate::speech::SpeechAccountStore>> {
+        self.speech_account_store.as_ref()
+    }
+
     pub fn speech_store(&self) -> Option<&Arc<dyn crate::speech::SpeechSettingsStore>> {
         self.speech_store.as_ref()
     }

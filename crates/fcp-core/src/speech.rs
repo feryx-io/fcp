@@ -63,6 +63,106 @@ pub trait SpeechSettingsStore: Send + Sync {
     async fn delete_tenant_speech(&self, tenant_id: &TenantId) -> anyhow::Result<bool>;
 }
 
+/// A tenant's own account with a TTS vendor (bring your own key,
+/// `docs/TENANT_SPEECH.md` S3): its voices are the tenant's alone.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SpeechAccount {
+    pub id: uuid::Uuid,
+    pub tenant_id: TenantId,
+    /// The tenant's name for it, unique in the tenant.
+    pub name: String,
+    pub kind: SpeechAccountKind,
+    /// AWS and Azure: where the account is.
+    #[serde(default)]
+    pub region: Option<String>,
+    /// OpenAI's model (`tts-1`), ElevenLabs' (`eleven_multilingual_v2`).
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Another endpoint for the vendor (a regional or proxied one).
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// AWS: the access key id; the secret below is the secret access key.
+    #[serde(default)]
+    pub access_key_id: Option<String>,
+    /// The API key, subscription key or secret access key: sealed at rest,
+    /// written and never read back by the API.
+    #[serde(default)]
+    pub secret: Option<String>,
+    pub created_at: SystemTime,
+    pub updated_at: SystemTime,
+}
+
+/// The vendors a tenant may bring an account with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum SpeechAccountKind {
+    Openai,
+    Elevenlabs,
+    Azure,
+    AwsPolly,
+    GoogleCloud,
+}
+
+impl SpeechAccountKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Openai => "openai",
+            Self::Elevenlabs => "elevenlabs",
+            Self::Azure => "azure",
+            Self::AwsPolly => "aws_polly",
+            Self::GoogleCloud => "google_cloud",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        [
+            Self::Openai,
+            Self::Elevenlabs,
+            Self::Azure,
+            Self::AwsPolly,
+            Self::GoogleCloud,
+        ]
+        .into_iter()
+        .find(|k| k.as_str() == s)
+    }
+
+    /// Whether `region` is required.
+    pub fn needs_region(self) -> bool {
+        matches!(self, Self::Azure | Self::AwsPolly)
+    }
+}
+
+/// How a tenant's settings or a request name one of its accounts as the
+/// provider: `account:<id>`.
+pub const ACCOUNT_PREFIX: &str = "account:";
+
+/// The account a provider name points at, if it names one.
+pub fn account_of(provider: &str) -> Option<uuid::Uuid> {
+    provider.strip_prefix(ACCOUNT_PREFIX)?.parse().ok()
+}
+
+/// Where tenants' own speech accounts are kept, their secrets sealed.
+#[async_trait]
+pub trait SpeechAccountStore: Send + Sync {
+    async fn list_speech_accounts(
+        &self,
+        tenant_id: &TenantId,
+    ) -> anyhow::Result<Vec<SpeechAccount>>;
+    async fn get_speech_account(
+        &self,
+        tenant_id: &TenantId,
+        id: &uuid::Uuid,
+    ) -> anyhow::Result<Option<SpeechAccount>>;
+    async fn put_speech_account(&self, account: &SpeechAccount) -> anyhow::Result<()>;
+    /// Whether there was one.
+    async fn delete_speech_account(
+        &self,
+        tenant_id: &TenantId,
+        id: &uuid::Uuid,
+    ) -> anyhow::Result<bool>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

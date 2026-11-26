@@ -149,19 +149,24 @@ async fn main() -> Result<()> {
 
     // Tenants' speech settings (`docs/TENANT_SPEECH.md`), where the
     // platform's database is named.
-    let speech: Option<Arc<dyn fcp_core::speech::SpeechSettingsStore>> =
-        match &config.storage.database_url {
-            Some(url) => {
-                let storage = fcp_storage_postgres::PostgresStorage::new(
+    #[allow(clippy::type_complexity)]
+    let (speech, accounts): (
+        Option<Arc<dyn fcp_core::speech::SpeechSettingsStore>>,
+        Option<Arc<dyn fcp_core::speech::SpeechAccountStore>>,
+    ) = match &config.storage.database_url {
+        Some(url) => {
+            let storage = Arc::new(
+                fcp_storage_postgres::PostgresStorage::new(
                     fcp_storage_postgres::PostgresConfig::new(url.clone()),
                 )
                 .await
-                .map_err(|e| anyhow::anyhow!("[storage] database_url: {e:#}"))?;
-                info!("Tenants' speech settings read from the database");
-                Some(Arc::new(storage))
-            }
-            None => None,
-        };
+                .map_err(|e| anyhow::anyhow!("[storage] database_url: {e:#}"))?,
+            );
+            info!("Tenants' speech settings and accounts read from the database");
+            (Some(storage.clone()), Some(storage))
+        }
+        None => (None, None),
+    };
     let app_state = Arc::new(AppState {
         default_provider: config.tts.default_provider.clone(),
         services,
@@ -170,6 +175,8 @@ async fn main() -> Result<()> {
         config: config.clone(),
         speech,
         speech_cache: Default::default(),
+        accounts,
+        account_services: Default::default(),
     });
 
     // 5. Axum router

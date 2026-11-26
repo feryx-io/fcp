@@ -44,8 +44,9 @@ pub async fn synthesize(
     let tenant_provider = tenant
         .as_ref()
         .and_then(|t| t.provider.as_deref())
-        // A provider this server does not have is the default's business.
-        .filter(|p| state.services.contains_key(*p));
+        // A provider this server does not have is the default's business;
+        // one of the tenant's own accounts is its own.
+        .filter(|p| state.services.contains_key(*p) || fcp_core::speech::account_of(p).is_some());
     let provider_name = req.provider.as_deref().or(tenant_provider);
     let language = req
         .language
@@ -53,17 +54,44 @@ pub async fn synthesize(
         .filter(|l| !l.trim().is_empty())
         .or_else(|| tenant.as_ref().and_then(|t| t.language.clone()))
         .unwrap_or_else(|| state.config.tts.default_language.clone());
-    let service = match state.service(provider_name) {
-        Some(s) => s,
-        None => {
-            let name = provider_name.unwrap_or(&state.default_provider);
-            warn!(provider = %name, "Provider not found");
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("unknown provider '{}'", name)})),
-            )
-                .into_response();
+    let refuse = |why: String| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": why })),
+        )
+            .into_response()
+    };
+    // The tenant's own account (`docs/TENANT_SPEECH.md` S3), only for the
+    // tenant that has it. One the tenant chose that cannot speak falls back
+    // to the server's default, so a call is never silent; one a request
+    // names (a preview) says why.
+    let service: Arc<fcp_media::tts::TtsService> = match provider_name
+        .and_then(fcp_core::speech::account_of)
+    {
+        Some(id) => {
+            let named = req.provider.is_some();
+            let found = match req.tenant_id.as_deref() {
+                Some(t) => state.account_service(t, id).await,
+                None => Err("an account is spoken with for its tenant only".to_string()),
+            };
+            match (found, named, state.default_service()) {
+                (Ok(s), _, _) => s,
+                (Err(why), true, _) => return refuse(why),
+                (Err(why), false, Some(default)) => {
+                    warn!(account = %id, why = %why, "A tenant's account cannot speak; the default speaks");
+                    Arc::clone(default)
+                }
+                (Err(why), false, None) => return refuse(why),
+            }
         }
+        None => match state.service(provider_name) {
+            Some(s) => Arc::clone(s),
+            None => {
+                let name = provider_name.unwrap_or(&state.default_provider);
+                warn!(provider = %name, "Provider not found");
+                return refuse(format!("unknown provider '{name}'"));
+            }
+        },
     };
 
     // A tenant's voice belongs to its provider: kept only when the request
@@ -127,6 +155,9 @@ pub struct VoicesQuery {
     pub provider: Option<String>,
     #[serde(default = "default_language")]
     pub language: String,
+    /// The tenant whose account `provider` may name (`account:<id>`).
+    #[serde(default)]
+    pub tenant_id: Option<String>,
 }
 
 pub async fn list_voices(
@@ -134,7 +165,23 @@ pub async fn list_voices(
     Query(q): Query<VoicesQuery>,
 ) -> Response {
     let provider_name = q.provider.as_deref();
-    let service = match state.service(provider_name) {
+    let service = match provider_name.and_then(fcp_core::speech::account_of) {
+        Some(id) => match q.tenant_id.as_deref() {
+            Some(t) => match state.account_service(t, id).await {
+                Ok(s) => Some(s),
+                Err(why) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({ "error": why })),
+                    )
+                        .into_response()
+                }
+            },
+            None => None,
+        },
+        None => state.service(provider_name).cloned(),
+    };
+    let service = match service {
         Some(service) => service,
         None => {
             let name = provider_name.unwrap_or(&state.default_provider);
@@ -329,6 +376,8 @@ mod tests {
             stt_default: None,
             speech: None,
             speech_cache: Default::default(),
+            accounts: None,
+            account_services: Default::default(),
         })
     }
 
@@ -360,6 +409,7 @@ mod tests {
             Query(VoicesQuery {
                 provider: None,
                 language: "en-US".to_string(),
+                tenant_id: None,
             }),
         )
         .await;
@@ -461,6 +511,8 @@ mod tests {
                 [(a, speech), (ghost, other)].into_iter().collect(),
             ))),
             speech_cache: Default::default(),
+            accounts: None,
+            account_services: Default::default(),
             config: base.config.clone(),
             default_provider: base.default_provider.clone(),
             stt: Default::default(),
@@ -550,6 +602,131 @@ mod tests {
             at(5),
             ("primary", None, Some("en-US")),
             "a provider this server lacks: its default"
+        );
+    }
+
+    /// A tenant's accounts in memory.
+    struct Accounts(Vec<fcp_core::speech::SpeechAccount>);
+
+    #[async_trait::async_trait]
+    impl fcp_core::speech::SpeechAccountStore for Accounts {
+        async fn list_speech_accounts(
+            &self,
+            t: &fcp_core::TenantId,
+        ) -> anyhow::Result<Vec<fcp_core::speech::SpeechAccount>> {
+            Ok(self
+                .0
+                .iter()
+                .filter(|a| &a.tenant_id == t)
+                .cloned()
+                .collect())
+        }
+        async fn get_speech_account(
+            &self,
+            t: &fcp_core::TenantId,
+            id: &uuid::Uuid,
+        ) -> anyhow::Result<Option<fcp_core::speech::SpeechAccount>> {
+            Ok(self
+                .0
+                .iter()
+                .find(|a| &a.tenant_id == t && &a.id == id)
+                .cloned())
+        }
+        async fn put_speech_account(
+            &self,
+            _: &fcp_core::speech::SpeechAccount,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn delete_speech_account(
+            &self,
+            _: &fcp_core::TenantId,
+            _: &uuid::Uuid,
+        ) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tenants_own_account_speaks_for_it_alone() {
+        let vendor = fcp_testkit::tts::StandInTts::elevenlabs("xi-their-key").await;
+        let heard: Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>> = Arc::default();
+        let base = test_state().await;
+        let mut services = std::collections::HashMap::new();
+        services.insert(
+            "primary".to_string(),
+            heard_by("primary", Arc::clone(&heard)).await,
+        );
+        let a = fcp_core::TenantId::new();
+        let b = fcp_core::TenantId::new();
+        let now = std::time::SystemTime::now();
+        let account = fcp_core::speech::SpeechAccount {
+            id: uuid::Uuid::new_v4(),
+            tenant_id: a,
+            name: "ours".into(),
+            kind: fcp_core::speech::SpeechAccountKind::Elevenlabs,
+            region: None,
+            model: None,
+            endpoint: Some(vendor.url().to_string()),
+            access_key_id: None,
+            secret: Some("xi-their-key".into()),
+            created_at: now,
+            updated_at: now,
+        };
+        let named = format!("account:{}", account.id);
+        let mut settings = fcp_core::speech::TenantSpeech::defaults(a);
+        settings.provider = Some(named.clone());
+        settings.voice = Some("21m00Tcm4TlvDq8ikWAM".into());
+        let mut b_settings = fcp_core::speech::TenantSpeech::defaults(b);
+        b_settings.provider = Some(named.clone());
+        let state = Arc::new(AppState {
+            services,
+            speech: Some(Arc::new(Settings(
+                [(a, settings), (b, b_settings)].into_iter().collect(),
+            ))),
+            speech_cache: Default::default(),
+            accounts: Some(Arc::new(Accounts(vec![account.clone()]))),
+            account_services: Default::default(),
+            config: base.config.clone(),
+            default_provider: base.default_provider.clone(),
+            stt: Default::default(),
+            stt_default: None,
+        });
+        let say = |text: &str, tenant: fcp_core::TenantId, provider: Option<String>| {
+            let state = Arc::clone(&state);
+            let req = SynthesizeRequest {
+                text: text.to_string(),
+                language: None,
+                voice: None,
+                provider,
+                tenant_id: Some(tenant.as_uuid().to_string()),
+            };
+            async move { synthesize(State(state), Json(req)).await.status() }
+        };
+
+        // A's chosen account speaks A's words, with A's key and voice.
+        assert_eq!(say("hello from a", a, None).await, StatusCode::OK);
+        let sent = vendor.requests_to("/v1/text-to-speech");
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert!(
+            sent[0].path.ends_with("21m00Tcm4TlvDq8ikWAM"),
+            "{}",
+            sent[0].path
+        );
+        assert!(
+            heard.lock().unwrap().is_empty(),
+            "not the platform's provider"
+        );
+
+        // B names A's account: not B's, so the platform's default speaks.
+        assert_eq!(say("hello from b", b, None).await, StatusCode::OK);
+        assert_eq!(vendor.requests_to("/v1/text-to-speech").len(), 1);
+        assert_eq!(heard.lock().unwrap().len(), 1);
+
+        // B naming it in a request (a preview) is refused.
+        assert_eq!(
+            say("preview from b", b, Some(named)).await,
+            StatusCode::BAD_REQUEST
         );
     }
 }

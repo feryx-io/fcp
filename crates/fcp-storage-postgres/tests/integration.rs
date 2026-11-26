@@ -3012,3 +3012,87 @@ async fn sittings_are_kept_as_they_move_and_read_back_per_meeting() {
     store.delete_sitting(&a.id, "sit-2").await.unwrap();
     assert!(store.get_sitting(&a.id, "sit-2").await.unwrap().is_none());
 }
+
+/// `docs/TENANT_SPEECH.md` S3: a tenant's own TTS account is kept, read
+/// back with its key, listed within its tenant alone, its key sealed at
+/// rest, and deleted.
+#[tokio::test]
+async fn a_tenants_speech_account_keeps_its_key_sealed() {
+    use fcp_core::speech::{SpeechAccount, SpeechAccountKind, SpeechAccountStore};
+    let Some(db) = TestDb::with_encryption(master_key(7)).await else {
+        eprintln!("FCP_TEST_DATABASE_URL not set; skipping");
+        return;
+    };
+    let s = db.storage();
+    let a = tenant("speech-a");
+    let b = tenant("speech-b");
+    s.put_tenant(a.clone()).await.unwrap();
+    s.put_tenant(b.clone()).await.unwrap();
+    let now = SystemTime::now();
+    let account = SpeechAccount {
+        id: Uuid::new_v4(),
+        tenant_id: a.id,
+        name: "Our ElevenLabs".into(),
+        kind: SpeechAccountKind::Elevenlabs,
+        region: None,
+        model: Some("eleven_multilingual_v2".into()),
+        endpoint: None,
+        access_key_id: None,
+        secret: Some("xi-secret-key".into()),
+        created_at: now,
+        updated_at: now,
+    };
+    s.put_speech_account(&account).await.unwrap();
+
+    let back = s
+        .get_speech_account(&a.id, &account.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(back.secret.as_deref(), Some("xi-secret-key"));
+    assert_eq!(back.kind, SpeechAccountKind::Elevenlabs);
+    assert_eq!(back.model.as_deref(), Some("eleven_multilingual_v2"));
+    let raw = db
+        .raw(
+            "SELECT secret FROM speech_accounts WHERE id = $1",
+            &account.id.to_string(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        raw.starts_with("enc:v1:") && !raw.contains("xi-secret"),
+        "{raw}"
+    );
+    let status = s.encryption_status().await.unwrap();
+    assert!(status
+        .sealed_columns
+        .iter()
+        .any(|c| c == "speech_accounts.secret"));
+
+    // Another tenant neither lists, reads nor overwrites it.
+    assert!(s.list_speech_accounts(&b.id).await.unwrap().is_empty());
+    assert!(s
+        .get_speech_account(&b.id, &account.id)
+        .await
+        .unwrap()
+        .is_none());
+    let mut stolen = account.clone();
+    stolen.tenant_id = b.id;
+    stolen.secret = Some("theirs".into());
+    s.put_speech_account(&stolen).await.unwrap();
+    let still = s
+        .get_speech_account(&a.id, &account.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(still.secret.as_deref(), Some("xi-secret-key"));
+    assert_eq!(s.list_speech_accounts(&a.id).await.unwrap().len(), 1);
+
+    assert!(s.delete_speech_account(&a.id, &account.id).await.unwrap());
+    assert!(s
+        .get_speech_account(&a.id, &account.id)
+        .await
+        .unwrap()
+        .is_none());
+    db.finish().await;
+}
