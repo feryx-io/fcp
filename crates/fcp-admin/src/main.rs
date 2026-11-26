@@ -593,6 +593,7 @@ async fn main() -> Result<()> {
             firmware: firmware_files.clone(),
             pushes: None,
             services: None,
+            logs: None,
         })
     } else {
         info!("Sites cannot enroll here ([link] enabled is false)");
@@ -940,6 +941,7 @@ async fn main() -> Result<()> {
     // (`docs/PUSH.md` §2.4).
     let link_state = link_state.map(|mut state| {
         state.services = services_registry.clone();
+        state.logs = Some(logs_state.clone());
         state.pushes = call_supervision::NodeCallSupervisor::new(
             config.call_manager.clone(),
             cluster_state.reader.clone(),

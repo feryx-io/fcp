@@ -110,6 +110,9 @@ pub struct Link {
     events_redis: Option<fcp_storage_redis::RedisStorage>,
     ship: Mutex<Option<Arc<crate::ship::Shipper>>>,
     events: Mutex<Option<Arc<crate::events::EventForwarder>>>,
+    /// The site's Redis for its log lines, when `[site] forward_logs`.
+    logs_redis: Option<fcp_storage_redis::RedisStorage>,
+    logs: Mutex<Option<Arc<crate::logs::LogForwarder>>>,
     requests: Mutex<Option<Arc<crate::requests::Requester>>>,
 }
 
@@ -147,6 +150,11 @@ impl Link {
                     .context("connecting to the site's Redis for its events")?,
             ),
             _ => None,
+        };
+        let logs_redis = if config.site.forward_logs {
+            redis.clone()
+        } else {
+            None
         };
         let reader = redis.clone().map(|storage| {
             fcp_cluster::ClusterReader::new(storage, config.site.heartbeat_ttl_secs)
@@ -186,6 +194,8 @@ impl Link {
             events_redis,
             ship: Mutex::new(None),
             events: Mutex::new(None),
+            logs_redis,
+            logs: Mutex::new(None),
             requests: Mutex::new(None),
         })
     }
@@ -310,6 +320,27 @@ impl Link {
                         *slot = Some(forwarder);
                     }
                     Err(e) => warn!(error = %e, "Events cannot be forwarded"),
+                }
+            }
+        }
+        // The site's warnings and errors, up to the cloud's Logs page
+        // (`docs/LOG_VIEWER.md` §5).
+        if let Some(redis) = &self.logs_redis {
+            let mut slot = self.logs.lock().unwrap_or_else(|e| e.into_inner());
+            if slot.is_none() {
+                match self.client(true) {
+                    Ok(client) => {
+                        let forwarder = Arc::new(crate::logs::LogForwarder::new(
+                            redis.clone(),
+                            client,
+                            &link_url,
+                            secret.clone(),
+                        ));
+                        let run = Arc::clone(&forwarder);
+                        tokio::spawn(async move { run.run().await });
+                        *slot = Some(forwarder);
+                    }
+                    Err(e) => warn!(error = %e, "The site's warnings cannot be carried up"),
                 }
             }
         }

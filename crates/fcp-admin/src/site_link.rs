@@ -162,6 +162,9 @@ pub struct LinkState {
     /// The record of every service, which a site's beacons join under its
     /// id (`docs/SERVICES.md`).
     pub services: Option<Arc<crate::services::ServiceRegistry>>,
+    /// Where a site's warnings and errors are kept for the Logs page
+    /// (`docs/LOG_VIEWER.md` §5): the cloud's Redis.
+    pub logs: Option<crate::logs::LogsApiState>,
 }
 
 /// `POST /link/v1/enroll`.
@@ -539,6 +542,7 @@ pub fn link_router(state: LinkState) -> Router {
         .route("/link/v1/cdrs", post(cdrs))
         .route("/link/v1/records", post(records))
         .route("/link/v1/events", post(events))
+        .route("/link/v1/logs", post(logs_up))
         .route("/link/v1/requests", get(requests))
         .route("/link/v1/requests/:id", post(request_result))
         .route("/link/v1/firmware/:image", get(firmware_image))
@@ -901,6 +905,71 @@ async fn events(
             })?;
         answer.applied += count;
     }
+    Ok(Json(answer))
+}
+
+/// How many of a site's service's lines the cloud keeps.
+const SITE_LOG_LINES: u64 = 100_000;
+
+/// `POST /link/v1/logs`: a site's services' warnings and errors, kept in
+/// this cloud's Redis as `logs:site:<site>:<service>` for the Logs page.
+/// Every line is the site's tenant's, whatever it says.
+async fn logs_up(
+    Extension(state): Extension<LinkState>,
+    headers: HeaderMap,
+    Json(batches): Json<Vec<fcp_cluster::logging::ShippedLogs>>,
+) -> Result<Json<fcp_core::ShippedAnswer>, LinkError> {
+    let site = site_of(&state, &headers).await?;
+    let unavailable = |why: String| LinkError(StatusCode::SERVICE_UNAVAILABLE, why);
+    let Some(logs) = &state.logs else {
+        return Err(unavailable(
+            "this cloud keeps no logs ([cluster] redis_url)".to_string(),
+        ));
+    };
+    let redis = logs
+        .storage()
+        .await
+        .map_err(|e| unavailable(format!("{e:?}")))?;
+    let tenant = site.tenant_id.as_uuid().to_string();
+    let site_id = site.id.to_string();
+    let mut answer = fcp_core::ShippedAnswer::default();
+    let mut pipe = redis::pipe();
+    for batch in batches {
+        // A service id names a stream; nothing else rides in it.
+        let service: String = batch
+            .service
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            .take(128)
+            .collect();
+        if service.is_empty() {
+            answer.skipped += batch.lines.len();
+            continue;
+        }
+        let key = redis.key(&fcp_cluster::logging::site_stream_key(&site_id, &service));
+        for mut line in batch.lines {
+            line.tenant_id = Some(tenant.clone());
+            let Ok(json) = serde_json::to_string(&line) else {
+                answer.skipped += 1;
+                continue;
+            };
+            pipe.cmd("XADD")
+                .arg(&key)
+                .arg("MAXLEN")
+                .arg("~")
+                .arg(SITE_LOG_LINES)
+                .arg("*")
+                .arg("r")
+                .arg(json)
+                .ignore();
+            answer.applied += 1;
+        }
+    }
+    let mut conn = redis.connection();
+    pipe.query_async::<()>(&mut conn).await.map_err(|e| {
+        warn!(site_id = %site.id, error = %e, "A site's log lines could not be kept");
+        unavailable("the cloud's Redis did not take the lines".to_string())
+    })?;
     Ok(Json(answer))
 }
 

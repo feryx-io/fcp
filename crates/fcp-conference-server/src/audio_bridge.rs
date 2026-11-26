@@ -142,6 +142,9 @@ pub async fn run_audio_bridge(
         "audio_bridge",
         participant = %participant_id,
         room = %room.id(),
+        // The room's tenant: its id is `tenant-<uuid>:<room>`
+        // (`docs/LOG_VIEWER.md` L2).
+        tenant_id = %room.id().split(':').next().unwrap_or_default(),
         codec = %encoder.name(),
         srtp = srtp_context.is_some(),
         trunk = is_trunk,
