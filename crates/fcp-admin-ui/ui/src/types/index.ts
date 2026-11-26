@@ -131,6 +131,8 @@ export type SpeechSettings = S['SpeechSettingsResponse']
 export type SpeechSettingsRequest = S['SpeechSettingsRequest']
 export type SpeechProvider = S['SpeechProvider']
 export type SpeechVoice = S['SpeechVoice']
+export type LogLine = S['LogLine']
+export type LogLevel = S['LogLevel']
 export type PersonPresence = S['PersonPresenceResponse']
 
 export type DashboardSummary = S['DashboardSummary']

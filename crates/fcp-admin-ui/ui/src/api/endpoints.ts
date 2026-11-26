@@ -164,6 +164,8 @@ import type {
   SpeechSettingsRequest,
   SpeechProvider,
   SpeechVoice,
+  LogLine,
+  LogLevel,
 } from '@/types'
 
 // Auth
@@ -825,6 +827,34 @@ export const speech = {
   /** A sentence spoken now, as a playable URL. */
   preview: (body: { text: string; provider?: string; voice?: string; language?: string }) =>
     apiClient.postBlobUrl('/speech/preview', body),
+}
+
+// The services' logs (docs/LOG_VIEWER.md): a tenant's lines only, unless
+// the caller is the platform's.
+export interface LogFilter {
+  service?: string
+  kind?: string
+  level?: string
+  tenant?: string
+  call_id?: string
+  q?: string
+  since?: string
+  until?: string
+  limit?: number
+  cursor?: string
+}
+const logQuery = (f: LogFilter) => {
+  const q = new URLSearchParams()
+  for (const [k, v] of Object.entries(f)) if (v !== undefined && v !== '' && v !== null) q.set(k, String(v))
+  const s = q.toString()
+  return s ? `?${s}` : ''
+}
+export const logs = {
+  page: (f: LogFilter) => apiClient.getPage<LogLine>(`/logs${logQuery(f)}`),
+  exportUrl: (f: LogFilter) => apiClient.fetchBlobUrl(`/logs/export${logQuery(f)}`),
+  levels: () => apiClient.get<LogLevel[]>('/logs/levels'),
+  setLevel: (service: string, level: string | null) =>
+    apiClient.put<LogLevel>(`/logs/levels/${encodeURIComponent(service)}`, { level }),
 }
 
 // Audit Log

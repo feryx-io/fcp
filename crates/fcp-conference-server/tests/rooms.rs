@@ -61,6 +61,16 @@ impl Stack {
     /// As [`Stack::start_with`], with `conference` added to the
     /// `[conference]` section.
     async fn start_conference(edges: &str, pairs: u16, conference: &str) -> Option<Self> {
+        Self::start_storing(edges, pairs, conference, "").await
+    }
+
+    /// As [`Stack::start_conference`], with `storage` added to `[storage]`.
+    async fn start_storing(
+        edges: &str,
+        pairs: u16,
+        conference: &str,
+        storage: &str,
+    ) -> Option<Self> {
         let db = TestDatabase::create().await?;
         let seed = Seed::new(db.url(), REALM).await;
         let sip_port = free_port();
@@ -81,6 +91,7 @@ local_uri = "sip:conference@127.0.0.1:{sip_port}"
 
 [storage]
 database_url = "{db}"
+{storage}
 
 [http]
 bind_address = "127.0.0.1:{http}"
@@ -102,6 +113,7 @@ format = "compact"
             db = db.url(),
             rtp_end = rtp_start + 2 * pairs,
             trusted_edges = edges,
+            storage = storage,
             dir = dir.path().display(),
         );
         let service = Service::start("conference", BIN, &config, &loopback(http, "/health")).await;
@@ -4327,5 +4339,71 @@ async fn a_live_webinar_is_streamed_as_hls_until_it_ends() {
     assert_eq!(code, 200, "{out}");
     assert!(!dir.exists());
     let _ = host_call.hangup().await;
+    stack.finish().await;
+}
+
+/// `docs/LOG_VIEWER.md` L2b: a room's lines name its tenant — the join
+/// through the SIP handler's span, the participant's audio bridge through
+/// its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rooms_log_lines_name_its_tenant() {
+    let Some(redis) = fcp_testkit::cluster::private_redis_url() else {
+        eprintln!("skipped: FCP_TEST_REDIS_URL is not set");
+        return;
+    };
+    let Some(stack) = Stack::start_storing("", 60, "", &format!(r#"redis_url = "{redis}""#)).await
+    else {
+        eprintln!("skipped: FCP_TEST_DATABASE_URL is not set");
+        return;
+    };
+    stack.seed.meeting(ROOM, None, None).await;
+    let alice = stack.phone("alice").await;
+    let call = join(&stack, &alice).await;
+    stack.wait_participants(1).await;
+
+    let tenant = stack.seed.tenant_id.as_uuid().to_string();
+    let client = redis::Client::open(redis.as_str()).unwrap();
+    let mut conn = client.get_multiplexed_async_connection().await.unwrap();
+    let mut records: Vec<serde_json::Value> = Vec::new();
+    for _ in 0..50 {
+        let entries: Vec<(String, Vec<(String, String)>)> = redis::cmd("XRANGE")
+            .arg("fcp:logs:e2e-conference")
+            .arg("-")
+            .arg("+")
+            .query_async(&mut conn)
+            .await
+            .unwrap_or_default();
+        records = entries
+            .into_iter()
+            .flat_map(|(_, f)| f)
+            .filter_map(|(_, v)| serde_json::from_str::<serde_json::Value>(&v).ok())
+            .collect();
+        let saw = |m: &str| {
+            records
+                .iter()
+                .any(|r| r["message"].as_str().is_some_and(|x| x.contains(m)))
+        };
+        if saw("Participant joined") && saw("Audio bridge started") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let named = |m: &str| -> Vec<&serde_json::Value> {
+        records
+            .iter()
+            .filter(|r| r["message"].as_str().is_some_and(|x| x.contains(m)))
+            .collect()
+    };
+    for line in ["Participant joined", "Audio bridge started"] {
+        let found = named(line);
+        assert!(!found.is_empty(), "{line} shipped: {records:#?}");
+        assert!(
+            found
+                .iter()
+                .all(|r| r["tenant_id"].as_str() == Some(tenant.as_str())),
+            "{line} names the tenant: {found:#?}"
+        );
+    }
+    let _ = call.hangup().await;
     stack.finish().await;
 }

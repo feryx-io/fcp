@@ -51,7 +51,7 @@ impl LogsApiState {
         }
     }
 
-    async fn storage(&self) -> Result<&RedisStorage, ApiError> {
+    pub(crate) async fn storage(&self) -> Result<&RedisStorage, ApiError> {
         let config = self.redis.clone().ok_or_else(|| {
             ApiError::ServiceUnavailable(
                 "Logs are not kept here: add [cluster] redis_url to the admin's configuration"
