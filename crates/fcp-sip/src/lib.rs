@@ -112,3 +112,14 @@ pub mod prelude {
         Call, CallDirection, CallId, CallLeg, CallManager, CallState, CallStats,
     };
 }
+
+/// `tokio::spawn`, the task kept in the span that spawned it: a SIP
+/// request's work done in the background still names the request's call
+/// and tenant on its lines (`docs/LOG_VIEWER.md` L2).
+pub(crate) fn spawn_here<F>(future: F) -> tokio::task::JoinHandle<F::Output>
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    tokio::spawn(tracing::Instrument::in_current_span(future))
+}

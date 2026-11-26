@@ -9158,6 +9158,19 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
                 id.remote_tag() == their_tag && id.local_tag() == our_tag
             });
             if !names_it {
+                // What was named against what this node holds, to tell a
+                // stranger from a participant whose tags do not match.
+                let held = self.sessions.get(&target_call).map(|s| {
+                    let id = s.dialog.id();
+                    (id.local_tag().to_string(), id.remote_tag().to_string())
+                });
+                info!(
+                    target_call = %target_call,
+                    named_theirs = %their_tag,
+                    named_ours = %our_tag,
+                    held = ?held,
+                    "Target-Dialog names no call of this room as held here"
+                );
                 return self
                     .refuse_subscribe(request, handle, &room_number, &call_id)
                     .await;

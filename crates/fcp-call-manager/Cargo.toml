@@ -109,6 +109,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 
 [dev-dependencies]
 fcp-testkit = { path = "../fcp-testkit" }
+# The node's shipped log lines, read back (tests/calls.rs, docs/LOG_VIEWER.md L2).
+redis = { version = "0.27", features = ["tokio-comp"] }
 tempfile = "3"
 # A signing key for the STIR/SHAKEN wire test, made on the spot, and the
 # base64 to read back the PASSporT it signs.

@@ -583,8 +583,12 @@ impl CallManager {
     /// Returns the CallId for the new call.
     pub fn create_call(&self, call: Call) -> CallId {
         let call_id = call.id;
+        // The request's span names the call and its tenant from here on
+        // (`docs/LOG_VIEWER.md` L2); a span without the fields ignores it.
+        call.note_on_span();
         info!(
             call_id = %call_id,
+            tenant_id = %call.tenant_id,
             caller = %call.caller(),
             callee = ?call.callee(),
             "Creating new call"

@@ -365,9 +365,14 @@ impl MediaLeg {
 
     /// As [`MediaLeg::open_at`], preferring `prefer`.
     pub async fn open_preferring(bind: IpAddr, advertised: IpAddr, prefer: Codec) -> Result<Self> {
-        let pair = allocate_port_pair_at(bind);
-        let socket = Arc::new(
-            RtpSocketPair::new(
+        // A pair found free is bound again here, and in between anything
+        // binding port 0 may be given one of them (the range is the
+        // kernel's ephemeral range too): a busy suite saw "Address already
+        // in use". Another pair is tried.
+        let mut tries = 0;
+        let (pair, socket) = loop {
+            let pair = allocate_port_pair_at(bind);
+            match RtpSocketPair::new(
                 pair,
                 RtpSocketConfig {
                     bind_addr: bind,
@@ -375,8 +380,15 @@ impl MediaLeg {
                 },
             )
             .await
-            .context("RTP socket")?,
-        );
+            {
+                Ok(socket) => break (pair, Arc::new(socket)),
+                Err(e) if tries < 20 => {
+                    tries += 1;
+                    tracing::debug!(port = pair.rtp_port, error = %e, "RTP pair taken meanwhile; another");
+                }
+                Err(e) => return Err(anyhow::Error::new(e).context("RTP socket")),
+            }
+        };
         let (stop, stop_rx) = tokio::sync::watch::channel(false);
         let (dtmf_tx, dtmf_rx) = mpsc::unbounded_channel();
         let leg = Self {
