@@ -172,6 +172,15 @@ the platform sees a site's trouble without reaching into it.
   and `fcp-cluster/tests/logs.rs`. **L3b:** the live tail
   (`WS /logs/tail`), with the page.
 - **L4 — the page,** with a Playwright spec.
+  **L4 done (v0.25.650):** System › Logs (`LogsPage`): the newest 200
+  lines followed every two seconds (Pause/Follow) or paged back (Older
+  lines), filtered by level and worse, time (15 minutes to everything
+  kept), text, service, call and — for a platform administrator — tenant;
+  a line opened shows its target, tenant, call (a click filters by it)
+  and fields; Export downloads the view as JSON Lines; a platform
+  administrator's Levels card raises a service's level for an hour and
+  takes it back. The live tail is the API polled; `WS /logs/tail` (L3b)
+  is not needed for it. Proved by `e2e/logs.spec.ts`.
 - **L5 — sites,** `warn` and above up the link.
 - **L6 — OTLP export** (optional): the same layer sending to an
   operator's collector.
