@@ -565,6 +565,12 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (GET, "/presence", Needs(PresenceRead)),
     (GET, "/presence/stats", Needs(PresenceRead)),
     (GET, "/presence/people", Needs(PresenceRead)),
+    // The services' logs (`docs/LOG_VIEWER.md`): a tenant's caller sees
+    // its own lines; levels are a platform administrator's (fcp-admin).
+    (GET, "/logs", Needs(LogRead)),
+    (GET, "/logs/export", Needs(LogRead)),
+    (GET, "/logs/levels", Needs(LogRead)),
+    (PUT, "/logs/levels/:service", Needs(LogRead)),
     (GET, "/presence/:aor", Needs(PresenceRead)),
     (PUT, "/presence/:aor", Needs(PresenceManage)),
     (DELETE, "/presence/:aor", Needs(PresenceManage)),
@@ -1024,6 +1030,7 @@ mod tests {
         bound.extend(bound_routes(include_str!(
             "../../fcp-admin/src/services.rs"
         )));
+        bound.extend(bound_routes(include_str!("../../fcp-admin/src/logs.rs")));
         assert!(bound.len() > 250, "parsed only {} routes", bound.len());
 
         let mut missing = Vec::new();

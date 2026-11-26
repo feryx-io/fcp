@@ -196,6 +196,9 @@ from .line_label_request import LineLabelRequest
 from .list_cdrs_response import ListCdrsResponse
 from .location_response import LocationResponse
 from .location_validation_response import LocationValidationResponse
+from .log_level import LogLevel
+from .log_line import LogLine
+from .log_line_fields import LogLineFields
 from .login_request import LoginRequest
 from .login_response import LoginResponse
 from .logout_answer import LogoutAnswer
@@ -306,6 +309,9 @@ from .page_line_binding_response import PageLineBindingResponse
 from .page_line_binding_response_data_item import PageLineBindingResponseDataItem
 from .page_location_response import PageLocationResponse
 from .page_location_response_data_item import PageLocationResponseDataItem
+from .page_log_line import PageLogLine
+from .page_log_line_data_item import PageLogLineDataItem
+from .page_log_line_data_item_fields import PageLogLineDataItemFields
 from .page_mailbox_response import PageMailboxResponse
 from .page_mailbox_response_data_item import PageMailboxResponseDataItem
 from .page_me_greeting_response import PageMeGreetingResponse
@@ -494,6 +500,7 @@ from .services_summary import ServicesSummary
 from .session_response import SessionResponse
 from .set_greeting_active_request import SetGreetingActiveRequest
 from .set_layout_request import SetLayoutRequest
+from .set_log_level import SetLogLevel
 from .shown import Shown
 from .signup_request import SignupRequest
 from .signup_response import SignupResponse
@@ -821,6 +828,9 @@ __all__ = (
     "LocationValidationResponse",
     "LoginRequest",
     "LoginResponse",
+    "LogLevel",
+    "LogLine",
+    "LogLineFields",
     "LogoutAnswer",
     "MailboxResponse",
     "MailboxStatsResponse",
@@ -929,6 +939,9 @@ __all__ = (
     "PageLineBindingResponseDataItem",
     "PageLocationResponse",
     "PageLocationResponseDataItem",
+    "PageLogLine",
+    "PageLogLineDataItem",
+    "PageLogLineDataItemFields",
     "PageMailboxResponse",
     "PageMailboxResponseDataItem",
     "PageMeetingResponse",
@@ -1117,6 +1130,7 @@ __all__ = (
     "SessionResponse",
     "SetGreetingActiveRequest",
     "SetLayoutRequest",
+    "SetLogLevel",
     "Shown",
     "SignupRequest",
     "SignupResponse",

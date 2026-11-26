@@ -22997,6 +22997,335 @@
           }
         }
       }
+    },
+    "/api/v1/logs": {
+      "get": {
+        "tags": [
+          "logs"
+        ],
+        "summary": "GET /logs",
+        "operationId": "logs_list",
+        "parameters": [
+          {
+            "name": "service",
+            "in": "query",
+            "description": "One service, by id.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "Services of this node type (`call_manager`, `sbc`…).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "description": "This level and worse: `error`, `warn`, `info`, `debug`, `trace`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tenant",
+            "in": "query",
+            "description": "Platform administrators: a tenant's lines, or `none` for the\nplatform's own.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "call_id",
+            "in": "query",
+            "description": "Lines about this call.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Text in the message or a field, any case.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "RFC 3339: lines at or after.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "RFC 3339: lines before.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_LogLine"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/logs/export": {
+      "get": {
+        "tags": [
+          "logs"
+        ],
+        "summary": "GET /logs/export — JSON Lines, audited.",
+        "operationId": "logs_export",
+        "parameters": [
+          {
+            "name": "service",
+            "in": "query",
+            "description": "One service, by id.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "Services of this node type (`call_manager`, `sbc`…).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "description": "This level and worse: `error`, `warn`, `info`, `debug`, `trace`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tenant",
+            "in": "query",
+            "description": "Platform administrators: a tenant's lines, or `none` for the\nplatform's own.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "call_id",
+            "in": "query",
+            "description": "Lines about this call.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Text in the message or a field, any case.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "RFC 3339: lines at or after.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "RFC 3339: lines before.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "JSON Lines, one LogLine each",
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/logs/levels": {
+      "get": {
+        "tags": [
+          "logs"
+        ],
+        "summary": "GET /logs/levels — the levels set for now.",
+        "operationId": "logs_levels",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LogLevel"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/logs/levels/{service}": {
+      "put": {
+        "tags": [
+          "logs"
+        ],
+        "summary": "PUT /logs/levels/{service} — a level for an hour, or null for back.",
+        "operationId": "logs_set_level",
+        "parameters": [
+          {
+            "name": "service",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetLogLevel"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogLevel"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "webhooks": {
@@ -31455,6 +31784,97 @@
           }
         }
       },
+      "LogLevel": {
+        "type": "object",
+        "description": "A service's level, as set from here for now.",
+        "required": [
+          "service"
+        ],
+        "properties": {
+          "service": {
+            "type": "string"
+          },
+          "level": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Set for now; null is the service's configured level."
+          },
+          "expires_in_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Seconds before it goes back.",
+            "minimum": 0
+          }
+        }
+      },
+      "LogLine": {
+        "type": "object",
+        "description": "One line.",
+        "required": [
+          "id",
+          "service",
+          "time",
+          "level",
+          "target",
+          "message",
+          "fields"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Its id in the service's stream; a page's cursor."
+          },
+          "service": {
+            "type": "string"
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The service's node type, when it is up."
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "level": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "fields": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "tenant_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "call_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "LoginRequest": {
         "type": "object",
         "required": [
@@ -36104,6 +36524,97 @@
                 "updated_at": {
                   "type": "string",
                   "format": "date-time"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_LogLine": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One line.",
+              "required": [
+                "id",
+                "service",
+                "time",
+                "level",
+                "target",
+                "message",
+                "fields"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "Its id in the service's stream; a page's cursor."
+                },
+                "service": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The service's node type, when it is up."
+                },
+                "time": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "level": {
+                  "type": "string"
+                },
+                "target": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "fields": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                },
+                "tenant_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "call_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               }
             }
@@ -44658,6 +45169,18 @@
         "properties": {
           "layout": {
             "type": "string"
+          }
+        }
+      },
+      "SetLogLevel": {
+        "type": "object",
+        "description": "A level to set for an hour; null goes back now.",
+        "properties": {
+          "level": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

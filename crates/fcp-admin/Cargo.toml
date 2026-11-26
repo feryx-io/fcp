@@ -35,6 +35,7 @@ fcp-flow = { path = "../fcp-flow" }
 async-trait = "0.1"
 # The services sweep's lock (docs/SERVICES.md).
 redis = { version = "0.27", features = ["tokio-comp"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 urlencoding = "2"
 bytes = { workspace = true }
 

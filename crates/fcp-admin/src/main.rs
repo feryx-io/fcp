@@ -47,6 +47,7 @@ mod cli;
 mod cluster_api;
 mod config;
 mod firmware_s3;
+mod logs;
 mod route_preview;
 mod services;
 mod site_files;
@@ -919,6 +920,13 @@ async fn main() -> Result<()> {
         None => api_state,
     };
 
+    // The services' logs, from the same Redis (`docs/LOG_VIEWER.md`).
+    let logs_state = logs::LogsApiState::new(config.cluster.redis_url.as_ref().map(|url| {
+        fcp_storage_redis::RedisConfig {
+            url: url.clone(),
+            key_prefix: config.cluster.key_prefix.clone(),
+        }
+    }));
     let services_state = services::ServicesApiState {
         registry: services_registry.clone(),
         storage: Arc::clone(&storage),
@@ -970,7 +978,10 @@ async fn main() -> Result<()> {
                     // none of them (`docs/SERVICES.md` Q5).
                     .merge(services::services_router(services_state).layer(
                         axum::middleware::from_fn(fcp_api_core::auth::require_platform_admin),
-                    ));
+                    ))
+                    // Logs: a tenant's administrator sees their tenant's
+                    // lines; the routes hold anyone else to theirs.
+                    .merge(logs::logs_router(logs_state));
         let mut app = fcp_api_core::create_router_with(api_state, &api_config, cluster_routes);
         app = app.merge(fcp_admin_ui::admin_ui_router());
         // The contract and its reference page (docs/DEVELOPER_SURFACE.md
