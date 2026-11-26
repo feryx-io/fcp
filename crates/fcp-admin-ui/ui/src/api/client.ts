@@ -180,6 +180,20 @@ export class ApiClient {
   }
 
   /** Fetch a binary resource and return an object URL. */
+  /** POST a JSON body and take the answer as a playable/downloadable URL. */
+  async postBlobUrl(path: string, body: unknown): Promise<string> {
+    const response = await fetch(`${API_BASE}${path}`, {
+      method: 'POST',
+      headers: { ...this.authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!response.ok) {
+      const message = await response.json().then((b) => b?.message ?? b?.error, () => null)
+      throw new Error(message ? `${message} (${response.status})` : `Failed: ${response.status}`)
+    }
+    return URL.createObjectURL(await response.blob())
+  }
+
   async fetchBlobUrl(path: string): Promise<string> {
     const response = await fetch(`${API_BASE}${path}`, {
       headers: this.authHeaders(),

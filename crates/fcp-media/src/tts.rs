@@ -454,6 +454,44 @@ impl TtsService {
     }
 
     /// List available voices for a language.
+    /// `provider`'s voices for `language` (the shared TTS server's, by
+    /// name; its default when `None`).
+    pub async fn voices(&self, language: &str, provider: Option<&str>) -> Result<Vec<VoiceInfo>> {
+        self.provider.voices_of(language, provider).await
+    }
+
+    /// The providers this service can speak with.
+    pub async fn providers(&self) -> Result<Vec<ProviderInfo>> {
+        self.provider.providers().await
+    }
+
+    /// Speak `text` once, uncached, with what is given and the tenant's
+    /// settings for what is not (`docs/TENANT_SPEECH.md`): a preview.
+    pub async fn preview(
+        &self,
+        text: &str,
+        language: Option<&str>,
+        voice: Option<&str>,
+        tenant: Option<&fcp_core::TenantId>,
+        provider: Option<&str>,
+    ) -> Result<Vec<u8>> {
+        let tenant = tenant.map(|t| t.as_uuid().to_string());
+        let remote = self.provider.name() == "remote";
+        let language = match (language, remote && tenant.is_some()) {
+            (Some(l), _) => l,
+            (None, true) => "",
+            (None, false) => &self.default_language,
+        };
+        let voice = if remote && tenant.is_some() {
+            voice
+        } else {
+            voice.or(self.default_voice.as_deref())
+        };
+        self.provider
+            .synthesize_with(text, language, voice, tenant.as_deref(), provider)
+            .await
+    }
+
     pub async fn list_voices(&self, language: &str) -> Result<Vec<VoiceInfo>> {
         self.provider.list_voices(language).await
     }
@@ -503,6 +541,42 @@ pub trait TtsProvider: Send + Sync {
 
     /// List available voices for a language.
     async fn list_voices(&self, language: &str) -> Result<Vec<VoiceInfo>>;
+
+    /// `provider`'s voices for `language`, where this provider fronts
+    /// several (the shared TTS server); any other answers with its own.
+    async fn voices_of(&self, language: &str, _provider: Option<&str>) -> Result<Vec<VoiceInfo>> {
+        self.list_voices(language).await
+    }
+
+    /// The providers behind this one: itself, unless it fronts several.
+    async fn providers(&self) -> Result<Vec<ProviderInfo>> {
+        Ok(vec![ProviderInfo {
+            name: self.name(),
+            is_default: true,
+        }])
+    }
+
+    /// Speak once with `provider` (the shared TTS server's, by name), for
+    /// `tenant`: a preview of a choice not yet saved. Any other provider
+    /// speaks as [`Self::synthesize_for`].
+    async fn synthesize_with(
+        &self,
+        text: &str,
+        language: &str,
+        voice: Option<&str>,
+        tenant: Option<&str>,
+        _provider: Option<&str>,
+    ) -> Result<Vec<u8>> {
+        self.synthesize_for(text, language, voice, tenant).await
+    }
+}
+
+/// A provider the TTS server speaks with (`GET /v1/providers`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderInfo {
+    pub name: String,
+    #[serde(default)]
+    pub is_default: bool,
 }
 
 /// Information about a TTS voice.

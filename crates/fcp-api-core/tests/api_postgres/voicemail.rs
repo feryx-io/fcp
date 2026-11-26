@@ -1087,3 +1087,132 @@ async fn a_spoken_prompt_with_no_file_here_is_previewed_by_tts() {
     assert_eq!(missing.status, StatusCode::NOT_FOUND, "{}", missing.text);
     app.finish().await;
 }
+
+/// `docs/TENANT_SPEECH.md` S2b: the Speech page's providers and voices come
+/// from the TTS server, and a preview speaks a choice not yet saved for the
+/// tenant.
+#[tokio::test]
+async fn speech_providers_voices_and_a_preview_come_from_the_tts_server() {
+    use axum::routing::{get, post};
+    let bodies: Arc<std::sync::Mutex<Vec<Value>>> = Arc::default();
+    let heard = Arc::clone(&bodies);
+    let router = Router::new()
+        .route(
+            "/v1/providers",
+            get(|| async {
+                axum::Json(json!([
+                    { "name": "piper", "is_default": true },
+                    { "name": "elevenlabs", "is_default": false },
+                ]))
+            }),
+        )
+        .route(
+            "/v1/voices",
+            get(
+                |axum::extract::Query(q): axum::extract::Query<
+                    std::collections::HashMap<String, String>,
+                >| async move {
+                    let provider = q.get("provider").cloned().unwrap_or_else(|| "piper".into());
+                    axum::Json(json!([{
+                        "name": format!("{provider}-voice"),
+                        "display_name": format!("A {provider} voice"),
+                        "language": q.get("language").cloned().unwrap_or_default(),
+                        "gender": null,
+                        "metadata": {},
+                    }]))
+                },
+            ),
+        )
+        .route(
+            "/v1/synthesize",
+            post(move |axum::Json(body): axum::Json<Value>| {
+                let heard = Arc::clone(&heard);
+                async move {
+                    heard.lock().unwrap().push(body);
+                    (StatusCode::OK, wav_bytes(800))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    // No TTS service: none to choose from, and nothing to speak.
+    let no_tts = app
+        .admin(Method::GET, "/api/v1/speech/providers", None)
+        .await;
+    assert_eq!(no_tts.status, StatusCode::OK, "{}", no_tts.text);
+    assert_eq!(
+        no_tts.json.as_array().map(Vec::len),
+        Some(0),
+        "{}",
+        no_tts.text
+    );
+    let no_preview = app
+        .admin(
+            Method::POST,
+            "/api/v1/speech/preview",
+            Some(json!({ "text": "hi" })),
+        )
+        .await;
+    assert_eq!(
+        no_preview.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        no_preview.text
+    );
+    let app = app.with_tts(&url).await;
+
+    let providers = app
+        .admin(Method::GET, "/api/v1/speech/providers", None)
+        .await;
+    assert_eq!(providers.status, StatusCode::OK, "{}", providers.text);
+    assert_eq!(providers.json[0]["name"], "piper");
+    assert_eq!(providers.json[0]["is_default"], true);
+    assert_eq!(providers.json[1]["name"], "elevenlabs");
+
+    let voices = app
+        .admin(
+            Method::GET,
+            "/api/v1/speech/voices?provider=elevenlabs&language=fr-FR",
+            None,
+        )
+        .await;
+    assert_eq!(voices.status, StatusCode::OK, "{}", voices.text);
+    assert_eq!(voices.json[0]["name"], "elevenlabs-voice");
+    assert_eq!(voices.json[0]["language"], "fr-FR");
+
+    let spoken = app
+        .admin(
+            Method::POST,
+            "/api/v1/speech/preview",
+            Some(json!({
+                "text": "Bonjour",
+                "provider": "elevenlabs",
+                "voice": "elevenlabs-voice",
+                "language": "fr-FR",
+            })),
+        )
+        .await;
+    assert_eq!(spoken.status, StatusCode::OK, "{}", spoken.text);
+    assert!(spoken.bytes.starts_with(b"RIFF"), "a WAV");
+    let asked = bodies.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(asked["provider"], "elevenlabs");
+    assert_eq!(asked["voice"], "elevenlabs-voice");
+    assert_eq!(asked["language"], "fr-FR");
+    assert!(asked["tenant_id"].is_string(), "the tenant named: {asked}");
+
+    let empty = app
+        .admin(
+            Method::POST,
+            "/api/v1/speech/preview",
+            Some(json!({ "text": " " })),
+        )
+        .await;
+    assert_eq!(empty.status, StatusCode::BAD_REQUEST, "{}", empty.text);
+    app.finish().await;
+}

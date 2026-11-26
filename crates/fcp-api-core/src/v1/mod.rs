@@ -866,6 +866,9 @@ pub fn router() -> Router<ApiState> {
                 .put(speech::put_settings)
                 .delete(speech::delete_settings),
         )
+        .route("/speech/providers", get(speech::list_providers))
+        .route("/speech/voices", get(speech::list_voices))
+        .route("/speech/preview", post(speech::preview))
         // The tenant's brand (docs/BRANDING.md): assets up to 5 MB.
         .route(
             "/branding",

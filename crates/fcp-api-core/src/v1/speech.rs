@@ -196,3 +196,171 @@ async fn announce(state: &ApiState, tenant: &fcp_core::TenantId) {
         }))
         .await;
 }
+
+fn tts(state: &ApiState) -> Result<&Arc<fcp_media::tts::TtsService>, ApiError> {
+    state.tts_service.as_ref().ok_or_else(|| {
+        ApiError::ServiceUnavailable(
+            "No TTS service here: set [tts] remote_url on the admin".into(),
+        )
+    })
+}
+
+/// A provider the tenant may speak with.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SpeechProvider {
+    pub name: String,
+    /// The TTS server's default: what a tenant without a choice gets.
+    pub is_default: bool,
+}
+
+/// GET /speech/providers — the TTS server's providers.
+#[utoipa::path(
+    get,
+    path = "/api/v1/speech/providers",
+    tag = "speech",
+    operation_id = "speech_list_providers",
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<SpeechProvider>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn list_providers(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+) -> Result<Json<crate::page::Page<SpeechProvider>>, ApiError> {
+    crate::auth::check_permission(&identity, Permission::PromptRead, state.deployment_mode)?;
+    // No TTS service here: none to choose from.
+    let Some(tts) = state.tts_service.as_ref() else {
+        return Ok(Json(crate::page::Page::new(Vec::new(), None, Some(0))));
+    };
+    let mut list: Vec<SpeechProvider> = tts
+        .providers()
+        .await
+        .map_err(|e| ApiError::ServiceUnavailable(format!("TTS providers: {e:#}")))?
+        .into_iter()
+        .map(|p| SpeechProvider {
+            name: p.name,
+            is_default: p.is_default,
+        })
+        .collect();
+    list.sort_by(|a, b| b.is_default.cmp(&a.is_default).then(a.name.cmp(&b.name)));
+    let total = list.len() as u64;
+    Ok(Json(crate::page::Page::new(list, None, Some(total))))
+}
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct VoicesQuery {
+    /// A provider by name; its default when unset.
+    pub provider: Option<String>,
+    /// `en-US` unless given.
+    pub language: Option<String>,
+}
+
+/// A voice a provider speaks.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SpeechVoice {
+    pub name: String,
+    pub display_name: String,
+    pub language: String,
+    pub gender: Option<String>,
+}
+
+/// GET /speech/voices — a provider's voices for a language, from the TTS
+/// server: what the Speech page, Prompts and the flow builder offer.
+#[utoipa::path(
+    get,
+    path = "/api/v1/speech/voices",
+    tag = "speech",
+    operation_id = "speech_list_voices",
+    params(VoicesQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<SpeechVoice>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn list_voices(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    axum::extract::Query(q): axum::extract::Query<VoicesQuery>,
+) -> Result<Json<crate::page::Page<SpeechVoice>>, ApiError> {
+    crate::auth::check_permission(&identity, Permission::PromptRead, state.deployment_mode)?;
+    let provider = checked("provider", q.provider)?;
+    let language = checked("language", q.language)?.unwrap_or_else(|| "en-US".into());
+    let Some(tts) = state.tts_service.as_ref() else {
+        return Ok(Json(crate::page::Page::new(Vec::new(), None, Some(0))));
+    };
+    let voices = tts
+        .voices(&language, provider.as_deref())
+        .await
+        .map_err(|e| ApiError::ServiceUnavailable(format!("TTS voices: {e:#}")))?;
+    let list: Vec<SpeechVoice> = voices
+        .into_iter()
+        .map(|v| SpeechVoice {
+            name: v.name,
+            display_name: v.display_name,
+            language: v.language,
+            gender: v.gender,
+        })
+        .collect();
+    let total = list.len() as u64;
+    Ok(Json(crate::page::Page::new(list, None, Some(total))))
+}
+
+/// What to speak for a preview; unset is the tenant's choice, then the
+/// TTS server's default.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct SpeechPreviewRequest {
+    pub text: String,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub voice: Option<String>,
+    #[serde(default)]
+    pub language: Option<String>,
+}
+
+/// POST /speech/preview — a sentence spoken now, as WAV.
+#[utoipa::path(
+    post,
+    path = "/api/v1/speech/preview",
+    tag = "speech",
+    operation_id = "speech_preview",
+    request_body = SpeechPreviewRequest,
+    responses(
+        (status = 200, description = "WAV audio", content_type = "audio/wav", body = Vec<u8>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn preview(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: TenantContext,
+    Json(req): Json<SpeechPreviewRequest>,
+) -> Result<impl axum::response::IntoResponse, ApiError> {
+    crate::auth::check_permission(&identity, Permission::PromptRead, state.deployment_mode)?;
+    let text = req.text.trim();
+    if text.is_empty() || text.chars().count() > 500 {
+        return Err(ApiError::BadRequest(
+            "A preview speaks 1 to 500 characters".into(),
+        ));
+    }
+    let provider = checked("provider", req.provider)?;
+    let voice = checked("voice", req.voice)?;
+    let language = checked("language", req.language)?;
+    let audio = tts(&state)?
+        .preview(
+            text,
+            language.as_deref(),
+            voice.as_deref(),
+            Some(&tenant.0),
+            provider.as_deref(),
+        )
+        .await
+        .map_err(|e| ApiError::ServiceUnavailable(format!("TTS synthesis failed: {e:#}")))?;
+    Ok((
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "audio/wav")],
+        audio,
+    ))
+}

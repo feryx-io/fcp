@@ -1,3 +1,4 @@
+import { useVoices } from '@/lib/voices'
 import { useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
@@ -20,74 +21,6 @@ import { useIsPlatformAdmin, useTenantListFilter } from '@/components/TenantSele
 
 const CATEGORIES = ['system', 'ivr', 'voicemail', 'queue', 'greeting', 'moh', 'custom'] as const
 
-// Kokoro-82M TTS voices — prefix encodes language + gender
-const KOKORO_VOICES: { value: string; label: string; lang: string }[] = [
-  // American English — Female
-  { value: 'af_heart', label: 'Heart (American Female)', lang: 'en-US' },
-  { value: 'af_alloy', label: 'Alloy (American Female)', lang: 'en-US' },
-  { value: 'af_aoede', label: 'Aoede (American Female)', lang: 'en-US' },
-  { value: 'af_bella', label: 'Bella (American Female)', lang: 'en-US' },
-  { value: 'af_jessica', label: 'Jessica (American Female)', lang: 'en-US' },
-  { value: 'af_kore', label: 'Kore (American Female)', lang: 'en-US' },
-  { value: 'af_nicole', label: 'Nicole (American Female)', lang: 'en-US' },
-  { value: 'af_nova', label: 'Nova (American Female)', lang: 'en-US' },
-  { value: 'af_river', label: 'River (American Female)', lang: 'en-US' },
-  { value: 'af_sarah', label: 'Sarah (American Female)', lang: 'en-US' },
-  { value: 'af_sky', label: 'Sky (American Female)', lang: 'en-US' },
-  // American English — Male
-  { value: 'am_adam', label: 'Adam (American Male)', lang: 'en-US' },
-  { value: 'am_echo', label: 'Echo (American Male)', lang: 'en-US' },
-  { value: 'am_eric', label: 'Eric (American Male)', lang: 'en-US' },
-  { value: 'am_fenrir', label: 'Fenrir (American Male)', lang: 'en-US' },
-  { value: 'am_liam', label: 'Liam (American Male)', lang: 'en-US' },
-  { value: 'am_michael', label: 'Michael (American Male)', lang: 'en-US' },
-  { value: 'am_onyx', label: 'Onyx (American Male)', lang: 'en-US' },
-  { value: 'am_puck', label: 'Puck (American Male)', lang: 'en-US' },
-  { value: 'am_santa', label: 'Santa (American Male)', lang: 'en-US' },
-  // British English — Female
-  { value: 'bf_alice', label: 'Alice (British Female)', lang: 'en-GB' },
-  { value: 'bf_emma', label: 'Emma (British Female)', lang: 'en-GB' },
-  { value: 'bf_isabella', label: 'Isabella (British Female)', lang: 'en-GB' },
-  { value: 'bf_lily', label: 'Lily (British Female)', lang: 'en-GB' },
-  // British English — Male
-  { value: 'bm_daniel', label: 'Daniel (British Male)', lang: 'en-GB' },
-  { value: 'bm_fable', label: 'Fable (British Male)', lang: 'en-GB' },
-  { value: 'bm_george', label: 'George (British Male)', lang: 'en-GB' },
-  { value: 'bm_lewis', label: 'Lewis (British Male)', lang: 'en-GB' },
-  // Spanish
-  { value: 'ef_dora', label: 'Dora (Spanish Female)', lang: 'es-ES' },
-  { value: 'em_alex', label: 'Alex (Spanish Male)', lang: 'es-ES' },
-  { value: 'em_santa', label: 'Santa (Spanish Male)', lang: 'es-ES' },
-  // French
-  { value: 'ff_siwis', label: 'Siwis (French Female)', lang: 'fr-FR' },
-  // Hindi
-  { value: 'hf_alpha', label: 'Alpha (Hindi Female)', lang: 'hi-IN' },
-  { value: 'hf_beta', label: 'Beta (Hindi Female)', lang: 'hi-IN' },
-  { value: 'hm_omega', label: 'Omega (Hindi Male)', lang: 'hi-IN' },
-  { value: 'hm_psi', label: 'Psi (Hindi Male)', lang: 'hi-IN' },
-  // Italian
-  { value: 'if_sara', label: 'Sara (Italian Female)', lang: 'it-IT' },
-  { value: 'im_nicola', label: 'Nicola (Italian Male)', lang: 'it-IT' },
-  // Japanese
-  { value: 'jf_alpha', label: 'Alpha (Japanese Female)', lang: 'ja-JP' },
-  { value: 'jf_gongitsune', label: 'Gongitsune (Japanese Female)', lang: 'ja-JP' },
-  { value: 'jf_nezumi', label: 'Nezumi (Japanese Female)', lang: 'ja-JP' },
-  { value: 'jf_tebukuro', label: 'Tebukuro (Japanese Female)', lang: 'ja-JP' },
-  { value: 'jm_kumo', label: 'Kumo (Japanese Male)', lang: 'ja-JP' },
-  // Chinese
-  { value: 'zf_xiaobei', label: 'Xiaobei (Chinese Female)', lang: 'zh-CN' },
-  { value: 'zf_xiaoni', label: 'Xiaoni (Chinese Female)', lang: 'zh-CN' },
-  { value: 'zf_xiaoxiao', label: 'Xiaoxiao (Chinese Female)', lang: 'zh-CN' },
-  { value: 'zf_xiaoyi', label: 'Xiaoyi (Chinese Female)', lang: 'zh-CN' },
-  { value: 'zm_yunjian', label: 'Yunjian (Chinese Male)', lang: 'zh-CN' },
-  { value: 'zm_yunxi', label: 'Yunxi (Chinese Male)', lang: 'zh-CN' },
-  { value: 'zm_yunxia', label: 'Yunxia (Chinese Male)', lang: 'zh-CN' },
-  { value: 'zm_yunyang', label: 'Yunyang (Chinese Male)', lang: 'zh-CN' },
-  // Portuguese
-  { value: 'pf_dora', label: 'Dora (Portuguese Female)', lang: 'pt-BR' },
-  { value: 'pm_alex', label: 'Alex (Portuguese Male)', lang: 'pt-BR' },
-  { value: 'pm_santa', label: 'Santa (Portuguese Male)', lang: 'pt-BR' },
-]
 
 // Supported languages (derived from kokoro_tts_worker.py LANG_MAP)
 const LANGUAGES: { value: string; label: string }[] = [
@@ -146,6 +79,8 @@ export function PromptsPage() {
   const [editTtsText, setEditTtsText] = useState('')
   const [editTtsVoice, setEditTtsVoice] = useState('')
   const [editLanguage, setEditLanguage] = useState('en-US')
+  const formVoices = useVoices(formLanguage)
+  const editVoices = useVoices(editLanguage)
 
   const { data: rawItems = [] } = useQuery({
     queryKey: ['prompts', categoryFilter],
@@ -559,17 +494,15 @@ export function PromptsPage() {
                   <Select value={formTtsVoice} onValueChange={setFormTtsVoice}>
                     <SelectTrigger><SelectValue placeholder="Select a voice" /></SelectTrigger>
                     <SelectContent>
-                      {KOKORO_VOICES
-                        .filter((v) => v.lang === formLanguage)
-                        .map((v) => (
-                          <SelectItem key={v.value} value={v.value}>{v.label}</SelectItem>
-                        ))}
-                      {KOKORO_VOICES.filter((v) => v.lang === formLanguage).length === 0 && (
-                        <SelectItem value="af_heart" disabled>No voices for this language — using default</SelectItem>
+                      {formVoices.map((v) => (
+                        <SelectItem key={v.value} value={v.value}>{v.label}</SelectItem>
+                      ))}
+                      {formVoices.length === 0 && (
+                        <SelectItem value="__none__" disabled>No voices listed: the tenant's default is used</SelectItem>
                       )}
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground mt-1">Kokoro-82M voice pack</p>
+                  <p className="text-xs text-muted-foreground mt-1">The TTS service's voices for this language</p>
                 </div>
               </>
             )}
@@ -655,17 +588,15 @@ export function PromptsPage() {
                   <Select value={editTtsVoice} onValueChange={setEditTtsVoice}>
                     <SelectTrigger><SelectValue placeholder="Select a voice" /></SelectTrigger>
                     <SelectContent>
-                      {KOKORO_VOICES
-                        .filter((v) => v.lang === editLanguage)
-                        .map((v) => (
-                          <SelectItem key={v.value} value={v.value}>{v.label}</SelectItem>
-                        ))}
-                      {KOKORO_VOICES.filter((v) => v.lang === editLanguage).length === 0 && (
-                        <SelectItem value="af_heart" disabled>No voices for this language — using default</SelectItem>
+                      {editVoices.map((v) => (
+                        <SelectItem key={v.value} value={v.value}>{v.label}</SelectItem>
+                      ))}
+                      {editVoices.length === 0 && (
+                        <SelectItem value="__none__" disabled>No voices listed: the tenant's default is used</SelectItem>
                       )}
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground mt-1">Kokoro-82M voice pack</p>
+                  <p className="text-xs text-muted-foreground mt-1">The TTS service's voices for this language</p>
                 </div>
               </>
             )}

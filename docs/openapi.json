@@ -17057,6 +17057,134 @@
         }
       }
     },
+    "/api/v1/speech/providers": {
+      "get": {
+        "tags": [
+          "speech"
+        ],
+        "summary": "GET /speech/providers — the TTS server's providers.",
+        "operationId": "speech_list_providers",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_SpeechProvider"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/speech/voices": {
+      "get": {
+        "tags": [
+          "speech"
+        ],
+        "summary": "GET /speech/voices — a provider's voices for a language, from the TTS\nserver: what the Speech page, Prompts and the flow builder offer.",
+        "operationId": "speech_list_voices",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "query",
+            "description": "A provider by name; its default when unset.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "language",
+            "in": "query",
+            "description": "`en-US` unless given.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_SpeechVoice"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/speech/preview": {
+      "post": {
+        "tags": [
+          "speech"
+        ],
+        "summary": "POST /speech/preview — a sentence spoken now, as WAV.",
+        "operationId": "speech_preview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "WAV audio",
+            "content": {
+              "audio/wav": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/branding": {
       "get": {
         "tags": [
@@ -40223,6 +40351,105 @@
           }
         }
       },
+      "Page_SpeechProvider": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A provider the tenant may speak with.",
+              "required": [
+                "name",
+                "is_default"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "is_default": {
+                  "type": "boolean",
+                  "description": "The TTS server's default: what a tenant without a choice gets."
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_SpeechVoice": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A voice a provider speaks.",
+              "required": [
+                "name",
+                "display_name",
+                "language"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "display_name": {
+                  "type": "string"
+                },
+                "language": {
+                  "type": "string"
+                },
+                "gender": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
       "Page_SubjectRequestResponse": {
         "type": "object",
         "description": "A page of a list.",
@@ -46041,6 +46268,53 @@
           }
         }
       },
+      "SpeechPreviewRequest": {
+        "type": "object",
+        "description": "What to speak for a preview; unset is the tenant's choice, then the\nTTS server's default.",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "voice": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "SpeechProvider": {
+        "type": "object",
+        "description": "A provider the tenant may speak with.",
+        "required": [
+          "name",
+          "is_default"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "is_default": {
+            "type": "boolean",
+            "description": "The TTS server's default: what a tenant without a choice gets."
+          }
+        }
+      },
       "SpeechSettingsRequest": {
         "type": "object",
         "description": "The settings to keep; null or absent is the platform's default.",
@@ -46125,6 +46399,32 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "SpeechVoice": {
+        "type": "object",
+        "description": "A voice a provider speaks.",
+        "required": [
+          "name",
+          "display_name",
+          "language"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          },
+          "gender": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

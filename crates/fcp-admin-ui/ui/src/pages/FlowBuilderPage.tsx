@@ -1,3 +1,4 @@
+import { useVoices } from '@/lib/voices'
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -43,21 +44,6 @@ import {
 import { flows, prompts, type PromptResponse } from '@/api/endpoints'
 import type { FlowNode } from '@/types'
 
-// Kokoro TTS voices
-const KOKORO_VOICES: { value: string; label: string }[] = [
-  { value: 'af_heart', label: 'Heart (American Female)' },
-  { value: 'af_bella', label: 'Bella (American Female)' },
-  { value: 'af_nicole', label: 'Nicole (American Female)' },
-  { value: 'af_sarah', label: 'Sarah (American Female)' },
-  { value: 'af_sky', label: 'Sky (American Female)' },
-  { value: 'am_adam', label: 'Adam (American Male)' },
-  { value: 'am_michael', label: 'Michael (American Male)' },
-  { value: 'am_eric', label: 'Eric (American Male)' },
-  { value: 'bf_emma', label: 'Emma (British Female)' },
-  { value: 'bf_isabella', label: 'Isabella (British Female)' },
-  { value: 'bm_george', label: 'George (British Male)' },
-  { value: 'bm_lewis', label: 'Lewis (British Male)' },
-]
 
 const NODE_TYPES_PALETTE = [
   { type: 'answer', label: 'Answer', icon: Phone, color: '#22c55e' },
@@ -374,7 +360,9 @@ export function FlowBuilderPage() {
   const [audioDialogField, setAudioDialogField] = useState<string>('url')
   const [audioTab, setAudioTab] = useState<'existing' | 'upload' | 'tts'>('existing')
   const [ttsText, setTtsText] = useState('')
-  const [ttsVoice, setTtsVoice] = useState('af_heart')
+  const [ttsVoice, setTtsVoice] = useState('')
+  // The TTS service's voices (docs/TENANT_SPEECH.md S2b).
+  const voices = useVoices('en-US')
   const [ttsPromptName, setTtsPromptName] = useState('')
   const [uploadPromptName, setUploadPromptName] = useState('')
   const [uploadFile, setUploadFile] = useState<File | null>(null)
@@ -624,7 +612,7 @@ export function FlowBuilderPage() {
         category: 'ivr',
         source_type: 'tts',
         tts_text: ttsText.trim(),
-        tts_voice: ttsVoice,
+        tts_voice: ttsVoice || undefined,
       })
       await prompts.synthesize(created.id)
       queryClient.invalidateQueries({ queryKey: ['prompts'] })
@@ -959,7 +947,7 @@ export function FlowBuilderPage() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="__default__">Default</SelectItem>
-                    {KOKORO_VOICES.map((v) => (
+                    {voices.map((v) => (
                       <SelectItem key={v.value} value={v.value}>{v.label}</SelectItem>
                     ))}
                   </SelectContent>
@@ -1488,12 +1476,14 @@ export function FlowBuilderPage() {
               </div>
               <div>
                 <Label className="text-xs font-medium">Voice</Label>
-                <Select value={ttsVoice} onValueChange={setTtsVoice}>
+                <Select value={ttsVoice || '__default__'}
+                  onValueChange={(v) => setTtsVoice(v === '__default__' ? '' : v)}>
                   <SelectTrigger className="mt-1 h-8 text-sm">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {KOKORO_VOICES.map((v) => (
+                    <SelectItem value="__default__">The tenant's default</SelectItem>
+                    {voices.map((v) => (
                       <SelectItem key={v.value} value={v.value}>
                         {v.label}
                       </SelectItem>
