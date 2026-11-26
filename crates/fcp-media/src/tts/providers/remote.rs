@@ -82,13 +82,25 @@ impl TtsProvider for RemoteTtsProvider {
         voice: Option<&str>,
         tenant: Option<&str>,
     ) -> Result<Vec<u8>> {
+        self.synthesize_with(text, language, voice, tenant, None)
+            .await
+    }
+
+    async fn synthesize_with(
+        &self,
+        text: &str,
+        language: &str,
+        voice: Option<&str>,
+        tenant: Option<&str>,
+        provider: Option<&str>,
+    ) -> Result<Vec<u8>> {
         let url = format!("{}/v1/synthesize", self.url);
 
         let body = SynthesizeRequest {
             text,
             language: Some(language).filter(|l| !l.is_empty()),
             voice,
-            provider: self.provider_override.as_deref(),
+            provider: provider.or(self.provider_override.as_deref()),
             // The request's tenant, else the one this client was made for.
             tenant_id: tenant.or(self.tenant_id.as_deref()),
         };
@@ -129,10 +141,28 @@ impl TtsProvider for RemoteTtsProvider {
     }
 
     async fn list_voices(&self, language: &str) -> Result<Vec<VoiceInfo>> {
+        self.voices_of(language, None).await
+    }
+
+    async fn providers(&self) -> Result<Vec<crate::tts::ProviderInfo>> {
+        let response = self
+            .http
+            .get(format!("{}/v1/providers", self.url))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("Remote TTS providers: {e}"))?;
+        if !response.status().is_success() {
+            bail!("Remote TTS providers: {}", response.status());
+        }
+        Ok(response.json().await?)
+    }
+
+    async fn voices_of(&self, language: &str, provider: Option<&str>) -> Result<Vec<VoiceInfo>> {
         let url = format!("{}/v1/voices", self.url);
         let mut query_params = vec![("language", language.to_string())];
-        if let Some(provider) = self.provider_override.as_ref() {
-            query_params.push(("provider", provider.clone()));
+        if let Some(provider) = provider.or(self.provider_override.as_deref()) {
+            query_params.push(("provider", provider.to_string()));
         }
 
         let response = self
