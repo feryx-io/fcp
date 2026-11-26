@@ -8362,6 +8362,10 @@ impl fcp_sip::conference::ConferenceHandler for ConferenceCallHandler {
     async fn handle_reinvite(&self, request: &sip_core::Request) -> Result<sip_core::Response> {
         let reinvite_start = Instant::now();
         let call_id = extract_call_id(request);
+        // A re-INVITE (a hold) just after the join may come before the
+        // participant's session is stored; it waits for it rather than
+        // falling through to the B2BUA's 481 (CI, #453).
+        self.session_settled(&call_id).await;
         let conf = self.conference_config.read().clone();
 
         // Look up session — if not found, return Err so caller falls through
