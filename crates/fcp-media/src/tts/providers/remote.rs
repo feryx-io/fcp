@@ -15,7 +15,9 @@ use super::super::{TtsProvider, VoiceInfo};
 #[derive(Serialize)]
 struct SynthesizeRequest<'a> {
     text: &'a str,
-    language: &'a str,
+    /// Unset: the server's choice for the tenant, else its default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    language: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     voice: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -84,7 +86,7 @@ impl TtsProvider for RemoteTtsProvider {
 
         let body = SynthesizeRequest {
             text,
-            language,
+            language: Some(language).filter(|l| !l.is_empty()),
             voice,
             provider: self.provider_override.as_deref(),
             // The request's tenant, else the one this client was made for.

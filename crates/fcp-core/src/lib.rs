@@ -67,6 +67,7 @@ pub mod sigv4;
 pub mod sip_trace;
 pub mod site;
 pub mod site_location;
+pub mod speech;
 pub mod storage;
 pub mod stream_token;
 pub mod subject;

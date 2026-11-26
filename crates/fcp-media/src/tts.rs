@@ -175,9 +175,19 @@ impl TtsService {
         voice: Option<&str>,
         tenant: Option<&fcp_core::TenantId>,
     ) -> Result<PathBuf> {
-        let language = language.unwrap_or(&self.default_language);
-        let voice = voice.or(self.default_voice.as_deref());
         let tenant = tenant.map(|t| t.as_uuid().to_string());
+        // A tenant's words sent to the shared TTS server carry only what
+        // the caller chose: the server fills in the tenant's language and
+        // voice, then its own (`docs/TENANT_SPEECH.md` S2). An empty
+        // language is "unset" to the remote provider.
+        let (language, voice) = if tenant.is_some() && self.provider.name() == "remote" {
+            (language.unwrap_or(""), voice)
+        } else {
+            (
+                language.unwrap_or(&self.default_language),
+                voice.or(self.default_voice.as_deref()),
+            )
+        };
 
         // Generate cache key
         let cache_key = self.generate_cache_key(text, language, voice, tenant.as_deref());

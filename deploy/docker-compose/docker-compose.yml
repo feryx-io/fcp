@@ -540,6 +540,11 @@ services:
       RUST_LOG: info
       FCP_TTS_LOG_FORMAT: pretty
       FCP_TTS_AUTH_TOKENS: ${FCP_TTS_AUTH_TOKENS}
+      # Tenants' speech settings (docs/TENANT_SPEECH.md).
+      FCP_TTS_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@postgres:5432/fcp
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8093/health"]
       interval: 10s

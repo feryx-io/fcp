@@ -160,6 +160,8 @@ import type {
   PersonalContact,
   PersonalContactRequest,
   ContactImportResponse,
+  LogLine,
+  LogLevel,
 } from '@/types'
 
 // Auth
@@ -805,6 +807,34 @@ export const services = {
     apiClient.get<ServiceView>(`/system/services/${encodeURIComponent(id)}${siteQuery(siteId)}`),
   forget: (id: string, siteId?: string | null) =>
     apiClient.delete<void>(`/system/services/${encodeURIComponent(id)}${siteQuery(siteId)}`),
+}
+
+// The services' logs (docs/LOG_VIEWER.md): a tenant's lines only, unless
+// the caller is the platform's.
+export interface LogFilter {
+  service?: string
+  kind?: string
+  level?: string
+  tenant?: string
+  call_id?: string
+  q?: string
+  since?: string
+  until?: string
+  limit?: number
+  cursor?: string
+}
+const logQuery = (f: LogFilter) => {
+  const q = new URLSearchParams()
+  for (const [k, v] of Object.entries(f)) if (v !== undefined && v !== '' && v !== null) q.set(k, String(v))
+  const s = q.toString()
+  return s ? `?${s}` : ''
+}
+export const logs = {
+  page: (f: LogFilter) => apiClient.getPage<LogLine>(`/logs${logQuery(f)}`),
+  exportUrl: (f: LogFilter) => apiClient.fetchBlobUrl(`/logs/export${logQuery(f)}`),
+  levels: () => apiClient.get<LogLevel[]>('/logs/levels'),
+  setLevel: (service: string, level: string | null) =>
+    apiClient.put<LogLevel>(`/logs/levels/${encodeURIComponent(service)}`, { level }),
 }
 
 // Audit Log

@@ -145,7 +145,14 @@ the platform sees a site's trouble without reaching into it.
   `a_calls_log_lines_name_its_tenant`: of 113 lines shipped for a call
   between two phones, all 27 naming the call name its tenant. A SIP
   library's `call_id` field is the SIP Call-ID, not the node's call.
-  **L2b:** the conference server, IVR, voicemail server and queues.
+  **L2b done (v0.25.649):** the conference server, IVR, voicemail and
+  presence servers handle SIP through the same `SipMessageHandler`, so
+  L2a's span already names a request's call and tenant there (a room's
+  join lines included); the conference server's audio and video bridge
+  spans carry the room's tenant (`tenant-<uuid>` of the room id). Proved
+  by `fcp-conference-server/tests/rooms.rs` `a_rooms_log_lines_name_its_tenant`.
+  Not yet: forge-media's room tasks (the frame clock, the mixer), which
+  start outside any span — a forge-media release.
 - **L3 — the API.** Query, tail, levels, export, the permissions and the
   tenant clamp; proved across two tenants.
   **L3a done (v0.25.647):** `log_read` (tenant administrators and
@@ -165,6 +172,15 @@ the platform sees a site's trouble without reaching into it.
   and `fcp-cluster/tests/logs.rs`. **L3b:** the live tail
   (`WS /logs/tail`), with the page.
 - **L4 — the page,** with a Playwright spec.
+  **L4 done (v0.25.650):** System › Logs (`LogsPage`): the newest 200
+  lines followed every two seconds (Pause/Follow) or paged back (Older
+  lines), filtered by level and worse, time (15 minutes to everything
+  kept), text, service, call and — for a platform administrator — tenant;
+  a line opened shows its target, tenant, call (a click filters by it)
+  and fields; Export downloads the view as JSON Lines; a platform
+  administrator's Levels card raises a service's level for an hour and
+  takes it back. The live tail is the API polled; `WS /logs/tail` (L3b)
+  is not needed for it. Proved by `e2e/logs.spec.ts`.
 - **L5 — sites,** `warn` and above up the link.
   **Done (v0.25.651):** `fcp-link`'s `LogForwarder` (`[site]
   forward_logs`, on by default; needs `redis_url`) reads the site's
