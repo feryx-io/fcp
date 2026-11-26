@@ -167,6 +167,7 @@ import type {
   SpeechAccount,
   SpeechAccountRequest,
   PlatformSpeech,
+  SpeechUsagePeriod,
   LogLine,
   LogLevel,
 } from '@/types'
@@ -841,6 +842,8 @@ export const speech = {
   // The platform's offer: which of the TTS server's providers tenants may choose.
   platform: () => apiClient.get<PlatformSpeech>('/system/speech'),
   savePlatform: (held_back: string[]) => apiClient.put<PlatformSpeech>('/system/speech', { held_back }),
+  /** The tenant's speech by month (the last twelve) and provider. */
+  usage: () => apiClient.getAll<SpeechUsagePeriod>('/speech/usage'),
 }
 
 // The services' logs (docs/LOG_VIEWER.md): a tenant's lines only, unless

@@ -882,6 +882,7 @@ pub fn router() -> Router<ApiState> {
             axum::routing::put(speech::update_account).delete(speech::delete_account),
         )
         .route("/speech/accounts/:id/test", post(speech::test_account))
+        .route("/speech/usage", get(speech::usage))
         // The tenant's brand (docs/BRANDING.md): assets up to 5 MB.
         .route(
             "/branding",

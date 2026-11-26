@@ -175,6 +175,22 @@ impl TtsService {
         voice: Option<&str>,
         tenant: Option<&fcp_core::TenantId>,
     ) -> Result<PathBuf> {
+        Ok(self
+            .synthesize_counted(text, language, voice, tenant)
+            .await?
+            .0)
+    }
+
+    /// [`Self::synthesize_for`], saying whether the provider spoke it
+    /// (`true`) or the cache had it: what a provider bills for
+    /// (`docs/TENANT_SPEECH.md` S4).
+    pub async fn synthesize_counted(
+        &self,
+        text: &str,
+        language: Option<&str>,
+        voice: Option<&str>,
+        tenant: Option<&fcp_core::TenantId>,
+    ) -> Result<(PathBuf, bool)> {
         let tenant = tenant.map(|t| t.as_uuid().to_string());
         // A tenant's words sent to the shared TTS server carry only what
         // the caller chose: the server fills in the tenant's language and
@@ -193,7 +209,7 @@ impl TtsService {
         let cache_key = self.generate_cache_key(text, language, voice, tenant.as_deref());
 
         if let Some(path) = self.cached(&cache_key).await {
-            return Ok(path);
+            return Ok((path, false));
         }
         let lock = self.in_flight.entry(cache_key.clone()).or_default().clone();
         let _synthesizing = lock.lock().await;
@@ -249,10 +265,10 @@ impl TtsService {
         voice: Option<&str>,
         tenant: Option<&str>,
         cache_key: &str,
-    ) -> Result<PathBuf> {
+    ) -> Result<(PathBuf, bool)> {
         // Whoever held the lock before us may have made it.
         if let Some(path) = self.cached(cache_key).await {
-            return Ok(path);
+            return Ok((path, false));
         }
 
         debug!(
@@ -301,7 +317,7 @@ impl TtsService {
             "TTS audio cached"
         );
 
-        Ok(cache_path)
+        Ok((cache_path, true))
     }
 
     /// Generate cache key from text, language, and voice.

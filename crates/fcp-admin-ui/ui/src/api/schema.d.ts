@@ -5305,6 +5305,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/speech/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /speech/usage — the tenant's speech by month or day and provider. */
+        get: operations["speech_usage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/speech": {
         parameters: {
             query?: never;
@@ -12864,6 +12881,33 @@ export interface components {
             total?: number | null;
         };
         /** @description A page of a list. */
+        Page_SpeechUsagePeriod: {
+            data: {
+                /** @description `YYYY-MM` or `YYYY-MM-DD` (UTC). */
+                period: string;
+                /** @description A platform provider's name, or `account:<uuid>`. */
+                provider: string;
+                /** @description What to show: the provider, or the account's name. */
+                label: string;
+                /** Format: int64 */
+                requests: number;
+                /** Format: int64 */
+                characters: number;
+                /**
+                 * Format: int64
+                 * @description What the provider spoke, and bills for; the rest came from the cache.
+                 */
+                synthesized_characters: number;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
         Page_SpeechVoice: {
             data: {
                 name: string;
@@ -15062,6 +15106,24 @@ export interface components {
             configured: boolean;
             /** Format: date-time */
             updated_at: string;
+        };
+        /** @description What the tenant's speech cost in one period with one provider. */
+        SpeechUsagePeriod: {
+            /** @description `YYYY-MM` or `YYYY-MM-DD` (UTC). */
+            period: string;
+            /** @description A platform provider's name, or `account:<uuid>`. */
+            provider: string;
+            /** @description What to show: the provider, or the account's name. */
+            label: string;
+            /** Format: int64 */
+            requests: number;
+            /** Format: int64 */
+            characters: number;
+            /**
+             * Format: int64
+             * @description What the provider spoke, and bills for; the rest came from the cache.
+             */
+            synthesized_characters: number;
         };
         /** @description A voice a provider speaks. */
         SpeechVoice: {
@@ -29229,6 +29291,45 @@ export interface operations {
                 };
                 content: {
                     "audio/wav": number[];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    speech_usage: {
+        parameters: {
+            query?: {
+                /**
+                 * @description RFC 3339 or `YYYY-MM-DD`; twelve months back, from the month's
+                 *     start, unless given.
+                 */
+                from?: string;
+                /** @description RFC 3339 or `YYYY-MM-DD`, exclusive; now unless given. */
+                to?: string;
+                /** @description `month` (the default) or `day`, in UTC. */
+                by?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_SpeechUsagePeriod"];
                 };
             };
             /** @description An error */

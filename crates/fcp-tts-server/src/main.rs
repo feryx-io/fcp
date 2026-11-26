@@ -9,6 +9,7 @@ mod config;
 mod routes;
 mod state;
 mod transcribe;
+mod usage;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -150,9 +151,10 @@ async fn main() -> Result<()> {
     // Tenants' speech settings (`docs/TENANT_SPEECH.md`), where the
     // platform's database is named.
     #[allow(clippy::type_complexity)]
-    let (speech, accounts): (
+    let (speech, accounts, usage): (
         Option<Arc<dyn fcp_core::speech::SpeechSettingsStore>>,
         Option<Arc<dyn fcp_core::speech::SpeechAccountStore>>,
+        Option<Arc<usage::UsageCounter>>,
     ) = match &config.storage.database_url {
         Some(url) => {
             let storage = Arc::new(
@@ -163,9 +165,11 @@ async fn main() -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("[storage] database_url: {e:#}"))?,
             );
             info!("Tenants' speech settings and accounts read from the database");
-            (Some(storage.clone()), Some(storage))
+            let counter = usage::UsageCounter::new(storage.clone());
+            counter.spawn();
+            (Some(storage.clone()), Some(storage), Some(counter))
         }
-        None => (None, None),
+        None => (None, None, None),
     };
     let app_state = Arc::new(AppState {
         default_provider: config.tts.default_provider.clone(),
@@ -178,6 +182,7 @@ async fn main() -> Result<()> {
         accounts,
         account_services: Default::default(),
         held_back: Default::default(),
+        usage,
     });
 
     // 5. Axum router

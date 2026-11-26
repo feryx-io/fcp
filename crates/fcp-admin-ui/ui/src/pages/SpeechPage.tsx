@@ -12,7 +12,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { speech } from '@/api/endpoints'
 import { useVoices } from '@/lib/voices'
-import { PlatformOffer, SpeechAccounts } from './SpeechAccounts'
+import { PlatformOffer, SpeechAccounts, SpeechUsageCard } from './SpeechAccounts'
 import { useIsPlatformAdmin } from '@/components/TenantSelector'
 
 const DEFAULT = '__default__'
@@ -205,6 +205,7 @@ export function SpeechPage() {
 
       <SpeechAccounts />
       {platformAdmin && <PlatformOffer />}
+      <SpeechUsageCard />
 
       <Card>
         <CardHeader>

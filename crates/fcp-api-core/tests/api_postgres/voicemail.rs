@@ -1470,3 +1470,102 @@ async fn the_platform_holds_a_provider_back_from_tenants() {
     assert_eq!(chose.status, StatusCode::OK, "{}", chose.text);
     app.finish().await;
 }
+
+/// `docs/TENANT_SPEECH.md` S4: the TTS server's hourly counts read back by
+/// month or day and provider, an account by its name, the tenant's own
+/// alone.
+#[tokio::test]
+async fn speech_usage_is_read_by_month_or_day_and_provider() {
+    use fcp_core::speech::{SpeechUsage, SpeechUsageStore};
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let made = app
+        .admin(
+            Method::POST,
+            "/api/v1/speech/accounts",
+            Some(json!({ "name": "Ours", "kind": "openai", "secret": "sk" })),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let account = made.json["provider"].as_str().unwrap().to_string();
+    let at = |s: &str| -> SystemTime {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+            .into()
+    };
+    let row = |tenant, provider: &str, hour: &str, chars, synthesized| SpeechUsage {
+        tenant_id: tenant,
+        provider: provider.into(),
+        hour: at(hour),
+        requests: 1,
+        characters: chars,
+        synthesized_characters: synthesized,
+    };
+    let a = app.tenant_a;
+    let other = seed_tenant(&app.storage, "speech-usage-other").await;
+    app.storage
+        .add_speech_usage(&[
+            row(a, "piper", "2026-10-31T23:00:00Z", 100, 100),
+            row(a, "piper", "2026-11-01T00:00:00Z", 40, 0),
+            row(a, "piper", "2026-11-02T09:00:00Z", 10, 10),
+            row(a, &account, "2026-11-02T10:00:00Z", 7, 7),
+            row(other, "piper", "2026-11-02T09:00:00Z", 999, 999),
+        ])
+        .await
+        .unwrap();
+    // Added to, not replaced.
+    app.storage
+        .add_speech_usage(&[row(a, "piper", "2026-11-02T09:00:00Z", 5, 0)])
+        .await
+        .unwrap();
+
+    let months = app
+        .admin(
+            Method::GET,
+            "/api/v1/speech/usage?from=2026-10-01&to=2026-12-01",
+            None,
+        )
+        .await;
+    assert_eq!(months.status, StatusCode::OK, "{}", months.text);
+    let rows = months.json.as_array().unwrap();
+    assert_eq!(rows.len(), 3, "{}", months.text);
+    assert_eq!(rows[0]["period"], "2026-10");
+    assert_eq!(rows[0]["characters"], 100);
+    let nov_piper = rows
+        .iter()
+        .find(|r| r["period"] == "2026-11" && r["provider"] == "piper")
+        .unwrap();
+    assert_eq!(nov_piper["characters"], 55);
+    assert_eq!(nov_piper["synthesized_characters"], 10);
+    assert_eq!(nov_piper["requests"], 3);
+    let nov_account = rows
+        .iter()
+        .find(|r| r["provider"] == account.as_str())
+        .unwrap();
+    assert_eq!(nov_account["label"], "Ours");
+
+    let days = app
+        .admin(
+            Method::GET,
+            "/api/v1/speech/usage?from=2026-11-02&to=2026-11-03&by=day",
+            None,
+        )
+        .await;
+    assert_eq!(days.status, StatusCode::OK, "{}", days.text);
+    assert_eq!(days.json.as_array().map(Vec::len), Some(2), "{}", days.text);
+    assert!(
+        !days.text.contains("999"),
+        "another tenant's: {}",
+        days.text
+    );
+
+    for bad in ["by=week", "from=yesterday", "from=2026-11-03&to=2026-11-02"] {
+        let r = app
+            .admin(Method::GET, &format!("/api/v1/speech/usage?{bad}"), None)
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{bad}: {}", r.text);
+    }
+    app.finish().await;
+}

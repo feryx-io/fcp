@@ -173,6 +173,35 @@ pub trait SpeechAccountStore: Send + Sync {
     ) -> anyhow::Result<bool>;
 }
 
+/// What a tenant's speech cost in one hour with one provider
+/// (`docs/TENANT_SPEECH.md` S4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpeechUsage {
+    pub tenant_id: TenantId,
+    /// A platform provider's name, or `account:<uuid>`.
+    pub provider: String,
+    /// The hour's start.
+    pub hour: SystemTime,
+    pub requests: u64,
+    pub characters: u64,
+    /// What the provider spoke; the rest came from the cache.
+    pub synthesized_characters: u64,
+}
+
+/// Where speech usage is counted.
+#[async_trait]
+pub trait SpeechUsageStore: Send + Sync {
+    /// Add these counts to what each hour holds.
+    async fn add_speech_usage(&self, usage: &[SpeechUsage]) -> anyhow::Result<()>;
+    /// `tenant`'s hours in `[from, to)`, oldest first.
+    async fn speech_usage(
+        &self,
+        tenant_id: &TenantId,
+        from: SystemTime,
+        to: SystemTime,
+    ) -> anyhow::Result<Vec<SpeechUsage>>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

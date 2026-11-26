@@ -405,6 +405,7 @@ use utoipa::{Modify, OpenApi};
         crate::v1::speech::update_account,
         crate::v1::speech::delete_account,
         crate::v1::speech::test_account,
+        crate::v1::speech::usage,
         crate::v1::speech::get_platform,
         crate::v1::speech::put_platform,
         crate::v1::speech::list_providers,

@@ -933,3 +933,150 @@ pub async fn put_platform(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(platform_speech(&state).await?))
 }
+
+// ── Usage (docs/TENANT_SPEECH.md S4) ───────────────────────────────────────
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct UsageQuery {
+    /// RFC 3339 or `YYYY-MM-DD`; twelve months back, from the month's
+    /// start, unless given.
+    pub from: Option<String>,
+    /// RFC 3339 or `YYYY-MM-DD`, exclusive; now unless given.
+    pub to: Option<String>,
+    /// `month` (the default) or `day`, in UTC.
+    pub by: Option<String>,
+}
+
+/// What the tenant's speech cost in one period with one provider.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SpeechUsagePeriod {
+    /// `YYYY-MM` or `YYYY-MM-DD` (UTC).
+    pub period: String,
+    /// A platform provider's name, or `account:<uuid>`.
+    pub provider: String,
+    /// What to show: the provider, or the account's name.
+    pub label: String,
+    pub requests: u64,
+    pub characters: u64,
+    /// What the provider spoke, and bills for; the rest came from the cache.
+    pub synthesized_characters: u64,
+}
+
+fn usage_time(what: &str, s: &str) -> Result<chrono::DateTime<chrono::Utc>, ApiError> {
+    use chrono::{NaiveDate, TimeZone, Utc};
+    if let Ok(t) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Ok(t.with_timezone(&Utc));
+    }
+    NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .ok()
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .map(|d| Utc.from_utc_datetime(&d))
+        .ok_or_else(|| ApiError::BadRequest(format!("{what} is RFC 3339 or YYYY-MM-DD")))
+}
+
+/// GET /speech/usage — the tenant's speech by month or day and provider.
+#[utoipa::path(
+    get,
+    path = "/api/v1/speech/usage",
+    tag = "speech",
+    operation_id = "speech_usage",
+    params(UsageQuery),
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<SpeechUsagePeriod>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn usage(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: TenantContext,
+    axum::extract::Query(q): axum::extract::Query<UsageQuery>,
+) -> Result<Json<crate::page::Page<SpeechUsagePeriod>>, ApiError> {
+    use chrono::{Datelike, TimeZone, Utc};
+    crate::auth::check_permission(&identity, Permission::PromptRead, state.deployment_mode)?;
+    let store = state
+        .storage
+        .as_ref()
+        .and_then(|s| s.speech_usage_store())
+        .ok_or_else(|| ApiError::ServiceUnavailable("Speech usage is not kept here".into()))?;
+    let by_day = match q.by.as_deref() {
+        None | Some("month") => false,
+        Some("day") => true,
+        Some(_) => return Err(ApiError::BadRequest("by is month or day".into())),
+    };
+    let now = Utc::now();
+    let to = match q.to.as_deref() {
+        Some(s) => usage_time("to", s)?,
+        None => now,
+    };
+    let from = match q.from.as_deref() {
+        Some(s) => usage_time("from", s)?,
+        None => {
+            let (mut y, mut m) = (now.year(), now.month());
+            for _ in 0..11 {
+                if m == 1 {
+                    y -= 1;
+                    m = 12;
+                } else {
+                    m -= 1;
+                }
+            }
+            Utc.with_ymd_and_hms(y, m, 1, 0, 0, 0)
+                .single()
+                .unwrap_or(now)
+        }
+    };
+    if from >= to {
+        return Err(ApiError::BadRequest("from is before to".into()));
+    }
+    if to - from > chrono::Duration::days(800) {
+        return Err(ApiError::BadRequest("At most 800 days at once".into()));
+    }
+    let hours = store
+        .speech_usage(&tenant.0, from.into(), to.into())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    // Accounts by their names, for the label; a deleted one keeps its id.
+    let names: std::collections::HashMap<String, String> = match accounts(&state) {
+        Ok(store) => store
+            .list_speech_accounts(&tenant.0)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .into_iter()
+            .map(|a| (format!("{ACCOUNT_PREFIX}{}", a.id), a.name))
+            .collect(),
+        Err(_) => Default::default(),
+    };
+    let mut periods: BTreeMap<(String, String), SpeechUsagePeriod> = BTreeMap::new();
+    for h in hours {
+        let at: chrono::DateTime<Utc> = h.hour.into();
+        let period = if by_day {
+            at.format("%Y-%m-%d").to_string()
+        } else {
+            at.format("%Y-%m").to_string()
+        };
+        let p = periods
+            .entry((period.clone(), h.provider.clone()))
+            .or_insert_with(|| SpeechUsagePeriod {
+                label: names.get(&h.provider).cloned().unwrap_or_else(|| {
+                    if h.provider.starts_with(ACCOUNT_PREFIX) {
+                        "A deleted account".to_string()
+                    } else {
+                        h.provider.clone()
+                    }
+                }),
+                period,
+                provider: h.provider.clone(),
+                requests: 0,
+                characters: 0,
+                synthesized_characters: 0,
+            });
+        p.requests += h.requests;
+        p.characters += h.characters;
+        p.synthesized_characters += h.synthesized_characters;
+    }
+    let list: Vec<SpeechUsagePeriod> = periods.into_values().collect();
+    let total = list.len() as u64;
+    Ok(Json(crate::page::Page::new(list, None, Some(total))))
+}
