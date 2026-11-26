@@ -114,6 +114,12 @@ same is on the cloud's Sites page for the tenant's administrator: the
 link up or down and since when, the site's nodes with their releases,
 the sync cursor and how far behind, the registrations, the link trunk.
 
+The site's services' log lines are on the site's own Logs page (System ›
+Logs on the site's admin, kept in the site's Redis). Their warnings and
+errors also go up the link to the cloud's Logs page, as the services
+`site:<site>:<service>`, for the platform and the tenant's administrator
+(`[site] forward_logs`, on by default; `docs/LOG_VIEWER.md` §5).
+
 After the first enrollment, blank `FCP_LINK_ENROLLMENT_TOKEN` in `.env`
 (the link ignores it once enrolled; the file need not carry a spent
 secret).
