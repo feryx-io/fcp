@@ -77,6 +77,7 @@ import type {
   UpdateMailboxRequest,
   PresenceResponse,
   PresenceStats,
+  PersonPresence,
   Registration,
   SipTrunk,
   CreateTrunkRequest,
@@ -620,6 +621,7 @@ export const presence = {
   list: () => apiClient.getAll<PresenceResponse>('/presence'),
   get: (aor: string) => apiClient.get<PresenceResponse>(`/presence/${encodeURIComponent(aor)}`),
   stats: () => apiClient.get<PresenceStats>('/presence/stats'),
+  people: () => apiClient.getAll<PersonPresence>('/presence/people'),
 }
 
 // Registrations

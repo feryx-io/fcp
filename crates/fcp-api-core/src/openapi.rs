@@ -315,6 +315,7 @@ use utoipa::{Modify, OpenApi};
         crate::v1::queues::resume_agent,
         crate::v1::presence::list_presences,
         crate::v1::presence::get_stats,
+        crate::v1::presence::list_people,
         crate::v1::presence::get_presence,
         crate::v1::presence::update_presence,
         crate::v1::presence::delete_presence,

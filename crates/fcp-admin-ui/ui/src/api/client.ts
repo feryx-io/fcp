@@ -185,7 +185,9 @@ export class ApiClient {
       headers: this.authHeaders(),
     })
     if (!response.ok) {
-      throw new Error(`Failed to fetch: ${response.status}`)
+      // The API's error shape carries a message worth showing.
+      const message = await response.json().then((b) => b?.message ?? b?.error, () => null)
+      throw new Error(message ? `${message} (${response.status})` : `Failed to fetch: ${response.status}`)
     }
     const blob = await response.blob()
     return URL.createObjectURL(blob)

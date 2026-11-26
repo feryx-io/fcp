@@ -282,8 +282,9 @@ export function PromptsPage() {
       audio.play()
       audioRef.current = audio
       setPlayingId(prompt.id)
-    } catch {
+    } catch (e) {
       setPlayingId(null)
+      alert(`The prompt could not be played: ${(e as Error).message}`)
     }
   }
 
@@ -331,13 +332,17 @@ export function PromptsPage() {
       header: 'Audio',
       cell: ({ row }) => {
         const p = row.original
-        if (!p.has_audio) return <span className="text-xs text-muted-foreground">No audio</span>
+        // A spoken prompt with no file here is spoken for the preview.
+        const speakable = p.source_type === 'tts' && !!p.tts_text?.trim()
+        if (!p.has_audio && !speakable) return <span className="text-xs text-muted-foreground">No audio</span>
         return (
           <Button
             variant="ghost"
             size="sm"
             onClick={() => togglePlay(p)}
             className="h-7 w-7 p-0"
+            aria-label={`Play ${p.name}`}
+            title={p.has_audio ? 'Play' : 'Play (spoken now by the TTS service)'}
           >
             {playingId === p.id ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
           </Button>
