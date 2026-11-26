@@ -5246,6 +5246,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/speech/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /speech/providers — the TTS server's providers. */
+        get: operations["speech_list_providers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/speech/voices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /speech/voices — a provider's voices for a language, from the TTS
+         *     server: what the Speech page, Prompts and the flow builder offer.
+         */
+        get: operations["speech_list_voices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/speech/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /speech/preview — a sentence spoken now, as WAV. */
+        post: operations["speech_preview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/branding": {
         parameters: {
             query?: never;
@@ -12677,6 +12731,37 @@ export interface components {
             total?: number | null;
         };
         /** @description A page of a list. */
+        Page_SpeechProvider: {
+            data: {
+                name: string;
+                /** @description The TTS server's default: what a tenant without a choice gets. */
+                is_default: boolean;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_SpeechVoice: {
+            data: {
+                name: string;
+                display_name: string;
+                language: string;
+                gender?: string | null;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
         Page_SubjectRequestResponse: {
             data: {
                 id: string;
@@ -14761,6 +14846,22 @@ export interface components {
             /** Format: int32 */
             kbps: number;
         };
+        /**
+         * @description What to speak for a preview; unset is the tenant's choice, then the
+         *     TTS server's default.
+         */
+        SpeechPreviewRequest: {
+            text: string;
+            provider?: string | null;
+            voice?: string | null;
+            language?: string | null;
+        };
+        /** @description A provider the tenant may speak with. */
+        SpeechProvider: {
+            name: string;
+            /** @description The TTS server's default: what a tenant without a choice gets. */
+            is_default: boolean;
+        };
         /** @description The settings to keep; null or absent is the platform's default. */
         SpeechSettingsRequest: {
             provider?: string | null;
@@ -14787,6 +14888,13 @@ export interface components {
             configured: boolean;
             /** Format: date-time */
             updated_at: string;
+        };
+        /** @description A voice a provider speaks. */
+        SpeechVoice: {
+            name: string;
+            display_name: string;
+            language: string;
+            gender?: string | null;
         };
         /** @description The one-time code the login page was handed. */
         SsoExchangeRequest: {
@@ -28788,6 +28896,102 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    speech_list_providers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_SpeechProvider"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    speech_list_voices: {
+        parameters: {
+            query?: {
+                /** @description A provider by name; its default when unset. */
+                provider?: string;
+                /** @description `en-US` unless given. */
+                language?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_SpeechVoice"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    speech_preview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeechPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description WAV audio */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "audio/wav": number[];
+                };
             };
             /** @description An error */
             default: {

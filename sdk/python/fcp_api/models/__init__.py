@@ -387,6 +387,10 @@ from .page_site_response_data_item import PageSiteResponseDataItem
 from .page_site_response_data_item_versions import PageSiteResponseDataItemVersions
 from .page_sitting_response import PageSittingResponse
 from .page_sitting_response_data_item import PageSittingResponseDataItem
+from .page_speech_provider import PageSpeechProvider
+from .page_speech_provider_data_item import PageSpeechProviderDataItem
+from .page_speech_voice import PageSpeechVoice
+from .page_speech_voice_data_item import PageSpeechVoiceDataItem
 from .page_subject_request_response import PageSubjectRequestResponse
 from .page_subject_request_response_data_item import PageSubjectRequestResponseDataItem
 from .page_subscription_info import PageSubscriptionInfo
@@ -523,10 +527,13 @@ from .softphone_media import SoftphoneMedia
 from .softphone_password import SoftphonePassword
 from .softphone_video import SoftphoneVideo
 from .softphone_video_send import SoftphoneVideoSend
+from .speech_preview_request import SpeechPreviewRequest
+from .speech_provider import SpeechProvider
 from .speech_settings_request import SpeechSettingsRequest
 from .speech_settings_request_voices import SpeechSettingsRequestVoices
 from .speech_settings_response import SpeechSettingsResponse
 from .speech_settings_response_voices import SpeechSettingsResponseVoices
+from .speech_voice import SpeechVoice
 from .sso_exchange_request import SsoExchangeRequest
 from .start_recording_request import StartRecordingRequest
 from .status_response import StatusResponse
@@ -1021,6 +1028,10 @@ __all__ = (
     "PageSiteResponseDataItemVersions",
     "PageSittingResponse",
     "PageSittingResponseDataItem",
+    "PageSpeechProvider",
+    "PageSpeechProviderDataItem",
+    "PageSpeechVoice",
+    "PageSpeechVoiceDataItem",
     "PageSubjectRequestResponse",
     "PageSubjectRequestResponseDataItem",
     "PageSubscriptionInfo",
@@ -1157,10 +1168,13 @@ __all__ = (
     "SoftphonePassword",
     "SoftphoneVideo",
     "SoftphoneVideoSend",
+    "SpeechPreviewRequest",
+    "SpeechProvider",
     "SpeechSettingsRequest",
     "SpeechSettingsRequestVoices",
     "SpeechSettingsResponse",
     "SpeechSettingsResponseVoices",
+    "SpeechVoice",
     "SsoExchangeRequest",
     "StartRecordingRequest",
     "StatusResponse",

@@ -133,8 +133,18 @@ sealed again with the site's key; usage comes up with the site's records.
   choice is the tenant's. The compose TTS server reads the platform's
   database. Proved by `fcp-tts-server` `a_tenants_settings_fill_what_a_request_leaves_unset`
   and `api_postgres` `a_tenants_speech_settings_are_kept_and_cleared`.
-  **S2b:** the voices and preview routes, the Speech page, the real voice
-  lists in Prompts and the flow builder.
+  **S2b done (v0.25.653):** `GET /speech/providers` and
+  `GET /speech/voices?provider=&language=` (the TTS server's, through the
+  admin's `[tts] remote_url`; empty where the admin has no TTS service) and
+  `POST /speech/preview` (a sentence spoken now as WAV, with what is given
+  and the tenant's settings for the rest; `TtsService::preview`, uncached,
+  the remote provider naming the provider per request). Operations ›
+  Speech: provider, language and voice, voices by language, a preview of
+  any choice before it is saved, back to the platform's defaults. Prompts
+  and the flow builder list the TTS service's voices (`useVoices`) instead
+  of the hard-coded Kokoro list. Proved by `api_postgres`
+  `speech_providers_voices_and_a_preview_come_from_the_tts_server` and
+  `e2e/speech.spec.ts`.
 - **S3 — the tenant's own accounts.** Sealed keys, the server building a
   provider per account, the cache per account, test, the platform's
   offer list.

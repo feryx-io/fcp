@@ -160,6 +160,10 @@ import type {
   PersonalContact,
   PersonalContactRequest,
   ContactImportResponse,
+  SpeechSettings,
+  SpeechSettingsRequest,
+  SpeechProvider,
+  SpeechVoice,
 } from '@/types'
 
 // Auth
@@ -805,6 +809,22 @@ export const services = {
     apiClient.get<ServiceView>(`/system/services/${encodeURIComponent(id)}${siteQuery(siteId)}`),
   forget: (id: string, siteId?: string | null) =>
     apiClient.delete<void>(`/system/services/${encodeURIComponent(id)}${siteQuery(siteId)}`),
+}
+
+// A tenant's speech (docs/TENANT_SPEECH.md).
+export const speech = {
+  settings: () => apiClient.get<SpeechSettings>('/speech/settings'),
+  save: (body: SpeechSettingsRequest) => apiClient.put<SpeechSettings>('/speech/settings', body),
+  reset: () => apiClient.delete<void>('/speech/settings'),
+  providers: () => apiClient.getAll<SpeechProvider>('/speech/providers'),
+  voices: (language: string, provider?: string) => {
+    const q = new URLSearchParams({ language })
+    if (provider) q.set('provider', provider)
+    return apiClient.getAll<SpeechVoice>(`/speech/voices?${q}`)
+  },
+  /** A sentence spoken now, as a playable URL. */
+  preview: (body: { text: string; provider?: string; voice?: string; language?: string }) =>
+    apiClient.postBlobUrl('/speech/preview', body),
 }
 
 // Audit Log

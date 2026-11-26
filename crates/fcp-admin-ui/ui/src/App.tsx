@@ -41,6 +41,7 @@ const RegistrationsPage = lazy(() => import('@/pages/RegistrationsPage').then((m
 const EventsPage = lazy(() => import('@/pages/EventsPage').then((m) => ({ default: m.EventsPage })))
 const SitesPage = lazy(() => import('@/pages/SitesPage').then((m) => ({ default: m.SitesPage })))
 const ServicesPage = lazy(() => import('@/pages/ServicesPage').then((m) => ({ default: m.ServicesPage })))
+const SpeechPage = lazy(() => import('@/pages/SpeechPage').then((m) => ({ default: m.SpeechPage })))
 const ServicePage = lazy(() => import('@/pages/ServicesPage').then((m) => ({ default: m.ServicePage })))
 const ClusterPage = lazy(() => import('@/pages/ClusterPage').then((m) => ({ default: m.ClusterPage })))
 const AuditLogPage = lazy(() => import('@/pages/AuditLogPage').then((m) => ({ default: m.AuditLogPage })))
@@ -165,6 +166,7 @@ export function App() {
               <Route path="flows/:id" element={<Suspense fallback={<PageLoader />}><TenantScope what="Flows"><FlowBuilderPage /></TenantScope></Suspense>} />
               <Route path="flow-traces" element={<Suspense fallback={<PageLoader />}><FlowTracesPage /></Suspense>} />
               <Route path="services" element={<Suspense fallback={<PageLoader />}><ServicesPage /></Suspense>} />
+              <Route path="speech" element={<Suspense fallback={<PageLoader />}><SpeechPage /></Suspense>} />
               <Route path="services/:id" element={<Suspense fallback={<PageLoader />}><ServicePage /></Suspense>} />
               <Route path="cluster" element={<Suspense fallback={<PageLoader />}><ClusterPage /></Suspense>} />
               <Route path="sites" element={<Suspense fallback={<PageLoader />}><SitesPage /></Suspense>} />
