@@ -512,3 +512,63 @@ async fn a_user_made_after_the_tenant_was_read_has_presence_at_once() {
     let late_id: fcp_core::UserId = shown_user_id(&app, "presence-late").await.parse().unwrap();
     assert!(people(&app).of(&app.tenant_a, &late_id).await.is_some());
 }
+
+/// D8 finding 69: the Presence page listed nobody. `/presence/people` lists
+/// every person in the tenant with what others see of them, and nobody
+/// from another tenant.
+#[tokio::test]
+async fn the_presence_page_lists_every_person_as_others_see_them() {
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let (_, ann) = signed_in(&app, "people-ann").await;
+    signed_in(&app, "people-bo").await;
+    put(&app, &ann, json!({"status": "busy", "note": "in a review"})).await;
+    app.seed_registration(
+        app.tenant_a,
+        &format!("people-ann@{REALM}"),
+        "sip:people-ann@192.0.2.9:5060",
+    )
+    .await;
+    people(&app)
+        .on_event(&PlatformEvent::Registration(
+            fcp_events::RegistrationEvent::Registered {
+                aor: format!("sip:people-ann@{REALM}"),
+                contact: "sip:people-ann@192.0.2.9:5060".into(),
+                tenant_id: app.tenant_a,
+                expires_secs: 3600,
+                user_agent: None,
+                timestamp: SystemTime::now(),
+                instance_id: None,
+            },
+        ))
+        .await;
+
+    let r = app
+        .admin(Method::GET, "/api/v1/presence/people?limit=500", None)
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text);
+    let rows = r.body["data"].as_array().unwrap();
+    let find = |name: &str| {
+        rows.iter()
+            .find(|p| p["username"] == name)
+            .unwrap_or_else(|| panic!("{name} listed: {}", r.text))
+            .clone()
+    };
+    let ann_row = find("people-ann");
+    assert_eq!(ann_row["state"], "busy", "{ann_row}");
+    assert_eq!(ann_row["note"], "in a review");
+    // Nothing of Bo's is registered.
+    assert_eq!(find("people-bo")["state"], "offline");
+
+    // Another tenant's administrator sees neither.
+    let other = app
+        .admin_in(app.tenant_b, Method::GET, "/api/v1/presence/people", None)
+        .await;
+    assert_eq!(other.status, StatusCode::OK, "{}", other.text);
+    assert!(
+        !other.text.contains("people-ann") && !other.text.contains("people-bo"),
+        "{}",
+        other.text
+    );
+}

@@ -346,6 +346,22 @@ impl ServiceBeacon {
                     Ok(Err(e)) => self.redis_failed(&mut told_unreachable, e),
                     Err(_) => self.redis_failed(&mut told_unreachable, "no answer".into()),
                 }
+                // A level set from the admin's Logs page, for a while
+                // (`docs/LOG_VIEWER.md` §2); none is the configured one.
+                if !stopping {
+                    let key = s.key(&crate::logging::level_key(&self.identity.id));
+                    let mut conn = s.connection();
+                    if let Ok(Ok(level)) = tokio::time::timeout(
+                        CHECK_TIMEOUT,
+                        redis::cmd("GET")
+                            .arg(&key)
+                            .query_async::<Option<String>>(&mut conn),
+                    )
+                    .await
+                    {
+                        crate::logging::set_level(level.as_deref());
+                    }
+                }
             }
 
             if stopping {

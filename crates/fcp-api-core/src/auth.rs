@@ -540,6 +540,19 @@ impl axum::extract::FromRequestParts<crate::state::ApiState> for TenantContext {
         parts: &mut axum::http::request::Parts,
         state: &crate::state::ApiState,
     ) -> Result<Self, Self::Rejection> {
+        let tenant = Self::resolve(parts, state).await?;
+        // The request's lines name the tenant it acts on
+        // (`docs/LOG_VIEWER.md` L2).
+        tracing::Span::current().record("tenant_id", tracing::field::display(tenant.0));
+        Ok(tenant)
+    }
+}
+
+impl TenantContext {
+    async fn resolve(
+        parts: &mut axum::http::request::Parts,
+        state: &crate::state::ApiState,
+    ) -> Result<Self, crate::error::ApiError> {
         if let Some(identity) = parts.extensions.get::<AuthIdentity>() {
             if !identity.is_platform_admin() {
                 if let Some(tenant_id) = identity.tenant_id() {

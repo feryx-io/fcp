@@ -315,6 +315,7 @@ use utoipa::{Modify, OpenApi};
         crate::v1::queues::resume_agent,
         crate::v1::presence::list_presences,
         crate::v1::presence::get_stats,
+        crate::v1::presence::list_people,
         crate::v1::presence::get_presence,
         crate::v1::presence::update_presence,
         crate::v1::presence::delete_presence,
@@ -681,7 +682,10 @@ mod tests {
         let documented = operations(&doc);
         let mut bound = BTreeSet::new();
         for (method, path, _) in crate::route_permissions::ROUTES {
-            if path.starts_with("/cluster/") || path.starts_with("/system/services") {
+            if path.starts_with("/cluster/")
+                || path.starts_with("/system/services")
+                || path.starts_with("/logs")
+            {
                 continue; // fcp-admin's, documented there
             }
             bound.insert((method.to_string(), format!("/api/v1{path}")));

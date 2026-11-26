@@ -415,8 +415,20 @@ impl Default for RetentionConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TtsSection {
-    /// TTS engine name (e.g., "kokoro")
-    pub engine: String,
+    /// The shared TTS server (`fcp-tts-server`, e.g.
+    /// `http://127.0.0.1:8093`): prompts are spoken and previewed there, in
+    /// the voices calls hear. Wins over `engine`.
+    #[serde(default)]
+    pub remote_url: Option<String>,
+
+    /// The TTS server's bearer token; `FCP_ADMIN_TTS_AUTH_TOKEN` wins.
+    #[serde(default)]
+    pub auth_token: Option<String>,
+
+    /// A TTS engine run in this process (e.g., "kokoro"), when there is no
+    /// `remote_url`.
+    #[serde(default)]
+    pub engine: Option<String>,
 
     /// Path to Python interpreter (e.g., ".venv/bin/python3")
     #[serde(default)]

@@ -458,7 +458,18 @@ pub fn create_router_with(
     router
         .layer(middleware::from_fn(shape::json_errors))
         .layer(cors)
-        .layer(TraceLayer::new_for_http())
+        // Each request's span has room for its tenant, recorded by
+        // `TenantContext` once known (`docs/LOG_VIEWER.md` L2).
+        .layer(TraceLayer::new_for_http().make_span_with(
+            |request: &axum::http::Request<axum::body::Body>| {
+                tracing::info_span!(
+                    "request",
+                    // Not the path: some carry a key (`/provision/{key}/…`).
+                    method = %request.method(),
+                    tenant_id = tracing::field::Empty,
+                )
+            },
+        ))
         // Outermost: every response, errors and CORS refusals included,
         // carries the request's id.
         .layer(tower_http::request_id::PropagateRequestIdLayer::new(

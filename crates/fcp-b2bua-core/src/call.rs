@@ -346,6 +346,15 @@ impl LegSide {
 }
 
 impl Call {
+    /// Name this call and its tenant on the current span, where it has
+    /// the fields (a SIP request's, `docs/LOG_VIEWER.md` L2), so the
+    /// request's lines say whose call they are about.
+    pub fn note_on_span(&self) {
+        let span = tracing::Span::current();
+        span.record("tenant_id", tracing::field::display(self.tenant_id));
+        span.record("call_id", tracing::field::display(self.id));
+    }
+
     /// The users this call counts against: its parties that are users,
     /// while it is up (established or parked).
     /// The state of the call's appearance, as the line's phones should

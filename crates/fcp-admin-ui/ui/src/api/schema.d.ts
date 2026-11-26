@@ -4267,6 +4267,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/presence/people": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /presence/people — every person in the tenant with their presence
+         *     (D8 finding 69: `/presence` lists only what this process's presence
+         *     table holds, which phones subscribing to the call managers never fill).
+         */
+        get: operations["presence_list_people"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/presence/{aor}": {
         parameters: {
             query?: never;
@@ -7118,6 +7139,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /logs */
+        get: operations["logs_list"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/logs/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /logs/export — JSON Lines, audited. */
+        get: operations["logs_export"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/logs/levels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /logs/levels — the levels set for now. */
+        get: operations["logs_levels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/logs/levels/{service}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** PUT /logs/levels/{service} — a level for an hour, or null for back. */
+        put: operations["logs_set_level"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export interface webhooks {
     platform_event: {
@@ -9850,6 +9939,35 @@ export interface components {
             /** Format: date-time */
             validated_at?: string | null;
         };
+        /** @description A service's level, as set from here for now. */
+        LogLevel: {
+            service: string;
+            /** @description Set for now; null is the service's configured level. */
+            level?: string | null;
+            /**
+             * Format: int64
+             * @description Seconds before it goes back.
+             */
+            expires_in_secs?: number | null;
+        };
+        /** @description One line. */
+        LogLine: {
+            /** @description Its id in the service's stream; a page's cursor. */
+            id: string;
+            service: string;
+            /** @description The service's node type, when it is up. */
+            kind?: string | null;
+            /** Format: date-time */
+            time: string;
+            level: string;
+            target: string;
+            message: string;
+            fields: {
+                [key: string]: string;
+            };
+            tenant_id?: string | null;
+            call_id?: string | null;
+        };
         LoginRequest: {
             username: string;
             password: string;
@@ -11413,6 +11531,33 @@ export interface components {
             total?: number | null;
         };
         /** @description A page of a list. */
+        Page_LogLine: {
+            data: {
+                /** @description Its id in the service's stream; a page's cursor. */
+                id: string;
+                service: string;
+                /** @description The service's node type, when it is up. */
+                kind?: string | null;
+                /** Format: date-time */
+                time: string;
+                level: string;
+                target: string;
+                message: string;
+                fields: {
+                    [key: string]: string;
+                };
+                tenant_id?: string | null;
+                call_id?: string | null;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
         Page_MailboxResponse: {
             data: {
                 id: string;
@@ -11820,6 +11965,32 @@ export interface components {
                 firmware?: string | null;
                 /** Format: int32 */
                 fetches: number;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_PersonPresenceResponse: {
+            data: {
+                user_id: string;
+                username: string;
+                display_name?: string | null;
+                extension?: string | null;
+                /**
+                 * @description `available`, `away`, `busy`, `dnd`, `on_call`, `offline`; null when
+                 *     this admin does not work presence out.
+                 */
+                state?: string | null;
+                /** @description Their own status's label ("WFH"). */
+                label?: string | null;
+                note?: string | null;
+                /** @description Away because idle, not because they said so. */
+                idle: boolean;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -13096,6 +13267,27 @@ export interface components {
             /** Format: int32 */
             fetches: number;
         };
+        /**
+         * @description One person's presence as the tenant's people see it
+         *     (`docs/PRESENCE.md`): what they chose, a call, DND, idle and whether any
+         *     of their phones is registered, worked out by the admin.
+         */
+        PersonPresenceResponse: {
+            user_id: string;
+            username: string;
+            display_name?: string | null;
+            extension?: string | null;
+            /**
+             * @description `available`, `away`, `busy`, `dnd`, `on_call`, `offline`; null when
+             *     this admin does not work presence out.
+             */
+            state?: string | null;
+            /** @description Their own status's label ("WFH"). */
+            label?: string | null;
+            note?: string | null;
+            /** @description Away because idle, not because they said so. */
+            idle: boolean;
+        };
         /** @description A contact, as written. */
         PersonalContactRequest: {
             name: string;
@@ -14244,6 +14436,10 @@ export interface components {
         /** @description Body of `PUT …/video/layout`, and of `PUT …/video/content-layout`. */
         SetLayoutRequest: {
             layout: string;
+        };
+        /** @description A level to set for an hour; null goes back now. */
+        SetLogLevel: {
+            level?: string | null;
         };
         /**
          * @description What others see of a person.
@@ -25849,6 +26045,38 @@ export interface operations {
             };
         };
     };
+    presence_list_people: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_PersonPresenceResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     presence_get_presence: {
         parameters: {
             query?: never;
@@ -32964,6 +33192,172 @@ export interface operations {
                 content?: never;
             };
             /** @description An error; 409 for a service that is up */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    logs_list: {
+        parameters: {
+            query?: {
+                /** @description One service, by id. */
+                service?: string;
+                /** @description Services of this node type (`call_manager`, `sbc`…). */
+                kind?: string;
+                /** @description This level and worse: `error`, `warn`, `info`, `debug`, `trace`. */
+                level?: string;
+                /**
+                 * @description Platform administrators: a tenant's lines, or `none` for the
+                 *     platform's own.
+                 */
+                tenant?: string;
+                /** @description Lines about this call. */
+                call_id?: string;
+                /** @description Text in the message or a field, any case. */
+                q?: string;
+                /** @description RFC 3339: lines at or after. */
+                since?: string;
+                /** @description RFC 3339: lines before. */
+                until?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_LogLine"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    logs_export: {
+        parameters: {
+            query?: {
+                /** @description One service, by id. */
+                service?: string;
+                /** @description Services of this node type (`call_manager`, `sbc`…). */
+                kind?: string;
+                /** @description This level and worse: `error`, `warn`, `info`, `debug`, `trace`. */
+                level?: string;
+                /**
+                 * @description Platform administrators: a tenant's lines, or `none` for the
+                 *     platform's own.
+                 */
+                tenant?: string;
+                /** @description Lines about this call. */
+                call_id?: string;
+                /** @description Text in the message or a field, any case. */
+                q?: string;
+                /** @description RFC 3339: lines at or after. */
+                since?: string;
+                /** @description RFC 3339: lines before. */
+                until?: string;
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description JSON Lines, one LogLine each */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/x-ndjson": string;
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    logs_levels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogLevel"][];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    logs_set_level: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                service: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetLogLevel"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogLevel"];
+                };
+            };
+            /** @description An error */
             default: {
                 headers: {
                     [name: string]: unknown;
