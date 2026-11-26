@@ -348,6 +348,16 @@ async fn seed_tenant_b(app: &App) -> Seeded {
         .await,
     );
     ids.insert(
+        "/speech/accounts",
+        make_in_b(
+            app,
+            "/api/v1/speech/accounts",
+            json!({"name": "Bravo voices", "kind": "openai", "secret": "sk-bravo"}),
+            "id",
+        )
+        .await,
+    );
+    ids.insert(
         "/parking/lots",
         make_in_b(
             app,
