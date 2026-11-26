@@ -276,6 +276,9 @@ impl App {
                     .with_brand_store(
                         Arc::clone(&storage) as Arc<dyn fcp_core::branding::BrandStore>
                     )
+                    .with_speech_store(
+                        Arc::clone(&storage) as Arc<dyn fcp_core::speech::SpeechSettingsStore>
+                    )
                     .with_contact_store(
                         Arc::clone(&storage) as Arc<dyn fcp_core::contact::ContactStore>
                     )

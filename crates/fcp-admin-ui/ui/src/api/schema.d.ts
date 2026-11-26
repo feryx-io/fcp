@@ -5206,6 +5206,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/speech/settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /speech/settings */
+        get: operations["speech_get_settings"];
+        /** PUT /speech/settings */
+        put: operations["speech_put_settings"];
+        post?: never;
+        /** DELETE /speech/settings — back to the platform's defaults. */
+        delete: operations["speech_delete_settings"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/branding": {
         parameters: {
             query?: never;
@@ -14545,6 +14564,33 @@ export interface components {
             height: number;
             /** Format: int32 */
             kbps: number;
+        };
+        /** @description The settings to keep; null or absent is the platform's default. */
+        SpeechSettingsRequest: {
+            provider?: string | null;
+            voice?: string | null;
+            language?: string | null;
+            voices?: {
+                [key: string]: string;
+            };
+        };
+        /** @description The tenant's speech settings; nothing set is the platform's defaults. */
+        SpeechSettingsResponse: {
+            tenant_id: string;
+            /** @description One of the TTS server's providers; null is its default. */
+            provider?: string | null;
+            /** @description The voice where no language below names one; null is the provider's. */
+            voice?: string | null;
+            /** @description What a request without a language is spoken in; null is `en-US`. */
+            language?: string | null;
+            /** @description A voice per language (`es` or `es-ES`), over `voice`. */
+            voices: {
+                [key: string]: string;
+            };
+            /** @description False until the tenant saved settings. */
+            configured: boolean;
+            /** Format: date-time */
+            updated_at: string;
         };
         /** @description The one-time code the login page was handed. */
         SsoExchangeRequest: {
@@ -28420,6 +28466,95 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Done */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    speech_get_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpeechSettingsResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    speech_put_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeechSettingsRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpeechSettingsResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    speech_delete_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Back to the platform's defaults */
             204: {
                 headers: {
                     [name: string]: unknown;
