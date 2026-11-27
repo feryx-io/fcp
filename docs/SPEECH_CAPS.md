@@ -170,8 +170,44 @@ by the cloud's sweep only, once.
   sweep, `speech.cap_near`/`cap_reached` in `PlatformEvent::EVENT_TYPES`,
   prices and `estimated_cost`, the Caps section and the platform's
   defaults, a Playwright spec.
+  **Done (v0.25.661):** `speech_cap_notices` and `platform_speech.prices`
+  (migration 158); `fcp_api_core::v1::speech::sweep_caps`, run every
+  minute by the admin under the `fcp:speech-caps` lock, notes each
+  (tenant, provider, month, level) once and publishes
+  `PlatformEvent::Speech` — `speech.cap_near` at 80 %, `speech.cap_reached`
+  at 100 % (near noted too, so never said after) — to the tenant's
+  webhooks and `/me/events`. No audit row: a sweep is nobody's action, and
+  the notices table is the record. Prices: `prices` on `PUT
+  /system/speech` and `price_per_million` on each provider it lists, an
+  account's own `price_per_million`, and `estimated_cost` on each
+  `/speech/usage` row (synthesized characters at the price, four places).
+  The page: a Caps card (each provider's month against its cap as a bar,
+  near and reached called out, the tenant's own cap editable, a cap added
+  for any provider or account but the default), the platform's cap on the
+  tenant editable by a platform administrator in that card for the tenant
+  picked (rather than a page of its own), the offer card's default cap
+  and price per provider, the account form's price, and the Usage card's
+  Estimated cost column. Proved by `speech_caps_warn_once_and_usage_is_priced`
+  and `e2e/speech.spec.ts`'s caps test.
 - **C3 — sites.** Caps journaled and synced, `speech_cap_totals` down,
   the site's server enforcing on both, proved by `fcp-link/tests`.
+  **Done (v0.25.662):** the journal needs a tenant on every row, and the
+  platform's default caps have none, so the caps themselves are not
+  synced. Instead the cloud's minute sweep keeps `site_speech_caps`
+  (migration 159, journaled, in `SYNC_TABLES`; one row per tenant with a
+  site and capped provider, never the default): the cap that applies and
+  the month's synthesized characters by source (`''` the cloud, else a
+  site's id), written only when it changed and removed with its cap
+  (`fcp_core::speech::SiteSpeechCap`). The link keeps each as
+  `speech_cap_carried` — the cap, and what was spoken everywhere but this
+  site, whose own it counts itself — and the site's TTS server reads it
+  with its own caps (as the platform's on the tenant) and usage, so
+  `/speech/caps` at the site shows the same. A site's admin refuses
+  `speech/caps` and `system/speech/caps`, and raises no warnings (the
+  cloud's sweep alone does). Proved by
+  `speech_caps_are_carried_to_a_tenant_s_sites` and `fcp-link/tests/apply.rs`
+  (a cap reaching the site with its own share left out, refused there,
+  gone when the cloud's goes). All three phases done.
 
 ## 7. Questions
 

@@ -440,6 +440,7 @@ from .platform_speech import PlatformSpeech
 from .platform_speech_cap import PlatformSpeechCap
 from .platform_speech_cap_request import PlatformSpeechCapRequest
 from .platform_speech_request import PlatformSpeechRequest
+from .platform_speech_request_prices_type_0 import PlatformSpeechRequestPricesType0
 from .play_request import PlayRequest
 from .policy_response import PolicyResponse
 from .post_chat_request import PostChatRequest
@@ -1102,6 +1103,7 @@ __all__ = (
     "PlatformSpeechCap",
     "PlatformSpeechCapRequest",
     "PlatformSpeechRequest",
+    "PlatformSpeechRequestPricesType0",
     "PlayRequest",
     "PolicyResponse",
     "PostChatRequest",

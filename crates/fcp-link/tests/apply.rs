@@ -453,6 +453,77 @@ format = "compact"
     .unwrap();
     assert_ne!(code, 403, "testing an account is the site's own: {text}");
 
+    // A speech cap (docs/SPEECH_CAPS.md C3): the cloud's sweep keeps the cap
+    // and the month's speech by where it was spoken; the site is told it
+    // with its own share left out (it counts that itself), may not change
+    // it, and lets it go when the cloud does.
+    let cloud_pool = sqlx::PgPool::connect(cloud.db.url()).await.unwrap();
+    let used = serde_json::json!({"": 300, cloud.site_id.clone(): 500, "site-elsewhere": 50});
+    sqlx::query(
+        "INSERT INTO site_speech_caps (id, tenant_id, provider, month, cap, used)
+         VALUES ($1, $2, 'openai-cloud', date_trunc('month', now() AT TIME ZONE 'UTC')::date,
+                 1000, $3)",
+    )
+    .bind(format!("{}/openai-cloud", cloud.tenant_id))
+    .bind(&cloud.tenant_id)
+    .bind(&used)
+    .execute(&cloud_pool)
+    .await
+    .unwrap();
+    let caps_at_site = || async {
+        let (code, text) = http_request(
+            "GET",
+            &loopback(site_admin_http, "/api/v1/speech/caps"),
+            &site_headers,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(code, 200, "{text}");
+        serde_json::from_str::<serde_json::Value>(&text).unwrap()
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let caps = caps_at_site().await;
+        if let Some(row) = caps["data"].as_array().and_then(|a| a.first()) {
+            assert_eq!(row["provider"], "openai-cloud", "{caps}");
+            assert_eq!(row["cap"], 1000, "{caps}");
+            assert_eq!(row["used"], 350, "everywhere but here: {caps}");
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the cloud's cap never reached the site: {caps}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let (code, text) = http_request(
+        "PUT",
+        &loopback(site_admin_http, "/api/v1/speech/caps/openai-cloud"),
+        &site_headers,
+        Some(r#"{"monthly_characters":5}"#),
+    )
+    .await
+    .unwrap();
+    assert_eq!(code, 403, "a cap is the cloud's: {text}");
+    sqlx::query("DELETE FROM site_speech_caps WHERE id = $1")
+        .bind(format!("{}/openai-cloud", cloud.tenant_id))
+        .execute(&cloud_pool)
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let caps = caps_at_site().await;
+        if caps["data"].as_array().is_some_and(|a| a.is_empty()) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the cap the cloud removed stayed at the site: {caps}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
     // What only the site holds of Alice: a declared location and a queue
     // seat, which no feed carries.
     let site_pool = sqlx::PgPool::connect(site_db.url()).await.unwrap();

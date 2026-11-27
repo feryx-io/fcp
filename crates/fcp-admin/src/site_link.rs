@@ -1314,6 +1314,13 @@ async fn slice_of(state: &LinkState, tenant: &TenantId) -> Result<Vec<SyncItem>>
             items.push(item("speech_accounts", &a.id, &a)?);
         }
     }
+    // The tenant's speech caps as its sites are told them
+    // (docs/SPEECH_CAPS.md C3).
+    if let Some(store) = storage.speech_usage_store() {
+        for c in store.site_speech_caps(tenant).await? {
+            items.push(item("site_speech_caps", &c.row_id(), &c)?);
+        }
+    }
     Ok(items)
 }
 
@@ -1510,6 +1517,14 @@ async fn object_now(
         "speech_accounts" => match (storage.speech_account_store(), id.parse()) {
             (Some(store), Ok(id)) => same_tenant!(store.get_speech_account(tenant, &id).await?),
             _ => None,
+        },
+        "site_speech_caps" => match storage.speech_usage_store() {
+            Some(store) => same_tenant!(store
+                .site_speech_caps(tenant)
+                .await?
+                .into_iter()
+                .find(|c| c.row_id() == id)),
+            None => None,
         },
         _ => None,
     })

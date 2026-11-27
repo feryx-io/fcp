@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogD
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { speech } from '@/api/endpoints'
 import type { SpeechAccount, SpeechAccountKind } from '@/types'
+import { PlatformCaps } from './SpeechCaps'
 
 const KINDS: { value: SpeechAccountKind; label: string; key: string }[] = [
   { value: 'openai', label: 'OpenAI', key: 'API key' },
@@ -40,10 +41,11 @@ interface Draft {
   access_key_id: string
   secret: string
   has_key: boolean
+  price: string
 }
 
 const empty: Draft = {
-  name: '', kind: 'openai', region: '', model: '', endpoint: '', access_key_id: '', secret: '', has_key: false,
+  name: '', kind: 'openai', region: '', model: '', endpoint: '', access_key_id: '', secret: '', has_key: false, price: '',
 }
 
 const draftOf = (a: SpeechAccount): Draft => ({
@@ -56,6 +58,7 @@ const draftOf = (a: SpeechAccount): Draft => ({
   access_key_id: a.access_key_id ?? '',
   secret: '',
   has_key: a.has_key,
+  price: a.price_per_million != null ? String(a.price_per_million) : '',
 })
 
 export function SpeechAccounts() {
@@ -75,6 +78,7 @@ export function SpeechAccounts() {
         endpoint: d.endpoint || null,
         access_key_id: d.access_key_id || null,
         secret: d.secret || null,
+        price_per_million: d.price.trim() === '' ? null : Number(d.price),
       }
       return d.id ? speech.updateAccount(d.id, body) : speech.createAccount(body)
     },
@@ -229,6 +233,12 @@ export function SpeechAccounts() {
                 <Input id="account-endpoint" value={draft.endpoint} placeholder="The vendor's own"
                   onChange={(e) => set({ endpoint: e.target.value })} />
               </div>
+              <div className="space-y-1">
+                <Label htmlFor="account-price">Price per million characters (optional)</Label>
+                <Input id="account-price" inputMode="decimal" value={draft.price}
+                  placeholder="For an estimated cost beside your usage"
+                  onChange={(e) => set({ price: e.target.value })} />
+              </div>
               {error && <p className="text-sm text-destructive">{error}</p>}
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setDraft(null)}>Cancel</Button>
@@ -249,12 +259,15 @@ export function PlatformOffer() {
   const offer = useQuery({ queryKey: ['speech', 'platform'], queryFn: speech.platform })
   const [error, setError] = useState<string | null>(null)
   const save = useMutation({
-    mutationFn: (held: string[]) => speech.savePlatform(held),
+    mutationFn: ({ held, prices }: { held: string[]; prices?: Record<string, number> }) =>
+      speech.savePlatform(held, prices),
     onSuccess: () => { setError(null); queryClient.invalidateQueries({ queryKey: ['speech'] }) },
     onError: (e) => setError((e as Error).message),
   })
   const providers = offer.data?.providers ?? []
   const held = offer.data?.held_back ?? []
+  const prices: Record<string, number> = Object.fromEntries(
+    providers.filter((p) => p.price_per_million != null).map((p) => [p.name, p.price_per_million as number]))
   return (
     <Card>
       <CardHeader>
@@ -270,11 +283,20 @@ export function PlatformOffer() {
           <label key={p.name} className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={p.offered} disabled={p.is_default || save.isPending}
               aria-label={`Offer ${p.name}`}
-              onChange={(e) => save.mutate(e.target.checked ? held.filter((h) => h !== p.name) : [...held, p.name])} />
+              onChange={(e) => save.mutate({ held: e.target.checked ? held.filter((h) => h !== p.name) : [...held, p.name] })} />
             <span className="font-medium">{p.name}</span>
             {p.is_default && <span className="text-muted-foreground">(the default, always offered)</span>}
           </label>
         ))}
+        {providers.some((p) => !p.is_default) && (
+          <div className="space-y-2 pt-2">
+            <p className="text-sm text-muted-foreground">
+              Each provider's cap for every tenant (a tenant's own page can set another), and its price for an
+              estimated cost beside the tenant's usage. The default provider is never capped.
+            </p>
+            <PlatformCaps providers={providers} prices={prices} onPrices={(next) => save.mutate({ held, prices: next })} />
+          </div>
+        )}
         {error && <p className="text-sm text-destructive">{error}</p>}
       </CardContent>
     </Card>
@@ -286,6 +308,7 @@ export function SpeechUsageCard() {
   const usage = useQuery({ queryKey: ['speech', 'usage'], queryFn: speech.usage })
   const rows = [...(usage.data ?? [])].sort((a, b) => b.period.localeCompare(a.period) || a.label.localeCompare(b.label))
   const n = (v: number) => v.toLocaleString()
+  const priced = rows.some((r) => r.estimated_cost != null)
   return (
     <Card>
       <CardHeader>
@@ -307,6 +330,7 @@ export function SpeechUsageCard() {
                   <TableHead className="text-right">Requests</TableHead>
                   <TableHead className="text-right">Characters</TableHead>
                   <TableHead className="text-right">Spoken by the provider</TableHead>
+                  {priced && <TableHead className="text-right">Estimated cost</TableHead>}
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -317,6 +341,11 @@ export function SpeechUsageCard() {
                     <TableCell className="text-right tabular-nums">{n(r.requests)}</TableCell>
                     <TableCell className="text-right tabular-nums">{n(r.characters)}</TableCell>
                     <TableCell className="text-right tabular-nums">{n(r.synthesized_characters)}</TableCell>
+                    {priced && (
+                      <TableCell className="text-right tabular-nums">
+                        {r.estimated_cost != null ? r.estimated_cost.toLocaleString(undefined, { maximumFractionDigits: 4 }) : ''}
+                      </TableCell>
+                    )}
                   </TableRow>
                 ))}
               </TableBody>
