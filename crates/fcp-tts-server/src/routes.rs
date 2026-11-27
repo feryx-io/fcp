@@ -726,6 +726,7 @@ mod tests {
             endpoint: Some(vendor.url().to_string()),
             access_key_id: None,
             secret: Some("xi-their-key".into()),
+            price_per_million: None,
             created_at: now,
             updated_at: now,
         };

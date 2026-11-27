@@ -3,11 +3,12 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fcp_core::speech::{
-    SpeechAccount, SpeechAccountKind, SpeechAccountStore, SpeechCap, SpeechCapKind,
-    SpeechSettingsStore, SpeechUsage, SpeechUsageStore, TenantSpeech,
+    CapLevel, SiteSpeechCap, SpeechAccount, SpeechAccountKind, SpeechAccountStore, SpeechCap,
+    SpeechCapKind, SpeechSettingsStore, SpeechUsage, SpeechUsageStore, TenantSpeech,
 };
 use fcp_core::TenantId;
 use sqlx::Row;
+use std::collections::BTreeMap;
 
 use crate::{datetime_to_system_time, system_time_to_datetime, PostgresStorage};
 
@@ -63,6 +64,27 @@ impl SpeechSettingsStore for PostgresStorage {
         Ok(row.map(|(h,)| h).unwrap_or_default())
     }
 
+    async fn speech_prices(&self) -> anyhow::Result<BTreeMap<String, f64>> {
+        let row: Option<(serde_json::Value,)> =
+            sqlx::query_as("SELECT prices FROM platform_speech WHERE id")
+                .fetch_optional(self.reads())
+                .await?;
+        Ok(row
+            .and_then(|(v,)| serde_json::from_value(v).ok())
+            .unwrap_or_default())
+    }
+
+    async fn put_speech_prices(&self, prices: &BTreeMap<String, f64>) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO platform_speech (id, prices, updated_at) VALUES (TRUE, $1, now())
+             ON CONFLICT (id) DO UPDATE SET prices = EXCLUDED.prices, updated_at = now()",
+        )
+        .bind(serde_json::to_value(prices)?)
+        .execute(self.writes())
+        .await?;
+        Ok(())
+    }
+
     async fn put_held_back_providers(&self, providers: &[String]) -> anyhow::Result<()> {
         sqlx::query(
             "INSERT INTO platform_speech (id, held_back, updated_at) VALUES (TRUE, $1, now())
@@ -88,6 +110,8 @@ struct AccountSettings {
     endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     access_key_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    price_per_million: Option<f64>,
 }
 
 impl PostgresStorage {
@@ -106,6 +130,7 @@ impl PostgresStorage {
             model: settings.model,
             endpoint: settings.endpoint,
             access_key_id: settings.access_key_id,
+            price_per_million: settings.price_per_million,
             secret: self.open_opt(row.try_get("secret")?).await?,
             created_at: datetime_to_system_time(row.try_get::<DateTime<Utc>, _>("created_at")?),
             updated_at: datetime_to_system_time(row.try_get::<DateTime<Utc>, _>("updated_at")?),
@@ -156,6 +181,7 @@ impl SpeechAccountStore for PostgresStorage {
             model: a.model.clone(),
             endpoint: a.endpoint.clone(),
             access_key_id: a.access_key_id.clone(),
+            price_per_million: a.price_per_million,
         };
         let secret = self.seal_opt(a.secret.as_deref())?;
         sqlx::query(
@@ -333,9 +359,13 @@ impl SpeechUsageStore for PostgresStorage {
     }
 
     async fn all_speech_caps(&self) -> anyhow::Result<Vec<SpeechCap>> {
+        // At a site, the cloud's caps as the link carried them, as the
+        // platform's on the tenant (docs/SPEECH_CAPS.md C3).
         let rows = sqlx::query(
             "SELECT tenant_id, provider, kind, monthly_characters FROM speech_caps
-              ORDER BY tenant_id NULLS FIRST, provider, kind",
+             UNION ALL
+             SELECT tenant_id, provider, 'platform', cap FROM speech_cap_carried
+              ORDER BY 1 NULLS FIRST, 2, 3",
         )
         .fetch_all(self.reads())
         .await?;
@@ -346,7 +376,10 @@ impl SpeechUsageStore for PostgresStorage {
         let rows = sqlx::query(
             "SELECT tenant_id, provider, kind, monthly_characters FROM speech_caps
               WHERE tenant_id IS NOT DISTINCT FROM $1
-              ORDER BY provider, kind",
+             UNION ALL
+             SELECT tenant_id, provider, 'platform', cap FROM speech_cap_carried
+              WHERE tenant_id = $1
+              ORDER BY 2, 3",
         )
         .bind(tenant_id.map(|t| t.to_string()))
         .fetch_all(self.reads())
@@ -392,14 +425,159 @@ impl SpeechUsageStore for PostgresStorage {
         Ok(done.rows_affected() > 0)
     }
 
+    async fn note_speech_cap(
+        &self,
+        tenant_id: &TenantId,
+        provider: &str,
+        month: std::time::SystemTime,
+        level: CapLevel,
+        cap: u64,
+        used: u64,
+    ) -> anyhow::Result<bool> {
+        if level == CapLevel::Ok {
+            return Ok(false);
+        }
+        let done = sqlx::query(
+            "INSERT INTO speech_cap_notices (tenant_id, provider, month, level, cap, used)
+             VALUES ($1, $2, ($3::timestamptz AT TIME ZONE 'UTC')::date, $4, $5, $6)
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(tenant_id.to_string())
+        .bind(provider)
+        .bind(system_time_to_datetime(month))
+        .bind(level.as_str())
+        .bind(cap.min(i64::MAX as u64) as i64)
+        .bind(used.min(i64::MAX as u64) as i64)
+        .execute(self.writes())
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn synthesized_by_source(
+        &self,
+        from: std::time::SystemTime,
+    ) -> anyhow::Result<Vec<(TenantId, String, String, u64)>> {
+        let rows = sqlx::query(
+            "SELECT tenant_id, provider, site_id, SUM(synthesized_characters)::BIGINT AS n
+               FROM speech_usage
+              WHERE hour >= $1
+              GROUP BY tenant_id, provider, site_id",
+        )
+        .bind(system_time_to_datetime(from))
+        .fetch_all(self.reads())
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in &rows {
+            let Ok(tenant) = r.try_get::<String, _>("tenant_id")?.parse::<TenantId>() else {
+                continue;
+            };
+            out.push((
+                tenant,
+                r.try_get("provider")?,
+                r.try_get("site_id")?,
+                r.try_get::<Option<i64>, _>("n")?.unwrap_or(0).max(0) as u64,
+            ));
+        }
+        Ok(out)
+    }
+
+    async fn put_site_speech_cap(&self, cap: &SiteSpeechCap) -> anyhow::Result<()> {
+        // Only a change is written, so the journal carries changes alone.
+        sqlx::query(
+            "INSERT INTO site_speech_caps (id, tenant_id, provider, month, cap, used)
+             VALUES ($1, $2, $3, ($4::timestamptz AT TIME ZONE 'UTC')::date, $5, $6)
+             ON CONFLICT (id) DO UPDATE SET
+                 month = EXCLUDED.month, cap = EXCLUDED.cap, used = EXCLUDED.used,
+                 updated_at = NOW()
+             WHERE (site_speech_caps.month, site_speech_caps.cap, site_speech_caps.used)
+                 IS DISTINCT FROM (EXCLUDED.month, EXCLUDED.cap, EXCLUDED.used)",
+        )
+        .bind(cap.row_id())
+        .bind(cap.tenant_id.to_string())
+        .bind(&cap.provider)
+        .bind(system_time_to_datetime(cap.month))
+        .bind(cap.cap.min(i64::MAX as u64) as i64)
+        .bind(serde_json::to_value(&cap.used)?)
+        .execute(self.writes())
+        .await?;
+        Ok(())
+    }
+
+    async fn site_speech_caps(&self, tenant_id: &TenantId) -> anyhow::Result<Vec<SiteSpeechCap>> {
+        let rows = sqlx::query(
+            "SELECT tenant_id, provider, month, cap, used FROM site_speech_caps
+              WHERE tenant_id = $1 ORDER BY provider",
+        )
+        .bind(tenant_id.to_string())
+        .fetch_all(self.reads())
+        .await?;
+        rows.iter().map(Self::site_cap_row).collect()
+    }
+
+    async fn delete_site_speech_cap(
+        &self,
+        tenant_id: &TenantId,
+        provider: &str,
+    ) -> anyhow::Result<bool> {
+        let done = sqlx::query("DELETE FROM site_speech_caps WHERE id = $1")
+            .bind(SiteSpeechCap::row_id_of(tenant_id, provider))
+            .execute(self.writes())
+            .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn put_carried_speech_cap(
+        &self,
+        tenant_id: &TenantId,
+        provider: &str,
+        month: std::time::SystemTime,
+        cap: u64,
+        used_elsewhere: u64,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO speech_cap_carried (tenant_id, provider, month, cap, used_elsewhere)
+             VALUES ($1, $2, ($3::timestamptz AT TIME ZONE 'UTC')::date, $4, $5)
+             ON CONFLICT (tenant_id, provider) DO UPDATE SET
+                 month = EXCLUDED.month, cap = EXCLUDED.cap,
+                 used_elsewhere = EXCLUDED.used_elsewhere, updated_at = NOW()",
+        )
+        .bind(tenant_id.to_string())
+        .bind(provider)
+        .bind(system_time_to_datetime(month))
+        .bind(cap.min(i64::MAX as u64) as i64)
+        .bind(used_elsewhere.min(i64::MAX as u64) as i64)
+        .execute(self.writes())
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_carried_speech_cap(
+        &self,
+        tenant_id: &TenantId,
+        provider: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM speech_cap_carried WHERE tenant_id = $1 AND provider = $2")
+            .bind(tenant_id.to_string())
+            .bind(provider)
+            .execute(self.writes())
+            .await?;
+        Ok(())
+    }
+
     async fn synthesized_since(
         &self,
         from: std::time::SystemTime,
     ) -> anyhow::Result<Vec<(TenantId, String, u64)>> {
+        // At a site, what the cloud says was spoken elsewhere this month.
         let rows = sqlx::query(
-            "SELECT tenant_id, provider, SUM(synthesized_characters)::BIGINT AS n
-               FROM speech_usage
-              WHERE hour >= $1
+            "SELECT tenant_id, provider, SUM(n)::BIGINT AS n FROM (
+                 SELECT tenant_id, provider, synthesized_characters AS n
+                   FROM speech_usage WHERE hour >= $1
+                 UNION ALL
+                 SELECT tenant_id, provider, used_elsewhere
+                   FROM speech_cap_carried
+                  WHERE month = ($1::timestamptz AT TIME ZONE 'UTC')::date
+             ) u
               GROUP BY tenant_id, provider",
         )
         .bind(system_time_to_datetime(from))
@@ -418,6 +596,21 @@ impl SpeechUsageStore for PostgresStorage {
             ));
         }
         Ok(out)
+    }
+}
+
+impl PostgresStorage {
+    fn site_cap_row(r: &sqlx::postgres::PgRow) -> anyhow::Result<SiteSpeechCap> {
+        let month: chrono::NaiveDate = r.try_get("month")?;
+        Ok(SiteSpeechCap {
+            tenant_id: r.try_get::<String, _>("tenant_id")?.parse()?,
+            provider: r.try_get("provider")?,
+            month: datetime_to_system_time(
+                month.and_hms_opt(0, 0, 0).unwrap_or_default().and_utc(),
+            ),
+            cap: r.try_get::<i64, _>("cap")?.max(0) as u64,
+            used: serde_json::from_value(r.try_get("used")?).unwrap_or_default(),
+        })
     }
 }
 

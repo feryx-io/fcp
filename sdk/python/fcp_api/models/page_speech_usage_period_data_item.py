@@ -8,6 +8,8 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..types import UNSET, Unset
+from typing import cast
 
 
 
@@ -29,6 +31,8 @@ class PageSpeechUsagePeriodDataItem:
             requests (int):
             characters (int):
             synthesized_characters (int): What the provider spoke, and bills for; the rest came from the cache.
+            estimated_cost (float | None | Unset): The synthesized characters at the provider's price per million
+                (the platform's, or the account's own), where one is set.
      """
 
     period: str
@@ -37,6 +41,7 @@ class PageSpeechUsagePeriodDataItem:
     requests: int
     characters: int
     synthesized_characters: int
+    estimated_cost: float | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -56,6 +61,12 @@ class PageSpeechUsagePeriodDataItem:
 
         synthesized_characters = self.synthesized_characters
 
+        estimated_cost: float | None | Unset
+        if isinstance(self.estimated_cost, Unset):
+            estimated_cost = UNSET
+        else:
+            estimated_cost = self.estimated_cost
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -67,6 +78,8 @@ class PageSpeechUsagePeriodDataItem:
             "characters": characters,
             "synthesized_characters": synthesized_characters,
         })
+        if estimated_cost is not UNSET:
+            field_dict["estimated_cost"] = estimated_cost
 
         return field_dict
 
@@ -87,6 +100,16 @@ class PageSpeechUsagePeriodDataItem:
 
         synthesized_characters = d.pop("synthesized_characters")
 
+        def _parse_estimated_cost(data: object) -> float | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(float | None | Unset, data)
+
+        estimated_cost = _parse_estimated_cost(d.pop("estimated_cost", UNSET))
+
+
         page_speech_usage_period_data_item = cls(
             period=period,
             provider=provider,
@@ -94,6 +117,7 @@ class PageSpeechUsagePeriodDataItem:
             requests=requests,
             characters=characters,
             synthesized_characters=synthesized_characters,
+            estimated_cost=estimated_cost,
         )
 
 

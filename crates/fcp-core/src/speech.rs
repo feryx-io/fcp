@@ -68,6 +68,16 @@ pub trait SpeechSettingsStore: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// What the platform charges per million characters for each of its
+    /// providers (`docs/SPEECH_CAPS.md` §2): an estimated cost, not a cap.
+    async fn speech_prices(&self) -> anyhow::Result<BTreeMap<String, f64>> {
+        Ok(BTreeMap::new())
+    }
+
+    async fn put_speech_prices(&self, _prices: &BTreeMap<String, f64>) -> anyhow::Result<()> {
+        anyhow::bail!("this store keeps no speech prices")
+    }
+
     async fn put_held_back_providers(&self, _providers: &[String]) -> anyhow::Result<()> {
         anyhow::bail!("this store keeps no platform speech settings")
     }
@@ -98,6 +108,11 @@ pub struct SpeechAccount {
     /// written and never read back by the API.
     #[serde(default)]
     pub secret: Option<String>,
+    /// What the vendor charges per million characters, for an estimated
+    /// cost beside the usage (`docs/SPEECH_CAPS.md` §2); in the tenant's
+    /// own currency.
+    #[serde(default)]
+    pub price_per_million: Option<f64>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -251,13 +266,149 @@ pub trait SpeechUsageStore: Send + Sync {
         anyhow::bail!("this store keeps no speech caps")
     }
 
+    /// Note that `tenant` passed `level` of its cap on `provider` in the
+    /// month starting `month`; whether this is the first time (so the
+    /// warning is raised once).
+    async fn note_speech_cap(
+        &self,
+        _tenant_id: &TenantId,
+        _provider: &str,
+        _month: SystemTime,
+        _level: CapLevel,
+        _cap: u64,
+        _used: u64,
+    ) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    /// Every tenant's synthesized characters per provider and source (a
+    /// site's id, '' for this deployment's own) since `from`.
+    async fn synthesized_by_source(
+        &self,
+        _from: SystemTime,
+    ) -> anyhow::Result<Vec<(TenantId, String, String, u64)>> {
+        Ok(Vec::new())
+    }
+
+    /// Keep the cloud's view of a cap for a tenant's sites (`docs/SPEECH_CAPS.md`
+    /// §5), written only when it changed so the journal carries changes.
+    async fn put_site_speech_cap(&self, _cap: &SiteSpeechCap) -> anyhow::Result<()> {
+        anyhow::bail!("this store keeps no sites' speech caps")
+    }
+
+    /// A tenant's caps as its sites are told them.
+    async fn site_speech_caps(&self, _tenant_id: &TenantId) -> anyhow::Result<Vec<SiteSpeechCap>> {
+        Ok(Vec::new())
+    }
+
+    async fn delete_site_speech_cap(
+        &self,
+        _tenant_id: &TenantId,
+        _provider: &str,
+    ) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    /// At a site: the cloud's cap on `tenant` speaking with `provider`, and
+    /// what was synthesized this month everywhere but here.
+    async fn put_carried_speech_cap(
+        &self,
+        _tenant_id: &TenantId,
+        _provider: &str,
+        _month: SystemTime,
+        _cap: u64,
+        _used_elsewhere: u64,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("this store keeps no carried speech caps")
+    }
+
+    async fn delete_carried_speech_cap(
+        &self,
+        _tenant_id: &TenantId,
+        _provider: &str,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Every tenant's synthesized characters per provider since `from`
-    /// (the month's start), this deployment's and its sites' together.
+    /// (the month's start), this deployment's and its sites' together; at
+    /// a site, with what the cloud says was spoken elsewhere.
     async fn synthesized_since(
         &self,
         _from: SystemTime,
     ) -> anyhow::Result<Vec<(TenantId, String, u64)>> {
         Ok(Vec::new())
+    }
+}
+
+/// A cap as the cloud tells a tenant's sites (`docs/SPEECH_CAPS.md` §5): the
+/// cap that applies, and the month's synthesized characters by where they
+/// were spoken ('' the cloud, else a site's id), so each site can leave out
+/// its own, which it counts itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SiteSpeechCap {
+    pub tenant_id: TenantId,
+    pub provider: String,
+    /// The month's start (UTC).
+    pub month: SystemTime,
+    pub cap: u64,
+    #[serde(default)]
+    pub used: BTreeMap<String, u64>,
+}
+
+impl SiteSpeechCap {
+    /// The journal's id for it: unique across tenants.
+    pub fn row_id(&self) -> String {
+        Self::row_id_of(&self.tenant_id, &self.provider)
+    }
+
+    pub fn row_id_of(tenant_id: &TenantId, provider: &str) -> String {
+        format!("{tenant_id}/{provider}")
+    }
+
+    /// The provider a row id names.
+    pub fn provider_of(row_id: &str) -> Option<&str> {
+        row_id.split_once('/').map(|(_, p)| p)
+    }
+
+    /// What was spoken everywhere but at `site`.
+    pub fn used_elsewhere(&self, site: &str) -> u64 {
+        self.used
+            .iter()
+            .filter(|(source, _)| source.as_str() != site)
+            .map(|(_, n)| *n)
+            .sum()
+    }
+}
+
+/// How far into its cap a tenant is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapLevel {
+    Ok,
+    /// 80 % or more.
+    Near,
+    Reached,
+}
+
+impl CapLevel {
+    /// Where `used` of `cap` stands.
+    pub fn of(used: u64, cap: u64) -> Self {
+        if used >= cap {
+            Self::Reached
+        } else if used.saturating_mul(5) >= cap.saturating_mul(4) {
+            Self::Near
+        } else {
+            Self::Ok
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Near => "near",
+            Self::Reached => "reached",
+        }
     }
 }
 

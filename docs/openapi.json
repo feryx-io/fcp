@@ -33887,6 +33887,14 @@
           "offered": {
             "type": "boolean",
             "description": "Whether tenants may choose it."
+          },
+          "price_per_million": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "What the platform charges tenants per million characters, for an\nestimated cost beside their usage (`docs/SPEECH_CAPS.md`)."
           }
         }
       },
@@ -41061,6 +41069,14 @@
                   "type": "boolean",
                   "description": "Whether a key is kept; the key itself is never returned."
                 },
+                "price_per_million": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "format": "double",
+                  "description": "What the vendor charges per million characters, for an estimated\ncost (`docs/SPEECH_CAPS.md`)."
+                },
                 "created_at": {
                   "type": "string"
                 },
@@ -41287,6 +41303,14 @@
                   "format": "int64",
                   "description": "What the provider spoke, and bills for; the rest came from the cache.",
                   "minimum": 0
+                },
+                "estimated_cost": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "format": "double",
+                  "description": "The synthesized characters at the provider's price per million\n(the platform's, or the account's own), where one is set."
                 }
               }
             }
@@ -43633,6 +43657,20 @@
           "held_back": {
             "type": "array",
             "items": {
+              "type": "string"
+            }
+          },
+          "prices": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Prices per million characters by provider; absent keeps them, and a\nprovider left out has none.",
+            "additionalProperties": {
+              "type": "number",
+              "format": "double"
+            },
+            "propertyNames": {
               "type": "string"
             }
           }
@@ -47306,6 +47344,14 @@
               "null"
             ],
             "description": "Write-only: the API key, subscription key or AWS secret access key."
+          },
+          "price_per_million": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "What the vendor charges per million characters; null for none."
           }
         },
         "additionalProperties": false
@@ -47364,6 +47410,14 @@
           "has_key": {
             "type": "boolean",
             "description": "Whether a key is kept; the key itself is never returned."
+          },
+          "price_per_million": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "What the vendor charges per million characters, for an estimated\ncost (`docs/SPEECH_CAPS.md`)."
           },
           "created_at": {
             "type": "string"
@@ -47646,6 +47700,14 @@
             "format": "int64",
             "description": "What the provider spoke, and bills for; the rest came from the cache.",
             "minimum": 0
+          },
+          "estimated_cost": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The synthesized characters at the provider's price per million\n(the platform's, or the account's own), where one is set."
           }
         }
       },
@@ -52761,6 +52823,8 @@
               "compliance.hold_placed",
               "compliance.hold_released",
               "compliance.subject_request_completed",
+              "speech.cap_near",
+              "speech.cap_reached",
               "webhook.test"
             ]
           },

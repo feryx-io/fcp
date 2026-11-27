@@ -13,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { speech } from '@/api/endpoints'
 import { useVoices } from '@/lib/voices'
 import { PlatformOffer, SpeechAccounts, SpeechUsageCard } from './SpeechAccounts'
+import { SpeechCapsCard } from './SpeechCaps'
 import { useIsPlatformAdmin } from '@/components/TenantSelector'
 
 const DEFAULT = '__default__'
@@ -204,6 +205,7 @@ export function SpeechPage() {
       </Card>
 
       <SpeechAccounts />
+      <SpeechCapsCard platformAdmin={platformAdmin} />
       {platformAdmin && <PlatformOffer />}
       <SpeechUsageCard />
 

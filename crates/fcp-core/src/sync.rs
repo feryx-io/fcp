@@ -65,6 +65,10 @@ pub const SYNC_TABLES: &[&str] = &[
     // own key.
     "tenant_speech",
     "speech_accounts",
+    // Speech caps (docs/SPEECH_CAPS.md C3): the cloud's cap on each capped
+    // provider and the month's speech by where it was spoken; the link keeps
+    // what was spoken elsewhere beside the site's own.
+    "site_speech_caps",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

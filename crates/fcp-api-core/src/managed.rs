@@ -55,6 +55,10 @@ pub const SYNCED_RESOURCES: &[&str] = &[
     // a preview or an account's test is the site's own.
     "speech/settings",
     "speech/accounts",
+    // Speech caps (docs/SPEECH_CAPS.md C3): the cloud's, carried down as
+    // `site_speech_caps`; a site sets none of its own.
+    "speech/caps",
+    "system/speech/caps",
 ];
 
 /// Whether `path` (relative to the v1 root, no leading slash) is a synced
@@ -135,5 +139,9 @@ mod tests {
         );
         assert_eq!(synced_resource("speech/accounts/speech-1/test"), None);
         assert_eq!(synced_resource("speech/preview"), None);
+        assert_eq!(
+            synced_resource("speech/caps/account:x"),
+            Some("speech/caps")
+        );
     }
 }
