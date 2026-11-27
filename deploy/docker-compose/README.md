@@ -219,6 +219,13 @@ Rebuild after a code change with `docker compose up -d --build`; `docker
 compose logs -f <service>` follows a service; `docker compose down -v`
 removes the volumes too, the database included.
 
+To send every service's log lines to your own OpenTelemetry collector as
+well as the admin's Logs page, set `OTEL_EXPORTER_OTLP_ENDPOINT` in
+`.env` to the collector's OTLP/HTTP address (for example
+`http://otel-collector:4318`), and `OTEL_EXPORTER_OTLP_HEADERS` if it
+wants a key. `FCP_LOG_OTLP_LEVEL` (`info`) is the least severe level
+sent. The rest of the variables are in `docs/LOG_VIEWER.md` (L6).
+
 ## Pull instead of build
 
 The Images workflow builds the fifteen images every night and pushes
