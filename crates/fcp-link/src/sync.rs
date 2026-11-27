@@ -439,6 +439,26 @@ impl Syncer {
                 }
                 None => warn!(table, id, "No speech account store at the site; skipped"),
             },
+            // The cloud's cap (docs/SPEECH_CAPS.md C3): kept with what was
+            // spoken everywhere but here, which the site counts itself.
+            "site_speech_caps" => match storage.speech_usage_store() {
+                Some(store) => {
+                    let cap: fcp_core::speech::SiteSpeechCap = parse!();
+                    if cap.tenant_id == self.tenant {
+                        let elsewhere = cap.used_elsewhere(&self.site.to_string());
+                        store
+                            .put_carried_speech_cap(
+                                &cap.tenant_id,
+                                &cap.provider,
+                                cap.month,
+                                cap.cap,
+                                elsewhere,
+                            )
+                            .await?
+                    }
+                }
+                None => warn!(table, id, "No speech usage store at the site; skipped"),
+            },
             "classes_of_service" => storage.put_class_of_service(parse!()).await?,
             "devices" => storage.put_device(parse!()).await?,
             "extensions" => storage.put_extension(parse!()).await?,
@@ -647,6 +667,16 @@ impl Syncer {
             "speech_accounts" => {
                 if let Some(store) = storage.speech_account_store() {
                     store.delete_speech_account(&self.tenant, &id!()).await?;
+                }
+            }
+            "site_speech_caps" => {
+                if let (Some(store), Some(provider)) = (
+                    storage.speech_usage_store(),
+                    fcp_core::speech::SiteSpeechCap::provider_of(id),
+                ) {
+                    store
+                        .delete_carried_speech_cap(&self.tenant, provider)
+                        .await?;
                 }
             }
             "classes_of_service" => storage.delete_class_of_service(&id!()).await?,

@@ -73,3 +73,47 @@ test("a tenant's own speech account is added, edited and deleted, its key never 
   await page.getByRole('button', { name: 'Delete Voices' }).click()
   await expect(page.getByRole('row', { name: /Voices/ })).toHaveCount(0)
 })
+
+// Caps (docs/SPEECH_CAPS.md C2): a tenant's administrator caps its own
+// account from the page, sees where it stands this month, and takes the
+// cap off again.
+test("a tenant caps its own account's speech and takes the cap off", async ({ page, api }) => {
+  const made = await api.post('/api/v1/speech/accounts', {
+    data: { name: 'Capped voices', kind: 'openai', secret: 'sk-capped', price_per_million: 15 },
+  })
+  expect(made.ok()).toBe(true)
+  const account = await made.json()
+  expect(account.price_per_million).toBe(15)
+
+  await signIn(page, tenantAdmin())
+  await page.goto('/admin/speech')
+  await settled(page)
+  await expect(page.getByRole('heading', { name: 'Caps' })).toBeVisible()
+  await expect(page.getByText('No caps: speech is not limited.')).toBeVisible()
+
+  await page.getByRole('button', { name: 'Add a cap' }).click()
+  await page.getByLabel('Characters a month').fill('1000')
+  await page.getByRole('button', { name: 'Save cap' }).click()
+  await settled(page)
+  const row = page.getByTestId(`cap-${account.provider}`)
+  await expect(row.getByText('0 of 1,000 characters this month', { exact: false })).toBeVisible()
+  await expect(row.getByRole('progressbar', { name: 'Capped voices this month' })).toBeVisible()
+  const kept = await (await api.get('/api/v1/speech/caps')).json()
+  const mine = (kept.data ?? kept).find((c: { provider: string }) => c.provider === account.provider)
+  expect(mine?.own_cap).toBe(1000)
+  expect(mine?.state).toBe('ok')
+
+  // Emptied and saved: no cap.
+  await row.getByLabel('Your cap', { exact: true }).fill('')
+  await row.getByRole('button', { name: 'Save your cap on Capped voices' }).click()
+  await settled(page)
+  await expect(page.getByText('No caps: speech is not limited.')).toBeVisible()
+
+  // The account's price is in its form.
+  await page.getByRole('button', { name: 'Edit Capped voices' }).click()
+  await expect(page.getByRole('dialog').getByLabel('Price per million characters (optional)')).toHaveValue('15')
+  await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click()
+  page.once('dialog', (d) => d.accept())
+  await page.getByRole('button', { name: 'Delete Capped voices' }).click()
+  await expect(page.getByRole('row', { name: /Capped voices/ })).toHaveCount(0)
+})

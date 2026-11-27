@@ -38,6 +38,7 @@ pub enum EventType {
     Cdr,
     Compliance,
     Trunk,
+    Speech,
 }
 
 impl EventFilter {
@@ -106,6 +107,7 @@ impl EventFilter {
                 PlatformEvent::Cdr(_) => EventType::Cdr,
                 PlatformEvent::Compliance(_) => EventType::Compliance,
                 PlatformEvent::Trunk(_) => EventType::Trunk,
+                PlatformEvent::Speech(_) => EventType::Speech,
             };
 
             if !types.contains(&event_type) {
