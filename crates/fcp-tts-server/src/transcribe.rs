@@ -86,56 +86,131 @@ fn error(status: StatusCode, message: String) -> Response {
     (status, Json(serde_json::json!({ "error": message }))).into_response()
 }
 
-/// What hears a request (`docs/TENANT_RECOGNITION.md` R2), and the
-/// tenant's settings: the recognizer it names; else the tenant's choice —
-/// one of the server's that is offered, or the tenant's own account that
-/// hears — falling back to the server's default when that cannot hear, so
-/// a Gather is never deaf; a recognizer a request names that cannot hear
-/// says why.
-async fn service(
-    state: &AppState,
-    query: &TranscribeQuery,
-) -> Result<(Arc<SttService>, Option<fcp_core::speech::TenantSpeech>), (StatusCode, String)> {
+/// What hears a request, the tenant's settings, and the name its usage is
+/// counted under.
+struct Heard {
+    service: Arc<SttService>,
+    tenant: Option<fcp_core::speech::TenantSpeech>,
+    by: String,
+}
+
+/// What hears a request (`docs/TENANT_RECOGNITION.md` R2–R3): the
+/// recognizer it names; else the tenant's choice — one of the server's that
+/// is offered, or the tenant's own account that hears — falling back to the
+/// server's default when that cannot hear or has reached its minute cap, so
+/// a Gather is never deaf. A recognizer a request names that cannot hear
+/// says why; one at its cap is 429 `speech_cap_reached`.
+async fn service(state: &AppState, query: &TranscribeQuery) -> Result<Heard, Box<Response>> {
     let tenant = state.tenant_speech(query.tenant_id.as_deref()).await;
     let named = query.provider.as_deref().filter(|p| !p.is_empty());
-    let chosen = named.or_else(|| tenant.as_ref().and_then(|t| t.recognizer.as_deref()));
-    let refuse = |why: String| Err((StatusCode::BAD_REQUEST, why));
-    if let Some(p) = chosen {
-        match fcp_core::speech::account_of(p) {
-            Some(id) => match query.tenant_id.as_deref() {
-                Some(t) => match state.account_recognizer(t, id).await {
-                    Ok(s) => return Ok((s, tenant)),
-                    Err(why) if named.is_some() => return refuse(why),
-                    Err(why) => {
-                        warn!(account = %id, why = %why, "A tenant's account cannot hear; the default hears");
+    let tenants_choice = tenant.as_ref().and_then(|t| t.recognizer.clone());
+    let chosen = named.or(tenants_choice.as_deref());
+    let refuse = |why: String| Err(Box::new(error(StatusCode::BAD_REQUEST, why)));
+    let default_name = state.stt_default.clone().or_else(|| {
+        (state.stt.len() == 1)
+            .then(|| state.stt.keys().next().cloned())
+            .flatten()
+    });
+    if let Some(p) = chosen.filter(|p| Some(*p) != default_name.as_deref()) {
+        // At its cap this month: the default hears instead.
+        let reached = match (&state.usage, query.tenant_id.as_deref()) {
+            (Some(usage), Some(t)) => usage.caps.reached(t, p, fcp_core::speech::CapUnit::Minutes),
+            _ => None,
+        };
+        if let Some(r) = reached {
+            if named.is_some() {
+                return Err(Box::new(
+                    (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        Json(serde_json::json!({
+                            "error": format!(
+                                "This month's recognition cap on {p} is reached ({} of {} minutes)",
+                                r.used / 60_000,
+                                r.cap
+                            ),
+                            "code": "speech_cap_reached",
+                            "cap": r.cap,
+                            "used": r.used / 60_000,
+                        })),
+                    )
+                        .into_response(),
+                ));
+            }
+            info!(provider = %p, cap = r.cap, "A tenant's recognition cap is reached; the default hears");
+        } else {
+            match fcp_core::speech::account_of(p) {
+                Some(id) => match query.tenant_id.as_deref() {
+                    Some(t) => match state.account_recognizer(t, id).await {
+                        Ok(service) => {
+                            return Ok(Heard {
+                                service,
+                                tenant,
+                                by: p.to_string(),
+                            })
+                        }
+                        Err(why) if named.is_some() => return refuse(why),
+                        Err(why) => {
+                            warn!(account = %id, why = %why, "A tenant's account cannot hear; the default hears");
+                        }
+                    },
+                    None if named.is_some() => {
+                        return refuse("an account hears for its tenant only".into())
                     }
+                    None => {}
                 },
-                None if named.is_some() => {
-                    return refuse("an account hears for its tenant only".into())
-                }
-                None => {}
-            },
-            None => {
-                // The tenant's own choice of the platform's is held to what
-                // the platform offers; a named one (a preview the admin
-                // checked) is not.
-                let offered = named.is_some() || !state.held_back().await.iter().any(|h| h == p);
-                match state.stt.get(p) {
-                    Some(s) if offered => return Ok((Arc::clone(s), tenant)),
-                    _ if named.is_some() => {
-                        return refuse(format!("unknown speech provider '{p}'"))
+                None => {
+                    // The tenant's own choice of the platform's is held to
+                    // what the platform offers; a named one (a preview the
+                    // admin checked) is not.
+                    let offered =
+                        named.is_some() || !state.held_back().await.iter().any(|h| h == p);
+                    match state.stt.get(p) {
+                        Some(service) if offered => {
+                            return Ok(Heard {
+                                service: Arc::clone(service),
+                                tenant,
+                                by: p.to_string(),
+                            })
+                        }
+                        _ if named.is_some() => {
+                            return refuse(format!("unknown speech provider '{p}'"))
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
         }
     }
-    match state.stt_service(None) {
-        Some(s) => Ok((Arc::clone(s), tenant)),
-        None => Err((
+    match (state.stt_service(None), default_name) {
+        (Some(service), Some(by)) => Ok(Heard {
+            service: Arc::clone(service),
+            tenant,
+            by,
+        }),
+        _ => Err(Box::new(error(
             StatusCode::SERVICE_UNAVAILABLE,
             "speech recognition is not configured ([stt.providers])".into(),
-        )),
+        ))),
+    }
+}
+
+/// What a recognition heard, counted when it ends however it ends
+/// (`docs/TENANT_RECOGNITION.md` R3).
+struct Tally {
+    usage: Option<Arc<crate::usage::UsageCounter>>,
+    tenant: Option<String>,
+    by: String,
+    samples: u64,
+}
+
+impl Drop for Tally {
+    fn drop(&mut self) {
+        if let (Some(usage), Some(tenant)) = (&self.usage, &self.tenant) {
+            if self.samples > 0 {
+                let ms = self.samples * 1000 / u64::from(stt::STT_SAMPLE_RATE);
+                usage.count_heard(tenant, &self.by, ms);
+            }
+        }
     }
 }
 
@@ -146,9 +221,13 @@ pub async fn transcribe(
     Query(query): Query<TranscribeQuery>,
     body: Bytes,
 ) -> Response {
-    let (service, tenant) = match service(&state, &query).await {
-        Ok(s) => s,
-        Err((status, message)) => return error(status, message),
+    let Heard {
+        service,
+        tenant,
+        by,
+    } = match service(&state, &query).await {
+        Ok(h) => h,
+        Err(refused) => return *refused,
     };
     let pcm = match tokio::task::spawn_blocking(move || stt::wav_bytes_16k_mono(&body)).await {
         Ok(Ok(pcm)) => pcm,
@@ -159,6 +238,12 @@ pub async fn transcribe(
     let options = query.resolved(tenant.as_ref(), &service);
     match service.transcribe_pcm(&pcm, &options).await {
         Ok(transcript) => {
+            drop(Tally {
+                usage: state.usage.clone(),
+                tenant: query.tenant_id.clone(),
+                by,
+                samples: pcm.len() as u64,
+            });
             info!(
                 provider = %service.provider_name(),
                 seconds,
@@ -182,15 +267,30 @@ pub async fn transcribe_stream(
     Query(query): Query<TranscribeQuery>,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    let (service, tenant) = match service(&state, &query).await {
-        Ok(s) => s,
-        Err((status, message)) => return error(status, message),
+    let Heard {
+        service,
+        tenant,
+        by,
+    } = match service(&state, &query).await {
+        Ok(h) => h,
+        Err(refused) => return *refused,
     };
     let options = query.resolved(tenant.as_ref(), &service);
-    upgrade.on_upgrade(move |socket| stream_session(socket, service, options))
+    let tally = Tally {
+        usage: state.usage.clone(),
+        tenant: query.tenant_id.clone(),
+        by,
+        samples: 0,
+    };
+    upgrade.on_upgrade(move |socket| stream_session(socket, service, options, tally))
 }
 
-async fn stream_session(socket: WebSocket, service: Arc<SttService>, options: SttOptions) {
+async fn stream_session(
+    socket: WebSocket,
+    service: Arc<SttService>,
+    options: SttOptions,
+    mut tally: Tally,
+) {
     let (mut sink, mut source) = socket.split();
     let mut stream = match service.stream(&options).await {
         Ok(stream) => stream,
@@ -211,7 +311,9 @@ async fn stream_session(socket: WebSocket, service: Arc<SttService>, options: St
         tokio::select! {
             message = source.next(), if !finished => match message {
                 Some(Ok(Message::Binary(bytes))) => {
-                    if stream.send(stt::pcm_from_le_bytes(&bytes)).is_err() {
+                    let pcm = stt::pcm_from_le_bytes(&bytes);
+                    tally.samples += pcm.len() as u64;
+                    if stream.send(pcm).is_err() {
                         stream.finish();
                         finished = true;
                     }
@@ -468,5 +570,131 @@ mod tests {
             .collect();
         // No recognition language of their own: their speech language.
         assert_eq!(languages, ["de-DE", "de-DE"]);
+    }
+
+    /// `docs/TENANT_RECOGNITION.md` R3: what is heard is counted in
+    /// milliseconds under the recognizer that heard it; at its minute cap a
+    /// tenant's recognizer gives way to the default, and naming it is 429.
+    #[tokio::test]
+    async fn a_recognizer_at_its_minute_cap_gives_way_to_the_default() {
+        use fcp_core::speech::{CapUnit, SpeechCap, SpeechCapKind, SpeechUsage, SpeechUsageStore};
+        #[derive(Default)]
+        struct Kept(std::sync::Mutex<Vec<SpeechUsage>>);
+        #[async_trait::async_trait]
+        impl SpeechUsageStore for Kept {
+            async fn add_speech_usage(&self, u: &[SpeechUsage]) -> anyhow::Result<()> {
+                self.0.lock().unwrap().extend_from_slice(u);
+                Ok(())
+            }
+            async fn speech_usage(
+                &self,
+                _: &fcp_core::TenantId,
+                _: std::time::SystemTime,
+                _: std::time::SystemTime,
+            ) -> anyhow::Result<Vec<SpeechUsage>> {
+                Ok(Vec::new())
+            }
+            async fn all_speech_caps(&self) -> anyhow::Result<Vec<SpeechCap>> {
+                Ok(vec![SpeechCap {
+                    tenant_id: None,
+                    provider: "alt".into(),
+                    kind: SpeechCapKind::Platform,
+                    unit: CapUnit::Minutes,
+                    monthly_characters: Some(1),
+                }])
+            }
+        }
+        let primary = ScriptedStt::start("up", &[(700, "primary")]).await;
+        let alt = ScriptedStt::start("up", &[(700, "alt")]).await;
+        let remote = |url: &str| {
+            let url = url.to_string();
+            async move {
+                Arc::new(
+                    SttService::new(SttConfig {
+                        provider: SttProviderConfig::Remote {
+                            url,
+                            auth_token: "up".into(),
+                            provider: None,
+                        },
+                        language: "en-US".into(),
+                    })
+                    .await
+                    .unwrap(),
+                )
+            }
+        };
+        let t = fcp_core::TenantId::new();
+        let mut speech = fcp_core::speech::TenantSpeech::defaults(t);
+        speech.recognizer = Some("alt".into());
+        let kept = Arc::new(Kept::default());
+        let usage = crate::usage::UsageCounter::new(kept.clone());
+        usage.caps.refresh().await;
+        let base = test_state().await;
+        let state = Arc::new(AppState {
+            services: base.services.clone(),
+            speech: Some(Arc::new(Settings([(t, speech)].into_iter().collect()))),
+            speech_cache: Default::default(),
+            accounts: None,
+            account_services: Default::default(),
+            account_recognizers: Default::default(),
+            held_back: Default::default(),
+            usage: Some(Arc::clone(&usage)),
+            config: base.config.clone(),
+            default_provider: base.default_provider.clone(),
+            stt: [
+                ("primary".to_string(), remote(primary.url()).await),
+                ("alt".to_string(), remote(alt.url()).await),
+            ]
+            .into_iter()
+            .collect(),
+            stt_default: Some("primary".into()),
+        });
+        // Two seconds of tone.
+        let tone: Vec<i16> = (0..16 * 2000)
+            .map(|i| {
+                (9000.0 * (2.0 * std::f64::consts::PI * 700.0 * i as f64 / 16_000.0).sin()) as i16
+            })
+            .collect();
+        let hear = |provider: Option<&str>| {
+            let state = Arc::clone(&state);
+            let query = TranscribeQuery {
+                tenant_id: Some(t.to_string()),
+                provider: provider.map(String::from),
+                ..Default::default()
+            };
+            let body = Bytes::from(wav_bytes(&tone));
+            async move {
+                let r = transcribe(State(state), Query(query), body).await;
+                let status = r.status();
+                let body = axum::body::to_bytes(r.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+                (status, v)
+            }
+        };
+        let (status, v) = hear(None).await;
+        assert_eq!((status, v["text"].as_str()), (StatusCode::OK, Some("alt")));
+        // 58 more seconds heard elsewhere on this server: the minute is up.
+        usage.count_heard(&t.to_string(), "alt", 58_000);
+        let (status, v) = hear(None).await;
+        assert_eq!(
+            (status, v["text"].as_str()),
+            (StatusCode::OK, Some("primary"))
+        );
+        let (status, v) = hear(Some("alt")).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(v["code"], "speech_cap_reached");
+
+        usage.flush().await;
+        let rows = kept.0.lock().unwrap().clone();
+        let ms = |p: &str| {
+            rows.iter()
+                .filter(|r| r.provider == p)
+                .map(|r| r.recognized_ms)
+                .sum::<u64>()
+        };
+        assert_eq!(ms("alt"), 60_000, "{rows:?}");
+        assert_eq!(ms("primary"), 2_000, "{rows:?}");
     }
 }

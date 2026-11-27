@@ -49,6 +49,7 @@ from .call_quality_report import CallQualityReport
 from .call_quality_response import CallQualityResponse
 from .caller_id_policy import CallerIdPolicy
 from .calling_response import CallingResponse
+from .cap_unit import CapUnit
 from .capture_allow_request import CaptureAllowRequest
 from .capture_allow_response import CaptureAllowResponse
 from .capture_response import CaptureResponse
@@ -440,6 +441,7 @@ from .platform_speech import PlatformSpeech
 from .platform_speech_cap import PlatformSpeechCap
 from .platform_speech_cap_request import PlatformSpeechCapRequest
 from .platform_speech_request import PlatformSpeechRequest
+from .platform_speech_request_minute_prices_type_0 import PlatformSpeechRequestMinutePricesType0
 from .platform_speech_request_prices_type_0 import PlatformSpeechRequestPricesType0
 from .play_request import PlayRequest
 from .policy_response import PolicyResponse
@@ -715,6 +717,7 @@ __all__ = (
     "CaptureAllowRequest",
     "CaptureAllowResponse",
     "CaptureResponse",
+    "CapUnit",
     "CdrResponse",
     "ChangeExpiredPasswordRequest",
     "ChangePasswordRequest",
@@ -1103,6 +1106,7 @@ __all__ = (
     "PlatformSpeechCap",
     "PlatformSpeechCapRequest",
     "PlatformSpeechRequest",
+    "PlatformSpeechRequestMinutePricesType0",
     "PlatformSpeechRequestPricesType0",
     "PlayRequest",
     "PolicyResponse",

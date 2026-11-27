@@ -75,9 +75,9 @@ def sync_detailed(
 
     Args:
         provider (str):
-        body (SpeechCapRequest): A cap to keep. `monthly_characters` null is allowed only on a
-            tenant's
-            platform cap: none for this tenant, whatever the default says.
+        body (SpeechCapRequest): A cap to keep. `monthly` null is allowed only on a tenant's
+            platform
+            cap: none for this tenant, whatever the default says.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -112,9 +112,9 @@ def sync(
 
     Args:
         provider (str):
-        body (SpeechCapRequest): A cap to keep. `monthly_characters` null is allowed only on a
-            tenant's
-            platform cap: none for this tenant, whatever the default says.
+        body (SpeechCapRequest): A cap to keep. `monthly` null is allowed only on a tenant's
+            platform
+            cap: none for this tenant, whatever the default says.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -144,9 +144,9 @@ async def asyncio_detailed(
 
     Args:
         provider (str):
-        body (SpeechCapRequest): A cap to keep. `monthly_characters` null is allowed only on a
-            tenant's
-            platform cap: none for this tenant, whatever the default says.
+        body (SpeechCapRequest): A cap to keep. `monthly` null is allowed only on a tenant's
+            platform
+            cap: none for this tenant, whatever the default says.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -181,9 +181,9 @@ async def asyncio(
 
     Args:
         provider (str):
-        body (SpeechCapRequest): A cap to keep. `monthly_characters` null is allowed only on a
-            tenant's
-            platform cap: none for this tenant, whatever the default says.
+        body (SpeechCapRequest): A cap to keep. `monthly` null is allowed only on a tenant's
+            platform
+            cap: none for this tenant, whatever the default says.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

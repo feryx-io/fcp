@@ -167,7 +167,7 @@ import type {
   SpeechAccount,
   SpeechAccountRequest,
   PlatformSpeech,
-  SpeechUsagePeriod, SpeechCap, PlatformSpeechCap,
+  SpeechUsagePeriod, SpeechCap, PlatformSpeechCap, CapUnit,
   LogLine,
   LogLevel,
 } from '@/types'
@@ -853,22 +853,29 @@ export const speech = {
   },
   // The platform's offer: which of the TTS server's providers tenants may choose.
   platform: () => apiClient.get<PlatformSpeech>('/system/speech'),
-  savePlatform: (held_back: string[], prices?: Record<string, number>) =>
-    apiClient.put<PlatformSpeech>('/system/speech', prices ? { held_back, prices } : { held_back }),
+  savePlatform: (held_back: string[], prices?: Record<string, number>, minute_prices?: Record<string, number>) =>
+    apiClient.put<PlatformSpeech>('/system/speech', {
+      held_back,
+      ...(prices ? { prices } : {}),
+      ...(minute_prices ? { minute_prices } : {}),
+    }),
   /** Caps (docs/SPEECH_CAPS.md): where the tenant stands this month. */
   caps: () => apiClient.getAll<SpeechCap>('/speech/caps'),
   /** The tenant's own cap, or with `platform` a platform administrator's
    *  cap on the tenant picked (null: none for this tenant). */
-  saveCap: (provider: string, monthly_characters: number | null, platform = false) =>
+  saveCap: (provider: string, monthly: number | null, platform = false, unit: CapUnit = 'characters') =>
     apiClient.put<void>(`/speech/caps/${encodeURIComponent(provider)}`,
-      platform ? { monthly_characters, kind: 'platform' } : { monthly_characters }),
-  removeCap: (provider: string, platform = false) =>
-    apiClient.delete<void>(`/speech/caps/${encodeURIComponent(provider)}${platform ? '?kind=platform' : ''}`),
+      platform ? { monthly, unit, kind: 'platform' } : { monthly, unit }),
+  removeCap: (provider: string, platform = false, unit: CapUnit = 'characters') => {
+    const q = new URLSearchParams({ unit })
+    if (platform) q.set('kind', 'platform')
+    return apiClient.delete<void>(`/speech/caps/${encodeURIComponent(provider)}?${q}`)
+  },
   platformCaps: () => apiClient.getAll<PlatformSpeechCap>('/system/speech/caps'),
-  savePlatformCap: (provider: string, monthly_characters: number) =>
-    apiClient.put<void>(`/system/speech/caps/${encodeURIComponent(provider)}`, { monthly_characters }),
-  removePlatformCap: (provider: string) =>
-    apiClient.delete<void>(`/system/speech/caps/${encodeURIComponent(provider)}`),
+  savePlatformCap: (provider: string, monthly: number, unit: CapUnit = 'characters') =>
+    apiClient.put<void>(`/system/speech/caps/${encodeURIComponent(provider)}`, { monthly, unit }),
+  removePlatformCap: (provider: string, unit: CapUnit = 'characters') =>
+    apiClient.delete<void>(`/system/speech/caps/${encodeURIComponent(provider)}?unit=${unit}`),
   /** The tenant's speech by month (the last twelve) and provider. */
   usage: () => apiClient.getAll<SpeechUsagePeriod>('/speech/usage'),
 }

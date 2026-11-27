@@ -42,10 +42,11 @@ interface Draft {
   secret: string
   has_key: boolean
   price: string
+  minutePrice: string
 }
 
 const empty: Draft = {
-  name: '', kind: 'openai', region: '', model: '', endpoint: '', access_key_id: '', secret: '', has_key: false, price: '',
+  name: '', kind: 'openai', region: '', model: '', endpoint: '', access_key_id: '', secret: '', has_key: false, price: '', minutePrice: '',
 }
 
 const draftOf = (a: SpeechAccount): Draft => ({
@@ -59,6 +60,7 @@ const draftOf = (a: SpeechAccount): Draft => ({
   secret: '',
   has_key: a.has_key,
   price: a.price_per_million != null ? String(a.price_per_million) : '',
+  minutePrice: a.price_per_minute != null ? String(a.price_per_minute) : '',
 })
 
 export function SpeechAccounts() {
@@ -79,6 +81,7 @@ export function SpeechAccounts() {
         access_key_id: d.access_key_id || null,
         secret: d.secret || null,
         price_per_million: d.price.trim() === '' ? null : Number(d.price),
+        price_per_minute: d.minutePrice.trim() === '' ? null : Number(d.minutePrice),
       }
       return d.id ? speech.updateAccount(d.id, body) : speech.createAccount(body)
     },
@@ -239,6 +242,14 @@ export function SpeechAccounts() {
                   placeholder="For an estimated cost beside your usage"
                   onChange={(e) => set({ price: e.target.value })} />
               </div>
+              {(draft.kind === 'openai' || draft.kind === 'deepgram') && (
+                <div className="space-y-1">
+                  <Label htmlFor="account-minute-price">Price per minute heard (optional)</Label>
+                  <Input id="account-minute-price" inputMode="decimal" value={draft.minutePrice}
+                    placeholder="For an estimated cost of what it hears"
+                    onChange={(e) => set({ minutePrice: e.target.value })} />
+                </div>
+              )}
               {error && <p className="text-sm text-destructive">{error}</p>}
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setDraft(null)}>Cancel</Button>
@@ -259,8 +270,8 @@ export function PlatformOffer() {
   const offer = useQuery({ queryKey: ['speech', 'platform'], queryFn: speech.platform })
   const [error, setError] = useState<string | null>(null)
   const save = useMutation({
-    mutationFn: ({ held, prices }: { held: string[]; prices?: Record<string, number> }) =>
-      speech.savePlatform(held, prices),
+    mutationFn: ({ held, prices, minutePrices }: { held: string[]; prices?: Record<string, number>; minutePrices?: Record<string, number> }) =>
+      speech.savePlatform(held, prices, minutePrices),
     onSuccess: () => { setError(null); queryClient.invalidateQueries({ queryKey: ['speech'] }) },
     onError: (e) => setError((e as Error).message),
   })
@@ -268,6 +279,8 @@ export function PlatformOffer() {
   const held = offer.data?.held_back ?? []
   const prices: Record<string, number> = Object.fromEntries(
     providers.filter((p) => p.price_per_million != null).map((p) => [p.name, p.price_per_million as number]))
+  const minutePrices: Record<string, number> = Object.fromEntries(
+    providers.filter((p) => p.price_per_minute != null).map((p) => [p.name, p.price_per_minute as number]))
   return (
     <Card>
       <CardHeader>
@@ -294,7 +307,8 @@ export function PlatformOffer() {
               Each provider's cap for every tenant (a tenant's own page can set another), and its price for an
               estimated cost beside the tenant's usage. The default provider is never capped.
             </p>
-            <PlatformCaps providers={providers} prices={prices} onPrices={(next) => save.mutate({ held, prices: next })} />
+            <PlatformCaps providers={providers} prices={prices} minutePrices={minutePrices}
+              onPrices={(next, nextMinutes) => save.mutate({ held, prices: next, minutePrices: nextMinutes })} />
           </div>
         )}
         {error && <p className="text-sm text-destructive">{error}</p>}
@@ -309,6 +323,7 @@ export function SpeechUsageCard() {
   const rows = [...(usage.data ?? [])].sort((a, b) => b.period.localeCompare(a.period) || a.label.localeCompare(b.label))
   const n = (v: number) => v.toLocaleString()
   const priced = rows.some((r) => r.estimated_cost != null)
+  const heard = rows.some((r) => r.recognized_seconds > 0)
   return (
     <Card>
       <CardHeader>
@@ -330,6 +345,7 @@ export function SpeechUsageCard() {
                   <TableHead className="text-right">Requests</TableHead>
                   <TableHead className="text-right">Characters</TableHead>
                   <TableHead className="text-right">Spoken by the provider</TableHead>
+                  {heard && <TableHead className="text-right">Minutes heard</TableHead>}
                   {priced && <TableHead className="text-right">Estimated cost</TableHead>}
                 </TableRow>
               </TableHeader>
@@ -341,6 +357,11 @@ export function SpeechUsageCard() {
                     <TableCell className="text-right tabular-nums">{n(r.requests)}</TableCell>
                     <TableCell className="text-right tabular-nums">{n(r.characters)}</TableCell>
                     <TableCell className="text-right tabular-nums">{n(r.synthesized_characters)}</TableCell>
+                    {heard && (
+                      <TableCell className="text-right tabular-nums">
+                        {(r.recognized_seconds / 60).toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                      </TableCell>
+                    )}
                     {priced && (
                       <TableCell className="text-right tabular-nums">
                         {r.estimated_cost != null ? r.estimated_cost.toLocaleString(undefined, { maximumFractionDigits: 4 }) : ''}

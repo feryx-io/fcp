@@ -450,6 +450,7 @@ impl Syncer {
                             .put_carried_speech_cap(
                                 &cap.tenant_id,
                                 &cap.provider,
+                                cap.unit,
                                 cap.month,
                                 cap.cap,
                                 elsewhere,
@@ -670,12 +671,12 @@ impl Syncer {
                 }
             }
             "site_speech_caps" => {
-                if let (Some(store), Some(provider)) = (
+                if let (Some(store), Some((provider, unit))) = (
                     storage.speech_usage_store(),
                     fcp_core::speech::SiteSpeechCap::provider_of(id),
                 ) {
                     store
-                        .delete_carried_speech_cap(&self.tenant, provider)
+                        .delete_carried_speech_cap(&self.tenant, provider, unit)
                         .await?;
                 }
             }

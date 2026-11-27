@@ -33,6 +33,7 @@ class OfferedProvider:
             offered (bool): Whether tenants may choose it.
             price_per_million (float | None | Unset): What the platform charges tenants per million characters, for an
                 estimated cost beside their usage (`docs/SPEECH_CAPS.md`).
+            price_per_minute (float | None | Unset): Per minute heard, for a recognizer (`docs/TENANT_RECOGNITION.md` R3).
      """
 
     name: str
@@ -42,6 +43,7 @@ class OfferedProvider:
     is_default_recognizer: bool
     offered: bool
     price_per_million: float | None | Unset = UNSET
+    price_per_minute: float | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -67,6 +69,12 @@ class OfferedProvider:
         else:
             price_per_million = self.price_per_million
 
+        price_per_minute: float | None | Unset
+        if isinstance(self.price_per_minute, Unset):
+            price_per_minute = UNSET
+        else:
+            price_per_minute = self.price_per_minute
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -80,6 +88,8 @@ class OfferedProvider:
         })
         if price_per_million is not UNSET:
             field_dict["price_per_million"] = price_per_million
+        if price_per_minute is not UNSET:
+            field_dict["price_per_minute"] = price_per_minute
 
         return field_dict
 
@@ -110,6 +120,16 @@ class OfferedProvider:
         price_per_million = _parse_price_per_million(d.pop("price_per_million", UNSET))
 
 
+        def _parse_price_per_minute(data: object) -> float | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(float | None | Unset, data)
+
+        price_per_minute = _parse_price_per_minute(d.pop("price_per_minute", UNSET))
+
+
         offered_provider = cls(
             name=name,
             is_default=is_default,
@@ -118,6 +138,7 @@ class OfferedProvider:
             is_default_recognizer=is_default_recognizer,
             offered=offered,
             price_per_million=price_per_million,
+            price_per_minute=price_per_minute,
         )
 
 

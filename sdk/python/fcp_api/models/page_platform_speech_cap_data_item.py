@@ -8,6 +8,7 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..models.cap_unit import CapUnit
 
 
 
@@ -24,11 +25,15 @@ class PagePlatformSpeechCapDataItem:
 
         Attributes:
             provider (str):
-            monthly_characters (int):
+            unit (CapUnit): What a cap counts (`docs/TENANT_RECOGNITION.md` R3): characters a
+                provider synthesized, or minutes a recognizer heard (counted in
+                milliseconds).
+            monthly (int): How many of `unit` a month.
      """
 
     provider: str
-    monthly_characters: int
+    unit: CapUnit
+    monthly: int
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -38,14 +43,17 @@ class PagePlatformSpeechCapDataItem:
     def to_dict(self) -> dict[str, Any]:
         provider = self.provider
 
-        monthly_characters = self.monthly_characters
+        unit = self.unit.value
+
+        monthly = self.monthly
 
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({
             "provider": provider,
-            "monthly_characters": monthly_characters,
+            "unit": unit,
+            "monthly": monthly,
         })
 
         return field_dict
@@ -57,11 +65,17 @@ class PagePlatformSpeechCapDataItem:
         d = dict(src_dict)
         provider = d.pop("provider")
 
-        monthly_characters = d.pop("monthly_characters")
+        unit = CapUnit(d.pop("unit"))
+
+
+
+
+        monthly = d.pop("monthly")
 
         page_platform_speech_cap_data_item = cls(
             provider=provider,
-            monthly_characters=monthly_characters,
+            unit=unit,
+            monthly=monthly,
         )
 
 

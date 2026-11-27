@@ -98,6 +98,19 @@ pub trait SpeechSettingsStore: Send + Sync {
         anyhow::bail!("this store keeps no speech prices")
     }
 
+    /// What the platform charges per minute heard by each of its
+    /// recognizers (`docs/TENANT_RECOGNITION.md` R3).
+    async fn speech_minute_prices(&self) -> anyhow::Result<BTreeMap<String, f64>> {
+        Ok(BTreeMap::new())
+    }
+
+    async fn put_speech_minute_prices(
+        &self,
+        _prices: &BTreeMap<String, f64>,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("this store keeps no speech prices")
+    }
+
     async fn put_held_back_providers(&self, _providers: &[String]) -> anyhow::Result<()> {
         anyhow::bail!("this store keeps no platform speech settings")
     }
@@ -133,6 +146,10 @@ pub struct SpeechAccount {
     /// own currency.
     #[serde(default)]
     pub price_per_million: Option<f64>,
+    /// What the vendor charges per minute heard (`docs/TENANT_RECOGNITION.md`
+    /// R3), for an estimated cost.
+    #[serde(default)]
+    pub price_per_minute: Option<f64>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -236,6 +253,10 @@ pub struct SpeechUsage {
     pub characters: u64,
     /// What the provider spoke; the rest came from the cache.
     pub synthesized_characters: u64,
+    /// Speech heard, in milliseconds of audio (`docs/TENANT_RECOGNITION.md`
+    /// R3); `requests` counts recognitions too.
+    #[serde(default)]
+    pub recognized_ms: u64,
     /// The site that counted it (`docs/TENANT_SPEECH.md` S5); none for
     /// this deployment's own.
     #[serde(default)]
@@ -297,6 +318,7 @@ pub trait SpeechUsageStore: Send + Sync {
         _tenant_id: Option<&TenantId>,
         _provider: &str,
         _kind: SpeechCapKind,
+        _unit: CapUnit,
     ) -> anyhow::Result<bool> {
         anyhow::bail!("this store keeps no speech caps")
     }
@@ -308,6 +330,7 @@ pub trait SpeechUsageStore: Send + Sync {
         &self,
         _tenant_id: &TenantId,
         _provider: &str,
+        _unit: CapUnit,
         _month: SystemTime,
         _level: CapLevel,
         _cap: u64,
@@ -316,11 +339,13 @@ pub trait SpeechUsageStore: Send + Sync {
         Ok(false)
     }
 
-    /// Every tenant's synthesized characters per provider and source (a
-    /// site's id, '' for this deployment's own) since `from`.
-    async fn synthesized_by_source(
+    /// Every tenant's use per provider and source (a site's id, '' for
+    /// this deployment's own) since `from`, in `unit`'s base (characters,
+    /// or milliseconds heard).
+    async fn used_by_source(
         &self,
         _from: SystemTime,
+        _unit: CapUnit,
     ) -> anyhow::Result<Vec<(TenantId, String, String, u64)>> {
         Ok(Vec::new())
     }
@@ -340,6 +365,7 @@ pub trait SpeechUsageStore: Send + Sync {
         &self,
         _tenant_id: &TenantId,
         _provider: &str,
+        _unit: CapUnit,
     ) -> anyhow::Result<bool> {
         Ok(false)
     }
@@ -350,6 +376,7 @@ pub trait SpeechUsageStore: Send + Sync {
         &self,
         _tenant_id: &TenantId,
         _provider: &str,
+        _unit: CapUnit,
         _month: SystemTime,
         _cap: u64,
         _used_elsewhere: u64,
@@ -361,17 +388,19 @@ pub trait SpeechUsageStore: Send + Sync {
         &self,
         _tenant_id: &TenantId,
         _provider: &str,
+        _unit: CapUnit,
     ) -> anyhow::Result<()> {
         Ok(())
     }
 
-    /// Every tenant's synthesized characters per provider since `from`
-    /// (the month's start), this deployment's and its sites' together; at
-    /// a site, with what the cloud says was spoken elsewhere.
-    async fn synthesized_since(
+    /// Every tenant's use per provider and unit since `from` (the month's
+    /// start), in the unit's base (characters synthesized, milliseconds
+    /// heard), this deployment's and its sites' together; at a site, with
+    /// what the cloud says was used elsewhere.
+    async fn used_since(
         &self,
         _from: SystemTime,
-    ) -> anyhow::Result<Vec<(TenantId, String, u64)>> {
+    ) -> anyhow::Result<Vec<(TenantId, String, CapUnit, u64)>> {
         Ok(Vec::new())
     }
 }
@@ -384,6 +413,9 @@ pub trait SpeechUsageStore: Send + Sync {
 pub struct SiteSpeechCap {
     pub tenant_id: TenantId,
     pub provider: String,
+    /// What the cap counts; `used` is in its base.
+    #[serde(default)]
+    pub unit: CapUnit,
     /// The month's start (UTC).
     pub month: SystemTime,
     pub cap: u64,
@@ -394,16 +426,25 @@ pub struct SiteSpeechCap {
 impl SiteSpeechCap {
     /// The journal's id for it: unique across tenants.
     pub fn row_id(&self) -> String {
-        Self::row_id_of(&self.tenant_id, &self.provider)
+        Self::row_id_of(&self.tenant_id, &self.provider, self.unit)
     }
 
-    pub fn row_id_of(tenant_id: &TenantId, provider: &str) -> String {
-        format!("{tenant_id}/{provider}")
+    /// `<tenant>/<provider>` for characters, `…@minutes` for minutes (a
+    /// provider's name has no `@`).
+    pub fn row_id_of(tenant_id: &TenantId, provider: &str, unit: CapUnit) -> String {
+        match unit {
+            CapUnit::Characters => format!("{tenant_id}/{provider}"),
+            CapUnit::Minutes => format!("{tenant_id}/{provider}@minutes"),
+        }
     }
 
-    /// The provider a row id names.
-    pub fn provider_of(row_id: &str) -> Option<&str> {
-        row_id.split_once('/').map(|(_, p)| p)
+    /// The provider and unit a row id names.
+    pub fn provider_of(row_id: &str) -> Option<(&str, CapUnit)> {
+        let (_, rest) = row_id.split_once('/')?;
+        Some(match rest.strip_suffix("@minutes") {
+            Some(p) => (p, CapUnit::Minutes),
+            None => (rest, CapUnit::Characters),
+        })
     }
 
     /// What was spoken everywhere but at `site`.
@@ -413,6 +454,45 @@ impl SiteSpeechCap {
             .filter(|(source, _)| source.as_str() != site)
             .map(|(_, n)| *n)
             .sum()
+    }
+}
+
+/// What a cap counts (`docs/TENANT_RECOGNITION.md` R3): characters a
+/// provider synthesized, or minutes a recognizer heard (counted in
+/// milliseconds).
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum CapUnit {
+    #[default]
+    Characters,
+    Minutes,
+}
+
+impl CapUnit {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Characters => "characters",
+            Self::Minutes => "minutes",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "characters" => Some(Self::Characters),
+            "minutes" => Some(Self::Minutes),
+            _ => None,
+        }
+    }
+
+    /// A cap of `n` in its base: characters, or milliseconds.
+    pub fn base(self, n: u64) -> u64 {
+        match self {
+            Self::Characters => n,
+            Self::Minutes => n.saturating_mul(60_000),
+        }
     }
 }
 
@@ -482,7 +562,11 @@ pub struct SpeechCap {
     /// A platform provider's name, or `account:<uuid>`.
     pub provider: String,
     pub kind: SpeechCapKind,
-    /// None only on a tenant's platform cap: no cap for this tenant, the
+    /// What it counts; characters unless said.
+    #[serde(default)]
+    pub unit: CapUnit,
+    /// How many of `unit` a month (the name is from before minutes). None
+    /// only on a tenant's platform cap: no cap for this tenant, the
     /// platform's default notwithstanding.
     pub monthly_characters: Option<u64>,
 }
@@ -490,10 +574,17 @@ pub struct SpeechCap {
 /// The cap that applies to `tenant` speaking with `provider`: the lowest of
 /// the tenant's own and the platform's (the tenant's platform cap, else
 /// the platform's default). An account is the tenant's alone to cap.
-pub fn effective_cap(caps: &[SpeechCap], tenant: &TenantId, provider: &str) -> Option<u64> {
+/// In `unit`, of `unit`'s caps alone.
+pub fn effective_cap(
+    caps: &[SpeechCap],
+    tenant: &TenantId,
+    provider: &str,
+    unit: CapUnit,
+) -> Option<u64> {
     let find = |t: Option<&TenantId>, kind| {
-        caps.iter()
-            .find(|c| c.tenant_id.as_ref() == t && c.provider == provider && c.kind == kind)
+        caps.iter().find(|c| {
+            c.tenant_id.as_ref() == t && c.provider == provider && c.kind == kind && c.unit == unit
+        })
     };
     let own = find(Some(tenant), SpeechCapKind::Tenant).and_then(|c| c.monthly_characters);
     if account_of(provider).is_some() {
@@ -540,6 +631,7 @@ mod tests {
             tenant_id: tenant,
             provider: provider.into(),
             kind,
+            unit: CapUnit::Characters,
             monthly_characters: n,
         }
     }
@@ -558,21 +650,76 @@ mod tests {
             cap(Some(a), &acct, Tenant, Some(70)),
         ];
         // The tenant's platform cap overrides the default; its own is lower.
-        assert_eq!(effective_cap(&caps, &a, "openai"), Some(3000));
+        assert_eq!(
+            effective_cap(&caps, &a, "openai", CapUnit::Characters),
+            Some(3000)
+        );
         // None for this tenant: unlimited, the default notwithstanding.
-        assert_eq!(effective_cap(&caps, &b, "openai"), None);
+        assert_eq!(
+            effective_cap(&caps, &b, "openai", CapUnit::Characters),
+            None
+        );
         // Neither: the default.
-        assert_eq!(effective_cap(&caps, &TenantId::new(), "openai"), Some(1000));
-        assert_eq!(effective_cap(&caps, &a, "piper"), None);
+        assert_eq!(
+            effective_cap(&caps, &TenantId::new(), "openai", CapUnit::Characters),
+            Some(1000)
+        );
+        assert_eq!(effective_cap(&caps, &a, "piper", CapUnit::Characters), None);
         // An account answers to its tenant alone.
-        assert_eq!(effective_cap(&caps, &a, &acct), Some(70));
-        assert_eq!(effective_cap(&caps, &b, &acct), None);
+        assert_eq!(
+            effective_cap(&caps, &a, &acct, CapUnit::Characters),
+            Some(70)
+        );
+        assert_eq!(effective_cap(&caps, &b, &acct, CapUnit::Characters), None);
         // A tenant's own cap higher than the platform's changes nothing.
         let caps = vec![
             cap(None, "openai", Platform, Some(1000)),
             cap(Some(a), "openai", Tenant, Some(9000)),
         ];
-        assert_eq!(effective_cap(&caps, &a, "openai"), Some(1000));
+        assert_eq!(
+            effective_cap(&caps, &a, "openai", CapUnit::Characters),
+            Some(1000)
+        );
+    }
+
+    #[test]
+    fn a_cap_counts_its_own_unit() {
+        let t = TenantId::new();
+        let mut minutes = cap(None, "openai", SpeechCapKind::Platform, Some(60));
+        minutes.unit = CapUnit::Minutes;
+        let caps = vec![
+            cap(None, "openai", SpeechCapKind::Platform, Some(1000)),
+            minutes,
+        ];
+        assert_eq!(
+            effective_cap(&caps, &t, "openai", CapUnit::Characters),
+            Some(1000)
+        );
+        assert_eq!(
+            effective_cap(&caps, &t, "openai", CapUnit::Minutes),
+            Some(60)
+        );
+        assert_eq!(CapUnit::Minutes.base(60), 3_600_000);
+        let row = SiteSpeechCap {
+            tenant_id: t,
+            provider: "openai".into(),
+            unit: CapUnit::Minutes,
+            month: SystemTime::UNIX_EPOCH,
+            cap: 60,
+            used: BTreeMap::new(),
+        };
+        assert_eq!(
+            SiteSpeechCap::provider_of(&row.row_id()),
+            Some(("openai", CapUnit::Minutes))
+        );
+        assert_eq!(
+            SiteSpeechCap::provider_of(&SiteSpeechCap::row_id_of(
+                &t,
+                "openai",
+                CapUnit::Characters
+            )),
+            Some(("openai", CapUnit::Characters))
+        );
     }
 
     #[test]

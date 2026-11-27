@@ -454,6 +454,8 @@ pub struct SpeechAccountView {
     /// What the vendor charges per million characters, for an estimated
     /// cost (`docs/SPEECH_CAPS.md`).
     pub price_per_million: Option<f64>,
+    /// Per minute heard, for a recognizer (`docs/TENANT_RECOGNITION.md` R3).
+    pub price_per_minute: Option<f64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -471,6 +473,7 @@ impl SpeechAccountView {
             access_key_id: a.access_key_id.clone(),
             has_key: a.secret.as_deref().is_some_and(|s| !s.is_empty()),
             price_per_million: a.price_per_million,
+            price_per_minute: a.price_per_minute,
             created_at: crate::time::format_system_time(a.created_at),
             updated_at: crate::time::format_system_time(a.updated_at),
         }
@@ -498,6 +501,9 @@ pub struct SpeechAccountRequest {
     /// What the vendor charges per million characters; null for none.
     #[serde(default)]
     pub price_per_million: Option<f64>,
+    /// What the vendor charges per minute heard; null for none.
+    #[serde(default)]
+    pub price_per_minute: Option<f64>,
 }
 
 /// A price per million characters: a number from 0 to a million.
@@ -568,6 +574,7 @@ fn account_from(
         access_key_id,
         secret,
         price_per_million: price(req.price_per_million)?,
+        price_per_minute: price(req.price_per_minute)?,
         created_at: kept.map(|k| k.created_at).unwrap_or(now),
         updated_at: now,
     })
@@ -942,6 +949,8 @@ pub struct OfferedProvider {
     /// What the platform charges tenants per million characters, for an
     /// estimated cost beside their usage (`docs/SPEECH_CAPS.md`).
     pub price_per_million: Option<f64>,
+    /// Per minute heard, for a recognizer (`docs/TENANT_RECOGNITION.md` R3).
+    pub price_per_minute: Option<f64>,
 }
 
 /// Which of the TTS server's providers tenants may choose.
@@ -961,6 +970,9 @@ pub struct PlatformSpeechRequest {
     /// provider left out has none.
     #[serde(default)]
     pub prices: Option<BTreeMap<String, f64>>,
+    /// Prices per minute heard by recognizer; absent keeps them.
+    #[serde(default)]
+    pub minute_prices: Option<BTreeMap<String, f64>>,
 }
 
 fn require_platform(identity: &AuthIdentity) -> Result<(), ApiError> {
@@ -982,9 +994,21 @@ async fn prices(state: &ApiState) -> Result<BTreeMap<String, f64>, ApiError> {
     }
 }
 
+/// The platform's prices per minute heard by recognizer.
+async fn minute_prices(state: &ApiState) -> Result<BTreeMap<String, f64>, ApiError> {
+    match state.storage.as_ref().and_then(|s| s.speech_store()) {
+        Some(store) => store
+            .speech_minute_prices()
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string())),
+        None => Ok(BTreeMap::new()),
+    }
+}
+
 async fn platform_speech(state: &ApiState) -> Result<PlatformSpeech, ApiError> {
     let held_back = held_back(state).await?;
     let prices = prices(state).await?;
+    let minute_prices = minute_prices(state).await?;
     let providers = match state.tts_service.as_ref() {
         Some(tts) => tts
             .providers()
@@ -1001,6 +1025,7 @@ async fn platform_speech(state: &ApiState) -> Result<PlatformSpeech, ApiError> {
                 hears: p.hears,
                 is_default_recognizer: p.is_default_recognizer,
                 price_per_million: prices.get(&p.name).copied(),
+                price_per_minute: minute_prices.get(&p.name).copied(),
                 name: p.name,
                 is_default: p.is_default,
             })
@@ -1077,7 +1102,7 @@ pub async fn put_platform(
             }
         }
     }
-    if let Some(prices) = &req.prices {
+    for prices in [&req.prices, &req.minute_prices].into_iter().flatten() {
         if prices.len() > 50 {
             return Err(ApiError::BadRequest("At most 50 prices".into()));
         }
@@ -1097,6 +1122,12 @@ pub async fn put_platform(
     if let Some(prices) = &req.prices {
         store(&state)?
             .put_speech_prices(prices)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+    }
+    if let Some(prices) = &req.minute_prices {
+        store(&state)?
+            .put_speech_minute_prices(prices)
             .await
             .map_err(|e| ApiError::Internal(e.to_string()))?;
     }
@@ -1130,8 +1161,11 @@ pub struct SpeechUsagePeriod {
     pub characters: u64,
     /// What the provider spoke, and bills for; the rest came from the cache.
     pub synthesized_characters: u64,
-    /// The synthesized characters at the provider's price per million
-    /// (the platform's, or the account's own), where one is set.
+    /// What a recognizer heard, in seconds (`docs/TENANT_RECOGNITION.md` R3).
+    pub recognized_seconds: u64,
+    /// The synthesized characters at the provider's price per million and
+    /// the minutes heard at its price per minute (the platform's, or the
+    /// account's own), where a price is set.
     pub estimated_cost: Option<f64>,
 }
 
@@ -1212,6 +1246,7 @@ pub async fn usage(
     // Accounts by their names, for the label; a deleted one keeps its id.
     // Prices: the platform's, and each account's own.
     let mut unit_prices = prices(&state).await?;
+    let mut per_minute = minute_prices(&state).await?;
     let names: std::collections::HashMap<String, String> = match accounts(&state) {
         Ok(store) => store
             .list_speech_accounts(&tenant.0)
@@ -1223,12 +1258,17 @@ pub async fn usage(
                 if let Some(p) = a.price_per_million {
                     unit_prices.insert(provider.clone(), p);
                 }
+                if let Some(p) = a.price_per_minute {
+                    per_minute.insert(provider.clone(), p);
+                }
                 (provider, a.name)
             })
             .collect(),
         Err(_) => Default::default(),
     };
     unit_prices.retain(|p, _| !p.starts_with(ACCOUNT_PREFIX) || names.contains_key(p));
+    per_minute.retain(|p, _| !p.starts_with(ACCOUNT_PREFIX) || names.contains_key(p));
+    let mut heard_ms: BTreeMap<(String, String), u64> = BTreeMap::new();
     let mut periods: BTreeMap<(String, String), SpeechUsagePeriod> = BTreeMap::new();
     for h in hours {
         let at: chrono::DateTime<Utc> = h.hour.into();
@@ -1252,27 +1292,45 @@ pub async fn usage(
                 requests: 0,
                 characters: 0,
                 synthesized_characters: 0,
+                recognized_seconds: 0,
                 estimated_cost: None,
             });
+        *heard_ms
+            .entry((p.period.clone(), p.provider.clone()))
+            .or_default() += h.recognized_ms;
         p.requests += h.requests;
         p.characters += h.characters;
         p.synthesized_characters += h.synthesized_characters;
     }
     let mut list: Vec<SpeechUsagePeriod> = periods.into_values().collect();
     for p in &mut list {
-        p.estimated_cost = unit_prices.get(&p.provider).map(|price| {
-            (p.synthesized_characters as f64 / 1_000_000.0 * price * 10_000.0).round() / 10_000.0
-        });
+        let ms = heard_ms
+            .get(&(p.period.clone(), p.provider.clone()))
+            .copied()
+            .unwrap_or(0);
+        p.recognized_seconds = (ms + 500) / 1000;
+        let spoken = unit_prices
+            .get(&p.provider)
+            .map(|price| p.synthesized_characters as f64 / 1_000_000.0 * price);
+        let heard = per_minute
+            .get(&p.provider)
+            .map(|price| ms as f64 / 60_000.0 * price);
+        p.estimated_cost = match (spoken, heard) {
+            (None, None) => None,
+            (a, b) => Some(((a.unwrap_or(0.0) + b.unwrap_or(0.0)) * 10_000.0).round() / 10_000.0),
+        };
     }
     let total = list.len() as u64;
     Ok(Json(crate::page::Page::new(list, None, Some(total))))
 }
 
-// ── Caps (docs/SPEECH_CAPS.md C1) ──────────────────────────────────────────
+// ── Caps (docs/SPEECH_CAPS.md C1; units, docs/TENANT_RECOGNITION.md R3) ────
 
-use fcp_core::speech::{effective_cap, month_of, SpeechCap, SpeechCapKind, SpeechUsageStore};
+use fcp_core::speech::{
+    effective_cap, month_of, CapUnit, SpeechCap, SpeechCapKind, SpeechUsageStore,
+};
 
-/// The most a cap may be: a trillion characters a month.
+/// The most a cap may be: a trillion of its unit a month.
 const MAX_CAP: u64 = 1_000_000_000_000;
 
 fn usage_store(state: &ApiState) -> Result<&Arc<dyn SpeechUsageStore>, ApiError> {
@@ -1283,13 +1341,16 @@ fn usage_store(state: &ApiState) -> Result<&Arc<dyn SpeechUsageStore>, ApiError>
         .ok_or_else(|| ApiError::ServiceUnavailable("Speech caps are not kept here".into()))
 }
 
-/// One provider's cap on the tenant this month.
+/// One provider's cap of one unit on the tenant this month.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SpeechCapView {
     /// A platform provider's name, or `account:<uuid>`.
     pub provider: String,
     /// The provider, or the account's name.
     pub label: String,
+    /// `characters` (synthesized by a voice) or `minutes` (heard by a
+    /// recognizer); every number here is in it.
+    pub unit: CapUnit,
     /// What the platform holds the tenant to on this provider (its cap
     /// for this tenant, else its default); never on an account.
     pub platform_cap: Option<u64>,
@@ -1300,7 +1361,8 @@ pub struct SpeechCapView {
     pub own_cap: Option<u64>,
     /// The cap that applies: the lowest of the two.
     pub cap: Option<u64>,
-    /// Synthesized characters this month (UTC), the cloud's and sites'.
+    /// Used this month (UTC), the cloud's and sites': characters, or
+    /// whole minutes heard.
     pub used: u64,
     /// `ok`, `near` (80 % or more) or `reached`.
     pub state: String,
@@ -1308,12 +1370,17 @@ pub struct SpeechCapView {
     pub resets_at: String,
 }
 
-/// A cap to keep. `monthly_characters` null is allowed only on a tenant's
-/// platform cap: none for this tenant, whatever the default says.
+/// A cap to keep. `monthly` null is allowed only on a tenant's platform
+/// cap: none for this tenant, whatever the default says.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SpeechCapRequest {
-    pub monthly_characters: Option<u64>,
+    /// How many of `unit` a month (`monthly_characters` is read too).
+    #[serde(alias = "monthly_characters")]
+    pub monthly: Option<u64>,
+    /// `characters` (the default) or `minutes`.
+    #[serde(default)]
+    pub unit: Option<CapUnit>,
     /// `tenant` (the default: the tenant's own) or `platform` (a platform
     /// administrator's cap on this tenant).
     #[serde(default)]
@@ -1325,6 +1392,15 @@ pub struct SpeechCapRequest {
 pub struct CapKindQuery {
     /// `tenant` (the default) or `platform`.
     pub kind: Option<String>,
+    /// `characters` (the default) or `minutes`.
+    pub unit: Option<CapUnit>,
+}
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct CapUnitQuery {
+    /// `characters` (the default) or `minutes`.
+    pub unit: Option<CapUnit>,
 }
 
 fn cap_kind(kind: Option<&str>, identity: &AuthIdentity) -> Result<SpeechCapKind, ApiError> {
@@ -1338,32 +1414,55 @@ fn cap_kind(kind: Option<&str>, identity: &AuthIdentity) -> Result<SpeechCapKind
     }
 }
 
-/// The TTS server's default provider, when the server says.
-async fn default_provider(state: &ApiState) -> Option<String> {
-    let tts = state.tts_service.as_ref()?;
-    tts.providers()
-        .await
-        .ok()?
-        .into_iter()
-        .find(|p| p.is_default)
-        .map(|p| p.name)
+/// The TTS server's default voice and default recognizer, when it says.
+async fn defaults(state: &ApiState) -> (Option<String>, Option<String>) {
+    let Some(tts) = state.tts_service.as_ref() else {
+        return (None, None);
+    };
+    let Ok(list) = tts.providers().await else {
+        return (None, None);
+    };
+    (
+        list.iter().find(|p| p.is_default).map(|p| p.name.clone()),
+        list.iter()
+            .find(|p| p.is_default_recognizer)
+            .map(|p| p.name.clone()),
+    )
 }
 
-/// A provider a cap may be put on: never the default, which speaks when a
-/// cap is reached; a platform provider the server has, or (for a tenant's
-/// own cap) one of its accounts.
+/// The default a cap of `unit` must not be put on: the voice for
+/// characters, the recognizer for minutes.
+fn default_for(defaults: &(Option<String>, Option<String>), unit: CapUnit) -> Option<&str> {
+    match unit {
+        CapUnit::Characters => defaults.0.as_deref(),
+        CapUnit::Minutes => defaults.1.as_deref(),
+    }
+}
+
+/// A provider a cap of `unit` may be put on: one that speaks (characters)
+/// or hears (minutes), never the default, which steps in when a cap is
+/// reached; a platform provider the server has, or (for a tenant's own
+/// cap) one of its accounts.
 async fn cappable(
     state: &ApiState,
     identity: &AuthIdentity,
     tenant: Option<&fcp_core::TenantId>,
     provider: &str,
+    unit: CapUnit,
 ) -> Result<(), ApiError> {
     if provider.is_empty() || provider.len() > 200 {
         return Err(ApiError::BadRequest("A provider has a name".into()));
     }
+    let ability = match unit {
+        CapUnit::Characters => Ability::Speaks,
+        CapUnit::Minutes => Ability::Hears,
+    };
     if provider.starts_with(ACCOUNT_PREFIX) {
         return match tenant {
-            Some(t) => known_provider(state, identity, t, Some(provider)).await,
+            Some(t) => {
+                known_provider(state, identity, t, Some(provider)).await?;
+                able(state, t, Some(provider), ability).await
+            }
             None => Err(ApiError::BadRequest(
                 "A tenant's own account is not the platform's to cap".into(),
             )),
@@ -1377,9 +1476,25 @@ async fn cappable(
                         "The TTS server has no provider {provider}"
                     )))
                 }
-                Some(p) if p.is_default => {
+                Some(p) if unit == CapUnit::Characters && !p.speaks => {
+                    return Err(ApiError::BadRequest(format!(
+                        "{provider} does not speak: cap its minutes"
+                    )))
+                }
+                Some(p) if unit == CapUnit::Minutes && !p.hears => {
+                    return Err(ApiError::BadRequest(format!(
+                        "{provider} does not hear: cap its characters"
+                    )))
+                }
+                Some(p) if unit == CapUnit::Characters && p.is_default => {
                     return Err(ApiError::BadRequest(
                         "The default provider speaks when a cap is reached: it cannot be capped"
+                            .into(),
+                    ))
+                }
+                Some(p) if unit == CapUnit::Minutes && p.is_default_recognizer => {
+                    return Err(ApiError::BadRequest(
+                        "The default recognizer hears when a cap is reached: it cannot be capped"
                             .into(),
                     ))
                 }
@@ -1393,9 +1508,9 @@ async fn cappable(
 fn limit(n: Option<u64>, may_be_none: bool) -> Result<Option<u64>, ApiError> {
     match n {
         Some(n) if n > MAX_CAP => Err(ApiError::BadRequest(format!(
-            "A cap is at most {MAX_CAP} characters a month"
+            "A cap is at most {MAX_CAP} a month"
         ))),
-        None if !may_be_none => Err(ApiError::BadRequest("monthly_characters is the cap".into())),
+        None if !may_be_none => Err(ApiError::BadRequest("monthly is the cap".into())),
         n => Ok(n),
     }
 }
@@ -1425,24 +1540,25 @@ pub async fn list_caps(
     let err = |e: anyhow::Error| ApiError::Internal(e.to_string());
     let mut caps = store.speech_caps(None).await.map_err(err)?;
     caps.extend(store.speech_caps(Some(&tenant.0)).await.map_err(err)?);
-    let default = default_provider(&state).await;
-    let mut providers: Vec<String> = Vec::new();
+    let defaults = defaults(&state).await;
+    let mut keys: Vec<(String, CapUnit)> = Vec::new();
     for c in &caps {
-        if !providers.contains(&c.provider) && Some(&c.provider) != default.as_ref() {
-            providers.push(c.provider.clone());
+        let key = (c.provider.clone(), c.unit);
+        if !keys.contains(&key) && Some(c.provider.as_str()) != default_for(&defaults, c.unit) {
+            keys.push(key);
         }
     }
     let now = std::time::SystemTime::now();
     let (month, next) = month_of(now);
-    // The month's synthesized characters; at a site, with what the cloud
-    // says was spoken elsewhere.
-    let used: std::collections::HashMap<String, u64> = store
-        .synthesized_since(month)
+    // The month's use; at a site, with what the cloud says was used
+    // elsewhere.
+    let used: std::collections::HashMap<(String, CapUnit), u64> = store
+        .used_since(month)
         .await
         .map_err(err)?
         .into_iter()
-        .filter(|(t, _, _)| *t == tenant.0)
-        .map(|(_, p, n)| (p, n))
+        .filter(|(t, _, _, _)| *t == tenant.0)
+        .map(|(_, p, u, n)| ((p, u), n))
         .collect();
     let names: std::collections::HashMap<String, String> = match accounts(&state) {
         Ok(a) => a
@@ -1454,47 +1570,50 @@ pub async fn list_caps(
             .collect(),
         Err(_) => Default::default(),
     };
-    let find = |t: Option<&fcp_core::TenantId>, p: &str, kind| {
-        caps.iter()
-            .find(|c| c.tenant_id.as_ref() == t && c.provider == p && c.kind == kind)
+    let find = |t: Option<&fcp_core::TenantId>, p: &str, kind, unit| {
+        caps.iter().find(|c| {
+            c.tenant_id.as_ref() == t && c.provider == p && c.kind == kind && c.unit == unit
+        })
     };
-    let mut list: Vec<SpeechCapView> = providers
+    let mut list: Vec<SpeechCapView> = keys
         .into_iter()
-        .map(|p| {
+        .map(|(p, unit)| {
             let account = p.starts_with(ACCOUNT_PREFIX);
-            let override_ = find(Some(&tenant.0), &p, SpeechCapKind::Platform);
+            let override_ = find(Some(&tenant.0), &p, SpeechCapKind::Platform, unit);
             let platform_cap = if account {
                 None
             } else {
                 match override_ {
                     Some(c) => c.monthly_characters,
-                    None => {
-                        find(None, &p, SpeechCapKind::Platform).and_then(|c| c.monthly_characters)
-                    }
+                    None => find(None, &p, SpeechCapKind::Platform, unit)
+                        .and_then(|c| c.monthly_characters),
                 }
             };
-            let cap = effective_cap(&caps, &tenant.0, &p);
-            let n = used.get(&p).copied().unwrap_or(0);
+            let cap = effective_cap(&caps, &tenant.0, &p, unit);
+            let base = used.get(&(p.clone(), unit)).copied().unwrap_or(0);
             let state = match cap {
-                Some(c) if n >= c => "reached",
-                Some(c) if n.saturating_mul(5) >= c.saturating_mul(4) => "near",
-                _ => "ok",
+                Some(c) => fcp_core::speech::CapLevel::of(base, unit.base(c)).as_str(),
+                None => "ok",
             };
             SpeechCapView {
                 label: names.get(&p).cloned().unwrap_or_else(|| p.clone()),
+                unit,
                 platform_override: !account && override_.is_some(),
-                own_cap: find(Some(&tenant.0), &p, SpeechCapKind::Tenant)
+                own_cap: find(Some(&tenant.0), &p, SpeechCapKind::Tenant, unit)
                     .and_then(|c| c.monthly_characters),
                 platform_cap,
                 cap,
-                used: n,
+                used: match unit {
+                    CapUnit::Characters => base,
+                    CapUnit::Minutes => base / 60_000,
+                },
                 state: state.into(),
                 resets_at: rfc3339(next),
                 provider: p,
             }
         })
         .collect();
-    list.sort_by(|a, b| a.label.cmp(&b.label));
+    list.sort_by(|a, b| a.label.cmp(&b.label).then(a.unit.cmp(&b.unit)));
     let total = list.len() as u64;
     Ok(Json(crate::page::Page::new(list, None, Some(total))))
 }
@@ -1522,18 +1641,20 @@ pub async fn put_cap(
 ) -> Result<StatusCode, ApiError> {
     crate::auth::check_permission(&identity, Permission::PromptManage, state.deployment_mode)?;
     let kind = cap_kind(req.kind.as_deref(), &identity)?;
+    let unit = req.unit.unwrap_or_default();
     if kind == SpeechCapKind::Platform && provider.starts_with(ACCOUNT_PREFIX) {
         return Err(ApiError::BadRequest(
             "A tenant's own account is not the platform's to cap".into(),
         ));
     }
-    cappable(&state, &identity, Some(&tenant.0), &provider).await?;
-    let monthly_characters = limit(req.monthly_characters, kind == SpeechCapKind::Platform)?;
+    cappable(&state, &identity, Some(&tenant.0), &provider, unit).await?;
+    let monthly_characters = limit(req.monthly, kind == SpeechCapKind::Platform)?;
     usage_store(&state)?
         .put_speech_cap(&SpeechCap {
             tenant_id: Some(tenant.0),
             provider,
             kind,
+            unit,
             monthly_characters,
         })
         .await
@@ -1566,7 +1687,7 @@ pub async fn delete_cap(
     crate::auth::check_permission(&identity, Permission::PromptManage, state.deployment_mode)?;
     let kind = cap_kind(q.kind.as_deref(), &identity)?;
     let gone = usage_store(&state)?
-        .delete_speech_cap(Some(&tenant.0), &provider, kind)
+        .delete_speech_cap(Some(&tenant.0), &provider, kind, q.unit.unwrap_or_default())
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     if gone {
@@ -1580,7 +1701,10 @@ pub async fn delete_cap(
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct PlatformSpeechCap {
     pub provider: String,
-    pub monthly_characters: u64,
+    /// `characters` or `minutes`.
+    pub unit: CapUnit,
+    /// How many of `unit` a month.
+    pub monthly: u64,
 }
 
 /// GET /system/speech/caps — the platform's default caps.
@@ -1607,7 +1731,8 @@ pub async fn list_platform_caps(
         .filter(|c| c.kind == SpeechCapKind::Platform)
         .filter_map(|c| {
             Some(PlatformSpeechCap {
-                monthly_characters: c.monthly_characters?,
+                monthly: c.monthly_characters?,
+                unit: c.unit,
                 provider: c.provider,
             })
         })
@@ -1619,7 +1744,12 @@ pub async fn list_platform_caps(
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlatformSpeechCapRequest {
-    pub monthly_characters: u64,
+    /// How many of `unit` a month (`monthly_characters` is read too).
+    #[serde(alias = "monthly_characters")]
+    pub monthly: u64,
+    /// `characters` (the default) or `minutes`.
+    #[serde(default)]
+    pub unit: Option<CapUnit>,
 }
 
 /// PUT /system/speech/caps/{provider} — a platform provider's default cap.
@@ -1642,13 +1772,15 @@ pub async fn put_platform_cap(
     Json(req): Json<PlatformSpeechCapRequest>,
 ) -> Result<StatusCode, ApiError> {
     require_platform(&identity)?;
-    cappable(&state, &identity, None, &provider).await?;
-    let monthly_characters = limit(Some(req.monthly_characters), false)?;
+    let unit = req.unit.unwrap_or_default();
+    cappable(&state, &identity, None, &provider, unit).await?;
+    let monthly_characters = limit(Some(req.monthly), false)?;
     usage_store(&state)?
         .put_speech_cap(&SpeechCap {
             tenant_id: None,
             provider,
             kind: SpeechCapKind::Platform,
+            unit,
             monthly_characters,
         })
         .await
@@ -1662,7 +1794,7 @@ pub async fn put_platform_cap(
     path = "/api/v1/system/speech/caps/{provider}",
     tag = "speech",
     operation_id = "system_delete_speech_cap",
-    params(("provider" = String, Path, description = "A platform provider")),
+    params(("provider" = String, Path, description = "A platform provider"), CapUnitQuery),
     responses(
         (status = 204, description = "Removed"),
         (status = "default", description = "An error", body = crate::error::ErrorResponse),
@@ -1672,10 +1804,16 @@ pub async fn delete_platform_cap(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
     axum::extract::Path(provider): axum::extract::Path<String>,
+    axum::extract::Query(q): axum::extract::Query<CapUnitQuery>,
 ) -> Result<StatusCode, ApiError> {
     require_platform(&identity)?;
     let gone = usage_store(&state)?
-        .delete_speech_cap(None, &provider, SpeechCapKind::Platform)
+        .delete_speech_cap(
+            None,
+            &provider,
+            SpeechCapKind::Platform,
+            q.unit.unwrap_or_default(),
+        )
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     if gone {
@@ -1834,10 +1972,18 @@ pub async fn recognize(
     ))
 }
 
-// ── Warnings (docs/SPEECH_CAPS.md C2) ──────────────────────────────────────
+// ── Warnings (docs/SPEECH_CAPS.md C2; units, docs/TENANT_RECOGNITION.md R3) ─
 
 /// How often the admin compares the month's speech with the caps.
 pub const CAP_SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// What `base` (characters, or milliseconds heard) is in `unit`.
+fn in_unit(unit: CapUnit, base: u64) -> u64 {
+    match unit {
+        CapUnit::Characters => base,
+        CapUnit::Minutes => base / 60_000,
+    }
+}
 
 /// Raise `speech.cap_near` and `speech.cap_reached` for what passed 80 % or
 /// 100 % of a cap this month and was not yet said; what was raised.
@@ -1861,13 +2007,13 @@ pub async fn sweep_caps(
         }
     };
     let (month, _) = month_of(now);
-    let default = default_provider(state).await;
+    let defaults = defaults(state).await;
     // Sites are told even when nothing is capped, so a removed cap goes.
-    carry_to_sites(state, &caps, month, default.as_deref()).await;
+    carry_to_sites(state, &caps, month, &defaults).await;
     if caps.is_empty() {
         return Vec::new();
     }
-    let used = match store.synthesized_since(month).await {
+    let used = match store.used_since(month).await {
         Ok(used) => used,
         Err(e) => {
             tracing::warn!(error = %e, "Speech cap sweep: usage could not be read");
@@ -1878,14 +2024,14 @@ pub async fn sweep_caps(
         .format("%Y-%m")
         .to_string();
     let mut raised = Vec::new();
-    for (tenant, provider, n) in used {
-        if Some(&provider) == default.as_ref() {
+    for (tenant, provider, unit, n) in used {
+        if Some(provider.as_str()) == default_for(&defaults, unit) {
             continue;
         }
-        let Some(cap) = effective_cap(&caps, &tenant, &provider) else {
+        let Some(cap) = effective_cap(&caps, &tenant, &provider, unit) else {
             continue;
         };
-        let level = CapLevel::of(n, cap);
+        let level = CapLevel::of(n, unit.base(cap));
         if level == CapLevel::Ok {
             continue;
         }
@@ -1897,7 +2043,7 @@ pub async fn sweep_caps(
                 break;
             }
             match store
-                .note_speech_cap(&tenant, &provider, month, l, cap, n)
+                .note_speech_cap(&tenant, &provider, unit, month, l, cap, in_unit(unit, n))
                 .await
             {
                 Ok(new) => fresh |= new && l == level,
@@ -1913,16 +2059,18 @@ pub async fn sweep_caps(
             CapLevel::Reached => fcp_events::SpeechEvent::CapReached {
                 tenant_id: tenant,
                 provider,
+                unit: unit.as_str().into(),
                 cap,
-                used: n,
+                used: in_unit(unit, n),
                 month: month_name.clone(),
                 timestamp: now,
             },
             _ => fcp_events::SpeechEvent::CapNear {
                 tenant_id: tenant,
                 provider,
+                unit: unit.as_str().into(),
                 cap,
-                used: n,
+                used: in_unit(unit, n),
                 month: month_name.clone(),
                 timestamp: now,
             },
@@ -1937,15 +2085,16 @@ pub async fn sweep_caps(
 }
 
 /// Tell each tenant's sites its caps: for every tenant with a site and every
-/// provider capped for it (never the default), the cap that applies and the
-/// month's synthesized characters by where they were spoken, kept in
-/// `site_speech_caps`, which the journal carries down (`docs/SPEECH_CAPS.md`
-/// §5). A cap gone is removed; a row is written only when it changed.
+/// provider and unit capped for it (never the default), the cap that
+/// applies and the month's use (in the unit's base) by where it was used,
+/// kept in `site_speech_caps`, which the journal carries down
+/// (`docs/SPEECH_CAPS.md` §5). A cap gone is removed; a row is written only
+/// when it changed.
 async fn carry_to_sites(
     state: &ApiState,
     caps: &[SpeechCap],
     month: std::time::SystemTime,
-    default: Option<&str>,
+    defaults: &(Option<String>, Option<String>),
 ) {
     use fcp_core::site::SiteStore;
     use fcp_core::speech::SiteSpeechCap;
@@ -1965,39 +2114,47 @@ async fn carry_to_sites(
     if tenants.is_empty() {
         return;
     }
-    let by_source = if caps.is_empty() {
-        Vec::new()
-    } else {
-        match store.synthesized_by_source(month).await {
-            Ok(rows) => rows,
+    // Per unit: each tenant's use per provider and source.
+    type BySource = Vec<(fcp_core::TenantId, String, String, u64)>;
+    let mut by_source: Vec<(CapUnit, BySource)> = Vec::new();
+    for unit in [CapUnit::Characters, CapUnit::Minutes] {
+        if !caps.iter().any(|c| c.unit == unit) {
+            by_source.push((unit, Vec::new()));
+            continue;
+        }
+        match store.used_by_source(month, unit).await {
+            Ok(rows) => by_source.push((unit, rows)),
             Err(e) => {
                 tracing::warn!(error = %e, "Speech cap sweep: usage by source could not be read");
                 return;
             }
         }
-    };
+    }
     for tenant in tenants {
-        let mut providers: Vec<&str> = caps
+        let mut keys: Vec<(&str, CapUnit)> = caps
             .iter()
             .filter(|c| c.tenant_id.is_none() || c.tenant_id == Some(tenant))
-            .map(|c| c.provider.as_str())
-            .filter(|p| Some(*p) != default)
+            .map(|c| (c.provider.as_str(), c.unit))
+            .filter(|(p, u)| Some(*p) != default_for(defaults, *u))
             .collect();
-        providers.sort_unstable();
-        providers.dedup();
-        let mut kept: Vec<String> = Vec::new();
-        for provider in providers {
-            let Some(cap) = effective_cap(caps, &tenant, provider) else {
+        keys.sort_unstable();
+        keys.dedup();
+        let mut kept: Vec<(String, CapUnit)> = Vec::new();
+        for (provider, unit) in keys {
+            let Some(cap) = effective_cap(caps, &tenant, provider, unit) else {
                 continue;
             };
             let used = by_source
                 .iter()
+                .filter(|(u, _)| *u == unit)
+                .flat_map(|(_, rows)| rows.iter())
                 .filter(|(t, p, _, _)| *t == tenant && p == provider)
                 .map(|(_, _, source, n)| (source.clone(), *n))
                 .collect();
             let row = SiteSpeechCap {
                 tenant_id: tenant,
                 provider: provider.to_string(),
+                unit,
                 month,
                 cap,
                 used,
@@ -2005,11 +2162,16 @@ async fn carry_to_sites(
             if let Err(e) = store.put_site_speech_cap(&row).await {
                 tracing::warn!(error = %e, "Speech cap sweep: a site's cap could not be kept");
             }
-            kept.push(provider.to_string());
+            kept.push((provider.to_string(), unit));
         }
         if let Ok(rows) = store.site_speech_caps(&tenant).await {
-            for row in rows.into_iter().filter(|r| !kept.contains(&r.provider)) {
-                let _ = store.delete_site_speech_cap(&tenant, &row.provider).await;
+            for row in rows
+                .into_iter()
+                .filter(|r| !kept.contains(&(r.provider.clone(), r.unit)))
+            {
+                let _ = store
+                    .delete_site_speech_cap(&tenant, &row.provider, row.unit)
+                    .await;
             }
         }
     }

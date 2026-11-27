@@ -6,7 +6,7 @@
 //! server synthesizes is added on. So a cap is known to within a flush of
 //! every server's speech: soft, a spending guard rather than billing.
 
-use fcp_core::speech::{effective_cap, month_of, SpeechCap, SpeechUsageStore};
+use fcp_core::speech::{effective_cap, month_of, CapUnit, SpeechCap, SpeechUsageStore};
 use fcp_core::TenantId;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -17,10 +17,12 @@ struct Snapshot {
     caps: Vec<SpeechCap>,
     /// The month these totals are for.
     month: Option<SystemTime>,
-    used: HashMap<(TenantId, String), u64>,
+    /// In each unit's base: characters, milliseconds heard.
+    used: HashMap<(TenantId, String, CapUnit), u64>,
 }
 
-/// A cap reached: its limit and the month's count.
+/// A cap reached: its limit (in its unit) and the month's count (in the
+/// unit's base).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reached {
     pub cap: u64,
@@ -71,8 +73,11 @@ impl Caps {
         let used = if caps.is_empty() {
             HashMap::new()
         } else {
-            match self.store.synthesized_since(month).await {
-                Ok(rows) => rows.into_iter().map(|(t, p, n)| ((t, p), n)).collect(),
+            match self.store.used_since(month).await {
+                Ok(rows) => rows
+                    .into_iter()
+                    .map(|(t, p, u, n)| ((t, p, u), n))
+                    .collect(),
                 Err(e) => {
                     tracing::warn!(error = %e, "Speech usage could not be read for the caps; the last stands");
                     return;
@@ -87,8 +92,8 @@ impl Caps {
         };
     }
 
-    /// What this server synthesized since the last read.
-    pub fn add(&self, tenant: &str, provider: &str, characters: u64) {
+    /// What this server used since the last read, in `unit`'s base.
+    pub fn add(&self, tenant: &str, provider: &str, unit: CapUnit, amount: u64) {
         let Some(tenant) = tenant_id(tenant) else {
             return;
         };
@@ -102,24 +107,26 @@ impl Caps {
             s.used.clear();
             s.month = Some(month);
         }
-        *s.used.entry((tenant, provider.to_string())).or_default() += characters;
+        *s.used
+            .entry((tenant, provider.to_string(), unit))
+            .or_default() += amount;
     }
 
     /// Whether `tenant` has reached its cap on `provider` this month.
-    pub fn reached(&self, tenant: &str, provider: &str) -> Option<Reached> {
+    pub fn reached(&self, tenant: &str, provider: &str, unit: CapUnit) -> Option<Reached> {
         let tenant = tenant_id(tenant)?;
         let (month, _) = month_of((self.now)());
         let s = self.snapshot.lock().unwrap_or_else(|e| e.into_inner());
-        let cap = effective_cap(&s.caps, &tenant, provider)?;
+        let cap = effective_cap(&s.caps, &tenant, provider, unit)?;
         let used = if s.month == Some(month) {
             s.used
-                .get(&(tenant, provider.to_string()))
+                .get(&(tenant, provider.to_string(), unit))
                 .copied()
                 .unwrap_or(0)
         } else {
             0
         };
-        (used >= cap).then_some(Reached { cap, used })
+        (used >= unit.base(cap)).then_some(Reached { cap, used })
     }
 }
 
@@ -132,7 +139,7 @@ mod tests {
     #[derive(Default)]
     struct Store {
         caps: Mutex<Vec<SpeechCap>>,
-        used: Mutex<Vec<(TenantId, String, u64)>>,
+        used: Mutex<Vec<(TenantId, String, CapUnit, u64)>>,
     }
 
     #[async_trait::async_trait]
@@ -151,10 +158,10 @@ mod tests {
         async fn all_speech_caps(&self) -> anyhow::Result<Vec<SpeechCap>> {
             Ok(self.caps.lock().unwrap().clone())
         }
-        async fn synthesized_since(
+        async fn used_since(
             &self,
             _: SystemTime,
-        ) -> anyhow::Result<Vec<(TenantId, String, u64)>> {
+        ) -> anyhow::Result<Vec<(TenantId, String, CapUnit, u64)>> {
             Ok(self.used.lock().unwrap().clone())
         }
     }
@@ -167,37 +174,49 @@ mod tests {
             tenant_id: None,
             provider: "openai".into(),
             kind: SpeechCapKind::Platform,
+            unit: CapUnit::Characters,
             monthly_characters: Some(100),
         });
-        store.used.lock().unwrap().push((t, "openai".into(), 90));
+        store
+            .used
+            .lock()
+            .unwrap()
+            .push((t, "openai".into(), CapUnit::Characters, 90));
         let clock = Arc::new(Mutex::new(SystemTime::now()));
         let c = clock.clone();
         let caps = Caps::with_clock(store.clone(), Box::new(move || *c.lock().unwrap()));
         let tenant = t.to_string();
 
-        assert_eq!(caps.reached(&tenant, "openai"), None, "nothing read yet");
-        caps.refresh().await;
-        assert_eq!(caps.reached(&tenant, "openai"), None);
-        caps.add(&tenant, "openai", 10);
         assert_eq!(
-            caps.reached(&tenant, "openai"),
+            caps.reached(&tenant, "openai", CapUnit::Characters),
+            None,
+            "nothing read yet"
+        );
+        caps.refresh().await;
+        assert_eq!(caps.reached(&tenant, "openai", CapUnit::Characters), None);
+        caps.add(&tenant, "openai", CapUnit::Characters, 10);
+        assert_eq!(
+            caps.reached(&tenant, "openai", CapUnit::Characters),
             Some(Reached {
                 cap: 100,
                 used: 100
             })
         );
-        assert_eq!(caps.reached(&tenant, "piper"), None);
-        assert_eq!(caps.reached(&TenantId::new().to_string(), "openai"), None);
+        assert_eq!(caps.reached(&tenant, "piper", CapUnit::Characters), None);
+        assert_eq!(
+            caps.reached(&TenantId::new().to_string(), "openai", CapUnit::Characters),
+            None
+        );
 
         // The month turns: nothing counted yet.
         let (_, next) = month_of(*clock.lock().unwrap());
         *clock.lock().unwrap() = next + Duration::from_secs(1);
-        assert_eq!(caps.reached(&tenant, "openai"), None);
+        assert_eq!(caps.reached(&tenant, "openai", CapUnit::Characters), None);
 
         // The cap removed: gone at the next read.
         *clock.lock().unwrap() = next - Duration::from_secs(1);
         store.caps.lock().unwrap().clear();
         caps.refresh().await;
-        assert_eq!(caps.reached(&tenant, "openai"), None);
+        assert_eq!(caps.reached(&tenant, "openai", CapUnit::Characters), None);
     }
 }

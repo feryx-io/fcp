@@ -8,6 +8,7 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..models.cap_unit import CapUnit
 from ..types import UNSET, Unset
 from typing import cast
 
@@ -22,16 +23,18 @@ T = TypeVar("T", bound="SpeechCapRequest")
 
 @_attrs_define
 class SpeechCapRequest:
-    """ A cap to keep. `monthly_characters` null is allowed only on a tenant's
-    platform cap: none for this tenant, whatever the default says.
+    """ A cap to keep. `monthly` null is allowed only on a tenant's platform
+    cap: none for this tenant, whatever the default says.
 
         Attributes:
-            monthly_characters (int | None | Unset):
+            monthly (int | None | Unset): How many of `unit` a month (`monthly_characters` is read too).
+            unit (CapUnit | None | Unset):
             kind (None | str | Unset): `tenant` (the default: the tenant's own) or `platform` (a platform
                 administrator's cap on this tenant).
      """
 
-    monthly_characters: int | None | Unset = UNSET
+    monthly: int | None | Unset = UNSET
+    unit: CapUnit | None | Unset = UNSET
     kind: None | str | Unset = UNSET
 
 
@@ -39,11 +42,19 @@ class SpeechCapRequest:
 
 
     def to_dict(self) -> dict[str, Any]:
-        monthly_characters: int | None | Unset
-        if isinstance(self.monthly_characters, Unset):
-            monthly_characters = UNSET
+        monthly: int | None | Unset
+        if isinstance(self.monthly, Unset):
+            monthly = UNSET
         else:
-            monthly_characters = self.monthly_characters
+            monthly = self.monthly
+
+        unit: None | str | Unset
+        if isinstance(self.unit, Unset):
+            unit = UNSET
+        elif isinstance(self.unit, CapUnit):
+            unit = self.unit.value
+        else:
+            unit = self.unit
 
         kind: None | str | Unset
         if isinstance(self.kind, Unset):
@@ -56,8 +67,10 @@ class SpeechCapRequest:
 
         field_dict.update({
         })
-        if monthly_characters is not UNSET:
-            field_dict["monthly_characters"] = monthly_characters
+        if monthly is not UNSET:
+            field_dict["monthly"] = monthly
+        if unit is not UNSET:
+            field_dict["unit"] = unit
         if kind is not UNSET:
             field_dict["kind"] = kind
 
@@ -68,14 +81,34 @@ class SpeechCapRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        def _parse_monthly_characters(data: object) -> int | None | Unset:
+        def _parse_monthly(data: object) -> int | None | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
             return cast(int | None | Unset, data)
 
-        monthly_characters = _parse_monthly_characters(d.pop("monthly_characters", UNSET))
+        monthly = _parse_monthly(d.pop("monthly", UNSET))
+
+
+        def _parse_unit(data: object) -> CapUnit | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                unit_type_0 = CapUnit(data)
+
+
+
+                return unit_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(CapUnit | None | Unset, data)
+
+        unit = _parse_unit(d.pop("unit", UNSET))
 
 
         def _parse_kind(data: object) -> None | str | Unset:
@@ -89,7 +122,8 @@ class SpeechCapRequest:
 
 
         speech_cap_request = cls(
-            monthly_characters=monthly_characters,
+            monthly=monthly,
+            unit=unit,
             kind=kind,
         )
 
