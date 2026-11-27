@@ -108,7 +108,17 @@ impl RoomBridge {
         let _one = self.one_at_a_time();
         let id = key.bridge_id();
         let created = self.inner.get_room(&id).is_err();
-        let room = self.inner.get_or_create_room(id, format)?;
+        let room = self.inner.get_or_create_room(id.clone(), format)?;
+        if created {
+            // The room's own tasks — its frame clock, the mixing, its
+            // video — log as the room and its tenant: the id is
+            // `tenant-<uuid>:<room>` (`docs/LOG_VIEWER.md` L2).
+            room.set_log_span(tracing::info_span!(
+                "room",
+                room = %id,
+                tenant_id = %id.split(':').next().unwrap_or_default(),
+            ));
+        }
         *self.joins.entry(key.clone()).or_insert(0) += 1;
         Ok((
             room,
