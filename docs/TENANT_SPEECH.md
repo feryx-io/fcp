@@ -202,7 +202,7 @@ sealed again with the site's key; usage comes up with the site's records.
   hour shipped and shipped again). All five phases done.
 
 STT (`docs/SPEECH.md` §1–7) follows the same model afterwards: a
-tenant's recognizer and its own key.
+tenant's recognizer and its own key (designed in `docs/TENANT_RECOGNITION.md`).
 
 ## 7. Questions
 
