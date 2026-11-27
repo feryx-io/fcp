@@ -1216,3 +1216,301 @@ async fn speech_providers_voices_and_a_preview_come_from_the_tts_server() {
     assert_eq!(empty.status, StatusCode::BAD_REQUEST, "{}", empty.text);
     app.finish().await;
 }
+
+/// `docs/TENANT_SPEECH.md` S3: a tenant's own TTS account is made with its
+/// key, which is never shown again; chosen in the settings; listed among
+/// the providers; changed keeping its key; and deleted, taking the choice
+/// of it with it.
+#[tokio::test]
+async fn a_tenants_speech_account_is_made_chosen_and_deleted() {
+    use axum::routing::{get, post};
+    let asked: Arc<std::sync::Mutex<Vec<Value>>> = Arc::default();
+    let heard = Arc::clone(&asked);
+    let router = Router::new()
+        .route(
+            "/v1/providers",
+            get(|| async { axum::Json(json!([{ "name": "piper", "is_default": true }])) }),
+        )
+        .route(
+            "/v1/synthesize",
+            post(move |axum::Json(body): axum::Json<Value>| {
+                let heard = Arc::clone(&heard);
+                async move {
+                    heard.lock().unwrap().push(body);
+                    (StatusCode::OK, wav_bytes(800))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let app = app.with_tts(&url).await;
+    let make = |body: Value| app.admin(Method::POST, "/api/v1/speech/accounts", Some(body));
+
+    for (bad, why) in [
+        (json!({ "name": "x", "kind": "openai" }), "no key"),
+        (
+            json!({ "name": "x", "kind": "azure", "secret": "k" }),
+            "no region",
+        ),
+        (
+            json!({ "name": "x", "kind": "aws_polly", "region": "us-east-1", "secret": "k" }),
+            "no key id",
+        ),
+        (
+            json!({ "name": "x", "kind": "elevenlabs", "secret": "k", "endpoint": "http://plain" }),
+            "not https",
+        ),
+        (
+            json!({ "name": " ", "kind": "openai", "secret": "k" }),
+            "no name",
+        ),
+    ] {
+        let r = make(bad).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{why}: {}", r.text);
+    }
+
+    let made = make(json!({
+        "name": "Our ElevenLabs",
+        "kind": "elevenlabs",
+        "model": "eleven_multilingual_v2",
+        "secret": "xi-very-secret",
+    }))
+    .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    assert_eq!(made.json["has_key"], true);
+    assert!(!made.text.contains("xi-very-secret"), "{}", made.text);
+    let id = made.json["id"].as_str().unwrap().to_string();
+    let provider = made.json["provider"].as_str().unwrap().to_string();
+    assert_eq!(
+        provider,
+        format!("account:{}", id.strip_prefix("speech-").unwrap())
+    );
+
+    let again = make(json!({ "name": "our elevenlabs", "kind": "openai", "secret": "k" })).await;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.text);
+
+    let listed = app
+        .admin(Method::GET, "/api/v1/speech/accounts", None)
+        .await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
+    assert_eq!(
+        listed.json.as_array().map(Vec::len),
+        Some(1),
+        "{}",
+        listed.text
+    );
+    assert!(!listed.text.contains("xi-very-secret"));
+
+    // Among the providers, after the TTS server's.
+    let providers = app
+        .admin(Method::GET, "/api/v1/speech/providers", None)
+        .await;
+    assert_eq!(providers.json[0]["name"], "piper", "{}", providers.text);
+    assert_eq!(providers.json[1]["name"], provider.as_str());
+    assert_eq!(providers.json[1]["label"], "Our ElevenLabs");
+    assert_eq!(providers.json[1]["account"], true);
+
+    // Chosen; an account the tenant does not have is refused.
+    let chose = app
+        .admin(
+            Method::PUT,
+            "/api/v1/speech/settings",
+            Some(json!({ "provider": provider, "voice": "21m00Tcm4TlvDq8ikWAM" })),
+        )
+        .await;
+    assert_eq!(chose.status, StatusCode::OK, "{}", chose.text);
+    let stranger = app
+        .admin(
+            Method::PUT,
+            "/api/v1/speech/settings",
+            Some(json!({ "provider": format!("account:{}", uuid::Uuid::new_v4()) })),
+        )
+        .await;
+    assert_eq!(
+        stranger.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        stranger.text
+    );
+
+    // Tested: a sentence spoken through it, for this tenant.
+    let path = format!("/api/v1/speech/accounts/{id}");
+    let tested = app.admin(Method::POST, &format!("{path}/test"), None).await;
+    assert_eq!(tested.status, StatusCode::OK, "{}", tested.text);
+    assert!(tested.bytes.starts_with(b"RIFF"), "a WAV");
+    let sent = asked.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(sent["provider"], provider.as_str(), "{sent}");
+    assert!(sent["tenant_id"].is_string(), "{sent}");
+    let missing = app
+        .admin(
+            Method::POST,
+            &format!(
+                "/api/v1/speech/accounts/speech-{}/test",
+                uuid::Uuid::new_v4()
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND, "{}", missing.text);
+
+    // Changed without its key: the key is kept. Another vendor needs one.
+    let renamed = app
+        .admin(
+            Method::PUT,
+            &path,
+            Some(json!({ "name": "Voices", "kind": "elevenlabs" })),
+        )
+        .await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.text);
+    assert_eq!(renamed.json["name"], "Voices");
+    assert_eq!(renamed.json["has_key"], true);
+    let switched = app
+        .admin(
+            Method::PUT,
+            &path,
+            Some(json!({ "name": "Voices", "kind": "openai" })),
+        )
+        .await;
+    assert_eq!(
+        switched.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        switched.text
+    );
+
+    // Deleted: the settings that chose it no longer do.
+    let gone = app.admin(Method::DELETE, &path, None).await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT, "{}", gone.text);
+    let settings = app
+        .admin(Method::GET, "/api/v1/speech/settings", None)
+        .await;
+    assert!(settings.json["provider"].is_null(), "{}", settings.text);
+    assert!(settings.json["voice"].is_null(), "{}", settings.text);
+    let twice = app.admin(Method::DELETE, &path, None).await;
+    assert_eq!(twice.status, StatusCode::NOT_FOUND, "{}", twice.text);
+    app.finish().await;
+}
+
+/// `docs/TENANT_SPEECH.md` S3: the platform holds a provider back from
+/// tenants. A tenant's administrator no longer sees or may choose it; the
+/// platform administrator may; the default cannot be held back.
+#[tokio::test]
+async fn the_platform_holds_a_provider_back_from_tenants() {
+    use axum::routing::get;
+    let router = Router::new().route(
+        "/v1/providers",
+        get(|| async {
+            axum::Json(json!([
+                { "name": "piper", "is_default": true },
+                { "name": "elevenlabs", "is_default": false },
+            ]))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let app = app.with_tts(&url).await;
+    app.create_user_with_role("speechta", "tenant_admin").await;
+    let login = app.login("speechta", PASSWORD).await;
+    let ta = login.json["token"].as_str().unwrap().to_string();
+
+    let refused = app
+        .send_as(
+            &ta,
+            Method::PUT,
+            "/api/v1/system/speech",
+            Some(json!({ "held_back": [] })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    let default = app
+        .admin(
+            Method::PUT,
+            "/api/v1/system/speech",
+            Some(json!({ "held_back": ["piper"] })),
+        )
+        .await;
+    assert_eq!(default.status, StatusCode::BAD_REQUEST, "{}", default.text);
+
+    let held = app
+        .admin(
+            Method::PUT,
+            "/api/v1/system/speech",
+            Some(json!({ "held_back": ["elevenlabs"] })),
+        )
+        .await;
+    assert_eq!(held.status, StatusCode::OK, "{}", held.text);
+    assert_eq!(held.json["providers"][1]["name"], "elevenlabs");
+    assert_eq!(held.json["providers"][1]["offered"], false);
+    assert_eq!(held.json["providers"][0]["offered"], true);
+    let read = app.admin(Method::GET, "/api/v1/system/speech", None).await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.text);
+    assert_eq!(read.json["held_back"], json!(["elevenlabs"]));
+    let not_theirs = app
+        .send_as(&ta, Method::GET, "/api/v1/system/speech", None)
+        .await;
+    assert_eq!(
+        not_theirs.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        not_theirs.text
+    );
+
+    // The tenant's administrator: not listed, not choosable.
+    let theirs = app
+        .send_as(&ta, Method::GET, "/api/v1/speech/providers", None)
+        .await;
+    assert_eq!(theirs.status, StatusCode::OK, "{}", theirs.text);
+    assert_eq!(
+        theirs.json.as_array().map(Vec::len),
+        Some(1),
+        "{}",
+        theirs.text
+    );
+    let chose = app
+        .send_as(
+            &ta,
+            Method::PUT,
+            "/api/v1/speech/settings",
+            Some(json!({ "provider": "elevenlabs" })),
+        )
+        .await;
+    assert_eq!(chose.status, StatusCode::FORBIDDEN, "{}", chose.text);
+
+    // The platform's administrator still may.
+    let all = app
+        .admin(Method::GET, "/api/v1/speech/providers", None)
+        .await;
+    assert_eq!(all.json.as_array().map(Vec::len), Some(2), "{}", all.text);
+
+    // Offered again.
+    let back = app
+        .admin(
+            Method::PUT,
+            "/api/v1/system/speech",
+            Some(json!({ "held_back": [] })),
+        )
+        .await;
+    assert_eq!(back.status, StatusCode::OK, "{}", back.text);
+    let chose = app
+        .send_as(
+            &ta,
+            Method::PUT,
+            "/api/v1/speech/settings",
+            Some(json!({ "provider": "elevenlabs" })),
+        )
+        .await;
+    assert_eq!(chose.status, StatusCode::OK, "{}", chose.text);
+    app.finish().await;
+}

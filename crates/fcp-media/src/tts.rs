@@ -456,8 +456,13 @@ impl TtsService {
     /// List available voices for a language.
     /// `provider`'s voices for `language` (the shared TTS server's, by
     /// name; its default when `None`).
-    pub async fn voices(&self, language: &str, provider: Option<&str>) -> Result<Vec<VoiceInfo>> {
-        self.provider.voices_of(language, provider).await
+    pub async fn voices(
+        &self,
+        language: &str,
+        provider: Option<&str>,
+        tenant: Option<&str>,
+    ) -> Result<Vec<VoiceInfo>> {
+        self.provider.voices_of(language, provider, tenant).await
     }
 
     /// The providers this service can speak with.
@@ -543,8 +548,14 @@ pub trait TtsProvider: Send + Sync {
     async fn list_voices(&self, language: &str) -> Result<Vec<VoiceInfo>>;
 
     /// `provider`'s voices for `language`, where this provider fronts
-    /// several (the shared TTS server); any other answers with its own.
-    async fn voices_of(&self, language: &str, _provider: Option<&str>) -> Result<Vec<VoiceInfo>> {
+    /// several (the shared TTS server, where `tenant` may name its own
+    /// account as the provider); any other answers with its own.
+    async fn voices_of(
+        &self,
+        language: &str,
+        _provider: Option<&str>,
+        _tenant: Option<&str>,
+    ) -> Result<Vec<VoiceInfo>> {
         self.list_voices(language).await
     }
 

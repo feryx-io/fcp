@@ -17057,6 +17057,278 @@
         }
       }
     },
+    "/api/v1/speech/accounts": {
+      "get": {
+        "tags": [
+          "speech"
+        ],
+        "summary": "GET /speech/accounts",
+        "operationId": "speech_list_accounts",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_SpeechAccountView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "speech"
+        ],
+        "summary": "POST /speech/accounts",
+        "operationId": "speech_create_account",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Made",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpeechAccountView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/speech/accounts/{id}": {
+      "put": {
+        "tags": [
+          "speech"
+        ],
+        "summary": "PUT /speech/accounts/{id}",
+        "operationId": "speech_update_account",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The account",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpeechAccountView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "speech"
+        ],
+        "summary": "DELETE /speech/accounts/{id} — and the settings that chose it go back\nto the platform's provider.",
+        "operationId": "speech_delete_account",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The account",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/speech/accounts/{id}/test": {
+      "post": {
+        "tags": [
+          "speech"
+        ],
+        "summary": "POST /speech/accounts/{id}/test — a sentence spoken through the\naccount, as WAV: whether its key works.",
+        "operationId": "speech_test_account",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The account",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The account spoke",
+            "content": {
+              "audio/wav": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/speech": {
+      "get": {
+        "tags": [
+          "speech"
+        ],
+        "summary": "GET /system/speech",
+        "operationId": "system_get_speech",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformSpeech"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "speech"
+        ],
+        "summary": "PUT /system/speech — the providers held back from tenants.",
+        "operationId": "system_put_speech",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlatformSpeechRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlatformSpeech"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/speech/providers": {
       "get": {
         "tags": [
@@ -33290,6 +33562,27 @@
           }
         }
       },
+      "OfferedProvider": {
+        "type": "object",
+        "description": "One of the TTS server's providers, as the platform offers it.",
+        "required": [
+          "name",
+          "is_default",
+          "offered"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "is_default": {
+            "type": "boolean"
+          },
+          "offered": {
+            "type": "boolean",
+            "description": "Whether tenants may choose it."
+          }
+        }
+      },
       "OrderStatusesRequest": {
         "type": "object",
         "description": "A user's own statuses in a new order: every id, once.",
@@ -40351,6 +40644,97 @@
           }
         }
       },
+      "Page_SpeechAccountView": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A tenant's account with a TTS vendor, its key never shown.",
+              "required": [
+                "id",
+                "name",
+                "kind",
+                "provider",
+                "has_key",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "`speech-<uuid>`."
+                },
+                "name": {
+                  "type": "string"
+                },
+                "kind": {
+                  "$ref": "#/components/schemas/SpeechAccountKind"
+                },
+                "provider": {
+                  "type": "string",
+                  "description": "What names it as a provider in the settings and requests."
+                },
+                "region": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "model": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "endpoint": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "access_key_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "has_key": {
+                  "type": "boolean",
+                  "description": "Whether a key is kept; the key itself is never returned."
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
       "Page_SpeechProvider": {
         "type": "object",
         "description": "A page of a list.",
@@ -40365,15 +40749,26 @@
               "description": "A provider the tenant may speak with.",
               "required": [
                 "name",
-                "is_default"
+                "label",
+                "is_default",
+                "account"
               ],
               "properties": {
                 "name": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "What names it in the settings and requests (`account:<id>` for one\nof the tenant's accounts)."
+                },
+                "label": {
+                  "type": "string",
+                  "description": "What to show: the provider's name, or the account's."
                 },
                 "is_default": {
                   "type": "boolean",
                   "description": "The TTS server's default: what a tenant without a choice gets."
+                },
+                "account": {
+                  "type": "boolean",
+                  "description": "One of the tenant's own accounts (`docs/TENANT_SPEECH.md` S3)."
                 }
               }
             }
@@ -42655,6 +43050,44 @@
             }
           }
         }
+      },
+      "PlatformSpeech": {
+        "type": "object",
+        "description": "Which of the TTS server's providers tenants may choose.",
+        "required": [
+          "providers",
+          "held_back"
+        ],
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OfferedProvider"
+            }
+          },
+          "held_back": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Held back from tenants (a provider the server no longer has may\nstill be named here)."
+          }
+        }
+      },
+      "PlatformSpeechRequest": {
+        "type": "object",
+        "required": [
+          "held_back"
+        ],
+        "properties": {
+          "held_back": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
       },
       "PlayRequest": {
         "type": "object",
@@ -46268,6 +46701,128 @@
           }
         }
       },
+      "SpeechAccountKind": {
+        "type": "string",
+        "description": "The vendors a tenant may bring an account with.",
+        "enum": [
+          "openai",
+          "elevenlabs",
+          "azure",
+          "aws_polly",
+          "google_cloud"
+        ]
+      },
+      "SpeechAccountRequest": {
+        "type": "object",
+        "description": "An account to make or change. On a change, an unset `secret` keeps the\none kept.",
+        "required": [
+          "name",
+          "kind"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SpeechAccountKind"
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "endpoint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "access_key_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "secret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Write-only: the API key, subscription key or AWS secret access key."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SpeechAccountView": {
+        "type": "object",
+        "description": "A tenant's account with a TTS vendor, its key never shown.",
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "provider",
+          "has_key",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "`speech-<uuid>`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SpeechAccountKind"
+          },
+          "provider": {
+            "type": "string",
+            "description": "What names it as a provider in the settings and requests."
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "endpoint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "access_key_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_key": {
+            "type": "boolean",
+            "description": "Whether a key is kept; the key itself is never returned."
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
       "SpeechPreviewRequest": {
         "type": "object",
         "description": "What to speak for a preview; unset is the tenant's choice, then the\nTTS server's default.",
@@ -46303,15 +46858,26 @@
         "description": "A provider the tenant may speak with.",
         "required": [
           "name",
-          "is_default"
+          "label",
+          "is_default",
+          "account"
         ],
         "properties": {
           "name": {
-            "type": "string"
+            "type": "string",
+            "description": "What names it in the settings and requests (`account:<id>` for one\nof the tenant's accounts)."
+          },
+          "label": {
+            "type": "string",
+            "description": "What to show: the provider's name, or the account's."
           },
           "is_default": {
             "type": "boolean",
             "description": "The TTS server's default: what a tenant without a choice gets."
+          },
+          "account": {
+            "type": "boolean",
+            "description": "One of the tenant's own accounts (`docs/TENANT_SPEECH.md` S3)."
           }
         }
       },

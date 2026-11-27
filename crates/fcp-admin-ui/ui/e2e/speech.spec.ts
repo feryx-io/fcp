@@ -19,7 +19,7 @@ test("a tenant's speech settings are saved, kept and taken back", async ({ page,
   await expect(page.getByText('No TTS service answers this admin')).toBeVisible()
 
   await page.getByLabel('Language', { exact: true }).first().fill('en-GB')
-  await page.getByRole('button', { name: 'Add' }).click()
+  await page.getByRole('button', { name: 'Add', exact: true }).click()
   await page.getByLabel('Language').nth(1).fill('es')
   await page.getByRole('button', { name: 'Save' }).click()
   await settled(page)
@@ -39,4 +39,34 @@ test("a tenant's speech settings are saved, kept and taken back", async ({ page,
   await expect(page.getByLabel('Language', { exact: true }).first()).toHaveValue('')
   const back = await (await api.get('/api/v1/speech/settings')).json()
   expect(back.configured).toBe(false)
+})
+
+test("a tenant's own speech account is added, edited and deleted, its key never shown", async ({ page, api }) => {
+  await signIn(page, tenantAdmin())
+  await page.goto('/admin/speech')
+  await settled(page)
+  await page.getByRole('button', { name: 'Add account' }).click()
+  const dialog = page.getByRole('dialog')
+  await dialog.getByLabel('Name').fill('Our OpenAI')
+  await dialog.getByLabel('API key').fill('sk-never-shown')
+  await dialog.getByRole('button', { name: 'Save account' }).click()
+  await expect(dialog).toBeHidden()
+  const row = page.getByRole('row', { name: /Our OpenAI/ })
+  await expect(row).toBeVisible()
+  await expect(row.getByLabel('Key kept')).toBeVisible()
+  await expect(page.getByText('sk-never-shown')).toHaveCount(0)
+
+  // Edited without its key: the key is kept.
+  await page.getByRole('button', { name: 'Edit Our OpenAI' }).click()
+  await expect(dialog.getByLabel('API key')).toHaveValue('')
+  await dialog.getByLabel('Name').fill('Voices')
+  await dialog.getByRole('button', { name: 'Save account' }).click()
+  await expect(dialog).toBeHidden()
+  const kept = await (await api.get('/api/v1/speech/accounts')).json()
+  const mine = (kept.data ?? kept).find((a: { name: string }) => a.name === 'Voices')
+  expect(mine?.has_key).toBe(true)
+
+  page.once('dialog', (d) => d.accept())
+  await page.getByRole('button', { name: 'Delete Voices' }).click()
+  await expect(page.getByRole('row', { name: /Voices/ })).toHaveCount(0)
 })

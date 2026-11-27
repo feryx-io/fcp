@@ -164,6 +164,9 @@ import type {
   SpeechSettingsRequest,
   SpeechProvider,
   SpeechVoice,
+  SpeechAccount,
+  SpeechAccountRequest,
+  PlatformSpeech,
   LogLine,
   LogLevel,
 } from '@/types'
@@ -827,6 +830,17 @@ export const speech = {
   /** A sentence spoken now, as a playable URL. */
   preview: (body: { text: string; provider?: string; voice?: string; language?: string }) =>
     apiClient.postBlobUrl('/speech/preview', body),
+  // The tenant's own vendor accounts (docs/TENANT_SPEECH.md S3).
+  accounts: () => apiClient.getAll<SpeechAccount>('/speech/accounts'),
+  createAccount: (body: SpeechAccountRequest) => apiClient.post<SpeechAccount>('/speech/accounts', body),
+  updateAccount: (id: string, body: SpeechAccountRequest) =>
+    apiClient.put<SpeechAccount>(`/speech/accounts/${encodeURIComponent(id)}`, body),
+  deleteAccount: (id: string) => apiClient.delete<void>(`/speech/accounts/${encodeURIComponent(id)}`),
+  /** A sentence spoken through the account, as a playable URL. */
+  testAccount: (id: string) => apiClient.postBlobUrl(`/speech/accounts/${encodeURIComponent(id)}/test`, {}),
+  // The platform's offer: which of the TTS server's providers tenants may choose.
+  platform: () => apiClient.get<PlatformSpeech>('/system/speech'),
+  savePlatform: (held_back: string[]) => apiClient.put<PlatformSpeech>('/system/speech', { held_back }),
 }
 
 // The services' logs (docs/LOG_VIEWER.md): a tenant's lines only, unless

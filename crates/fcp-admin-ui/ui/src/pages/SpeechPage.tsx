@@ -12,6 +12,8 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { speech } from '@/api/endpoints'
 import { useVoices } from '@/lib/voices'
+import { PlatformOffer, SpeechAccounts } from './SpeechAccounts'
+import { useIsPlatformAdmin } from '@/components/TenantSelector'
 
 const DEFAULT = '__default__'
 
@@ -38,6 +40,7 @@ function VoiceSelect({ id, language, provider, value, onChange }: {
 
 export function SpeechPage() {
   const queryClient = useQueryClient()
+  const platformAdmin = useIsPlatformAdmin()
   const settings = useQuery({ queryKey: ['speech', 'settings'], queryFn: speech.settings })
   const providers = useQuery({ queryKey: ['speech', 'providers'], queryFn: speech.providers, retry: false })
   const [provider, setProvider] = useState('')
@@ -145,7 +148,7 @@ export function SpeechPage() {
               <SelectTrigger id="speech-provider" aria-label="Provider"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value={DEFAULT}>The platform's{defaultProvider ? ` (${defaultProvider})` : ''}</SelectItem>
-                {(providers.data ?? []).map((p) => <SelectItem key={p.name} value={p.name}>{p.name}</SelectItem>)}
+                {(providers.data ?? []).map((p) => <SelectItem key={p.name} value={p.name}>{p.account ? `${p.label} (your account)` : p.label}</SelectItem>)}
                 {provider && !(providers.data ?? []).some((p) => p.name === provider) && (
                   <SelectItem value={provider}>{provider}</SelectItem>
                 )}
@@ -199,6 +202,9 @@ export function SpeechPage() {
           ))}
         </CardContent>
       </Card>
+
+      <SpeechAccounts />
+      {platformAdmin && <PlatformOffer />}
 
       <Card>
         <CardHeader>

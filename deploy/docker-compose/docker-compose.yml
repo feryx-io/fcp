@@ -536,13 +536,20 @@ services:
     volumes:
       - ./configs/fcp-tts-server.toml:/app/fcp-tts-server.toml:ro
       - tts-cache:/var/lib/fcp/tts_cache
+      # The master key, to open tenants' own vendor keys.
+      - fcp-certs:/var/lib/fcp/certs:ro
     environment:
       RUST_LOG: info
       FCP_TTS_LOG_FORMAT: pretty
       FCP_TTS_AUTH_TOKENS: ${FCP_TTS_AUTH_TOKENS}
       # Tenants' speech settings (docs/TENANT_SPEECH.md).
       FCP_TTS_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@postgres:5432/fcp
+      # Tenants' own accounts are sealed with the deployment's key (S3).
+      FCP_ENCRYPTION_PROVIDER: local
+      FCP_MASTER_KEY_FILE: /var/lib/fcp/certs/master.key
     depends_on:
+      certs:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     healthcheck:

@@ -117,6 +117,12 @@ pub(crate) const SEALED_COLUMNS: &[SealedColumn] = &[
         column: "secret",
         json_field: None,
     },
+    // A tenant's own TTS vendor keys (docs/TENANT_SPEECH.md S3).
+    SealedColumn {
+        table: "speech_accounts",
+        column: "secret",
+        json_field: None,
+    },
 ];
 
 /// Live encryption state for one backend instance.

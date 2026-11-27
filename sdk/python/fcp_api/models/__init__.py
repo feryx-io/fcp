@@ -231,6 +231,7 @@ from .notify_call_request import NotifyCallRequest
 from .notify_call_response import NotifyCallResponse
 from .number_usage_response import NumberUsageResponse
 from .number_validation_response import NumberValidationResponse
+from .offered_provider import OfferedProvider
 from .order_statuses_request import OrderStatusesRequest
 from .own_hand_request import OwnHandRequest
 from .own_status_request import OwnStatusRequest
@@ -387,6 +388,8 @@ from .page_site_response_data_item import PageSiteResponseDataItem
 from .page_site_response_data_item_versions import PageSiteResponseDataItemVersions
 from .page_sitting_response import PageSittingResponse
 from .page_sitting_response_data_item import PageSittingResponseDataItem
+from .page_speech_account_view import PageSpeechAccountView
+from .page_speech_account_view_data_item import PageSpeechAccountViewDataItem
 from .page_speech_provider import PageSpeechProvider
 from .page_speech_provider_data_item import PageSpeechProviderDataItem
 from .page_speech_voice import PageSpeechVoice
@@ -425,6 +428,8 @@ from .personal_contact_request import PersonalContactRequest
 from .personal_contact_response import PersonalContactResponse
 from .phone_number_response import PhoneNumberResponse
 from .place_hold_request import PlaceHoldRequest
+from .platform_speech import PlatformSpeech
+from .platform_speech_request import PlatformSpeechRequest
 from .play_request import PlayRequest
 from .policy_response import PolicyResponse
 from .post_chat_request import PostChatRequest
@@ -527,6 +532,9 @@ from .softphone_media import SoftphoneMedia
 from .softphone_password import SoftphonePassword
 from .softphone_video import SoftphoneVideo
 from .softphone_video_send import SoftphoneVideoSend
+from .speech_account_kind import SpeechAccountKind
+from .speech_account_request import SpeechAccountRequest
+from .speech_account_view import SpeechAccountView
 from .speech_preview_request import SpeechPreviewRequest
 from .speech_provider import SpeechProvider
 from .speech_settings_request import SpeechSettingsRequest
@@ -872,6 +880,7 @@ __all__ = (
     "NotifyCallResponse",
     "NumberUsageResponse",
     "NumberValidationResponse",
+    "OfferedProvider",
     "OrderStatusesRequest",
     "OwnHandRequest",
     "OwnStatusRequest",
@@ -1028,6 +1037,8 @@ __all__ = (
     "PageSiteResponseDataItemVersions",
     "PageSittingResponse",
     "PageSittingResponseDataItem",
+    "PageSpeechAccountView",
+    "PageSpeechAccountViewDataItem",
     "PageSpeechProvider",
     "PageSpeechProviderDataItem",
     "PageSpeechVoice",
@@ -1066,6 +1077,8 @@ __all__ = (
     "PersonPresenceResponse",
     "PhoneNumberResponse",
     "PlaceHoldRequest",
+    "PlatformSpeech",
+    "PlatformSpeechRequest",
     "PlayRequest",
     "PolicyResponse",
     "PostChatRequest",
@@ -1168,6 +1181,9 @@ __all__ = (
     "SoftphonePassword",
     "SoftphoneVideo",
     "SoftphoneVideoSend",
+    "SpeechAccountKind",
+    "SpeechAccountRequest",
+    "SpeechAccountView",
     "SpeechPreviewRequest",
     "SpeechProvider",
     "SpeechSettingsRequest",

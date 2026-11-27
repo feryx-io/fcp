@@ -144,9 +144,11 @@ pub async fn put_settings(
             voices.insert(language, voice);
         }
     }
+    let provider = checked("provider", req.provider)?;
+    known_provider(&state, &identity, &tenant.0, provider.as_deref()).await?;
     let speech = TenantSpeech {
         tenant_id: tenant.0,
-        provider: checked("provider", req.provider)?,
+        provider,
         voice: checked("voice", req.voice)?,
         language: checked("language", req.language)?,
         voices,
@@ -208,9 +210,15 @@ fn tts(state: &ApiState) -> Result<&Arc<fcp_media::tts::TtsService>, ApiError> {
 /// A provider the tenant may speak with.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SpeechProvider {
+    /// What names it in the settings and requests (`account:<id>` for one
+    /// of the tenant's accounts).
     pub name: String,
+    /// What to show: the provider's name, or the account's.
+    pub label: String,
     /// The TTS server's default: what a tenant without a choice gets.
     pub is_default: bool,
+    /// One of the tenant's own accounts (`docs/TENANT_SPEECH.md` S3).
+    pub account: bool,
 }
 
 /// GET /speech/providers — the TTS server's providers.
@@ -227,6 +235,7 @@ pub struct SpeechProvider {
 pub async fn list_providers(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
+    tenant: TenantContext,
 ) -> Result<Json<crate::page::Page<SpeechProvider>>, ApiError> {
     crate::auth::check_permission(&identity, Permission::PromptRead, state.deployment_mode)?;
     // No TTS service here: none to choose from.
@@ -239,11 +248,31 @@ pub async fn list_providers(
         .map_err(|e| ApiError::ServiceUnavailable(format!("TTS providers: {e:#}")))?
         .into_iter()
         .map(|p| SpeechProvider {
+            label: p.name.clone(),
             name: p.name,
             is_default: p.is_default,
+            account: false,
         })
         .collect();
     list.sort_by(|a, b| b.is_default.cmp(&a.is_default).then(a.name.cmp(&b.name)));
+    // A tenant sees what the platform offers it; the default always is.
+    if !identity.is_platform_admin() {
+        let held = held_back(&state).await?;
+        list.retain(|p| p.is_default || !held.contains(&p.name));
+    }
+    // Then the tenant's own accounts, by name.
+    if let Ok(store) = accounts(&state) {
+        let mine = store
+            .list_speech_accounts(&tenant.0)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        list.extend(mine.into_iter().map(|a| SpeechProvider {
+            name: format!("{ACCOUNT_PREFIX}{}", a.id),
+            label: a.name,
+            is_default: false,
+            account: true,
+        }));
+    }
     let total = list.len() as u64;
     Ok(Json(crate::page::Page::new(list, None, Some(total))))
 }
@@ -282,16 +311,18 @@ pub struct SpeechVoice {
 pub async fn list_voices(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
+    tenant: TenantContext,
     axum::extract::Query(q): axum::extract::Query<VoicesQuery>,
 ) -> Result<Json<crate::page::Page<SpeechVoice>>, ApiError> {
     crate::auth::check_permission(&identity, Permission::PromptRead, state.deployment_mode)?;
     let provider = checked("provider", q.provider)?;
+    known_provider(&state, &identity, &tenant.0, provider.as_deref()).await?;
     let language = checked("language", q.language)?.unwrap_or_else(|| "en-US".into());
     let Some(tts) = state.tts_service.as_ref() else {
         return Ok(Json(crate::page::Page::new(Vec::new(), None, Some(0))));
     };
     let voices = tts
-        .voices(&language, provider.as_deref())
+        .voices(&language, provider.as_deref(), Some(&tenant.0.to_string()))
         .await
         .map_err(|e| ApiError::ServiceUnavailable(format!("TTS voices: {e:#}")))?;
     let list: Vec<SpeechVoice> = voices
@@ -348,6 +379,7 @@ pub async fn preview(
     let provider = checked("provider", req.provider)?;
     let voice = checked("voice", req.voice)?;
     let language = checked("language", req.language)?;
+    known_provider(&state, &identity, &tenant.0, provider.as_deref()).await?;
     let audio = tts(&state)?
         .preview(
             text,
@@ -363,4 +395,541 @@ pub async fn preview(
         [(axum::http::header::CONTENT_TYPE, "audio/wav")],
         audio,
     ))
+}
+
+// ── A tenant's own accounts (docs/TENANT_SPEECH.md S3) ─────────────────────
+
+use fcp_core::speech::{SpeechAccount, SpeechAccountKind, SpeechAccountStore, ACCOUNT_PREFIX};
+
+fn accounts(state: &ApiState) -> Result<&Arc<dyn SpeechAccountStore>, ApiError> {
+    state
+        .storage
+        .as_ref()
+        .and_then(|s| s.speech_account_store())
+        .ok_or_else(|| ApiError::ServiceUnavailable("Speech accounts are not kept here".into()))
+}
+
+/// A tenant's account with a TTS vendor, its key never shown.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SpeechAccountView {
+    /// `speech-<uuid>`.
+    pub id: String,
+    pub name: String,
+    pub kind: SpeechAccountKind,
+    /// What names it as a provider in the settings and requests.
+    pub provider: String,
+    pub region: Option<String>,
+    pub model: Option<String>,
+    pub endpoint: Option<String>,
+    pub access_key_id: Option<String>,
+    /// Whether a key is kept; the key itself is never returned.
+    pub has_key: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl SpeechAccountView {
+    fn of(a: &SpeechAccount) -> Self {
+        Self {
+            id: format!("{ID_PREFIX}{}", a.id),
+            name: a.name.clone(),
+            kind: a.kind,
+            provider: format!("{ACCOUNT_PREFIX}{}", a.id),
+            region: a.region.clone(),
+            model: a.model.clone(),
+            endpoint: a.endpoint.clone(),
+            access_key_id: a.access_key_id.clone(),
+            has_key: a.secret.as_deref().is_some_and(|s| !s.is_empty()),
+            created_at: crate::time::format_system_time(a.created_at),
+            updated_at: crate::time::format_system_time(a.updated_at),
+        }
+    }
+}
+
+/// An account to make or change. On a change, an unset `secret` keeps the
+/// one kept.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SpeechAccountRequest {
+    pub name: String,
+    pub kind: SpeechAccountKind,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    #[serde(default)]
+    pub access_key_id: Option<String>,
+    /// Write-only: the API key, subscription key or AWS secret access key.
+    #[serde(default)]
+    pub secret: Option<String>,
+}
+
+fn account_from(
+    req: SpeechAccountRequest,
+    tenant: fcp_core::TenantId,
+    kept: Option<&SpeechAccount>,
+) -> Result<SpeechAccount, ApiError> {
+    let name = req.name.trim().to_string();
+    if name.is_empty() || name.chars().count() > 100 {
+        return Err(ApiError::BadRequest(
+            "An account's name is 1 to 100 characters".into(),
+        ));
+    }
+    let region = checked("region", req.region)?;
+    if req.kind.needs_region() && region.is_none() {
+        return Err(ApiError::BadRequest(format!(
+            "A {} account names its region",
+            req.kind.as_str()
+        )));
+    }
+    let endpoint = checked("endpoint", req.endpoint)?;
+    if let Some(e) = &endpoint {
+        let url =
+            url::Url::parse(e).map_err(|_| ApiError::BadRequest("The endpoint is a URL".into()))?;
+        if url.scheme() != "https" {
+            return Err(ApiError::BadRequest("The endpoint is https".into()));
+        }
+    }
+    let access_key_id = checked("access_key_id", req.access_key_id)?;
+    if req.kind == SpeechAccountKind::AwsPolly && access_key_id.is_none() {
+        return Err(ApiError::BadRequest(
+            "An AWS account names its access key id".into(),
+        ));
+    }
+    let secret = match req
+        .secret
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        Some(s) if s.len() > 4096 => {
+            return Err(ApiError::BadRequest("A key is at most 4096 bytes".into()))
+        }
+        Some(s) => Some(s),
+        None => kept.and_then(|k| k.secret.clone()),
+    };
+    if secret.is_none() {
+        return Err(ApiError::BadRequest("An account has a key".into()));
+    }
+    let now = SystemTime::now();
+    Ok(SpeechAccount {
+        id: kept.map(|k| k.id).unwrap_or_else(uuid::Uuid::new_v4),
+        tenant_id: tenant,
+        name,
+        kind: req.kind,
+        region,
+        model: checked("model", req.model)?,
+        endpoint,
+        access_key_id,
+        secret,
+        created_at: kept.map(|k| k.created_at).unwrap_or(now),
+        updated_at: now,
+    })
+}
+
+async fn name_taken(
+    state: &ApiState,
+    tenant: &fcp_core::TenantId,
+    name: &str,
+    other_than: Option<uuid::Uuid>,
+) -> Result<bool, ApiError> {
+    Ok(accounts(state)?
+        .list_speech_accounts(tenant)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .iter()
+        .any(|a| a.name.eq_ignore_ascii_case(name) && Some(a.id) != other_than))
+}
+
+/// An account's id as the API shows it: `speech-<uuid>`.
+const ID_PREFIX: &str = "speech-";
+
+fn account_id(id: &str) -> Result<uuid::Uuid, ApiError> {
+    id.strip_prefix(ID_PREFIX)
+        .unwrap_or(id)
+        .parse()
+        .map_err(|_| ApiError::NotFound("No such speech account".into()))
+}
+
+/// GET /speech/accounts
+#[utoipa::path(
+    get,
+    path = "/api/v1/speech/accounts",
+    tag = "speech",
+    operation_id = "speech_list_accounts",
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<SpeechAccountView>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn list_accounts(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: TenantContext,
+) -> Result<Json<crate::page::Page<SpeechAccountView>>, ApiError> {
+    crate::auth::check_permission(&identity, Permission::PromptRead, state.deployment_mode)?;
+    let list: Vec<SpeechAccountView> = accounts(&state)?
+        .list_speech_accounts(&tenant.0)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .iter()
+        .map(SpeechAccountView::of)
+        .collect();
+    let total = list.len() as u64;
+    Ok(Json(crate::page::Page::new(list, None, Some(total))))
+}
+
+/// POST /speech/accounts
+#[utoipa::path(
+    post,
+    path = "/api/v1/speech/accounts",
+    tag = "speech",
+    operation_id = "speech_create_account",
+    request_body = SpeechAccountRequest,
+    responses(
+        (status = 201, description = "Made", body = SpeechAccountView),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn create_account(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: TenantContext,
+    Json(req): Json<SpeechAccountRequest>,
+) -> Result<(StatusCode, Json<SpeechAccountView>), ApiError> {
+    crate::auth::check_permission(&identity, Permission::PromptManage, state.deployment_mode)?;
+    let store = accounts(&state)?;
+    if store
+        .list_speech_accounts(&tenant.0)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .len()
+        >= 20
+    {
+        return Err(ApiError::BadRequest("At most 20 speech accounts".into()));
+    }
+    let account = account_from(req, tenant.0, None)?;
+    if name_taken(&state, &tenant.0, &account.name, None).await? {
+        return Err(ApiError::Conflict("An account has that name".into()));
+    }
+    store
+        .put_speech_account(&account)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok((StatusCode::CREATED, Json(SpeechAccountView::of(&account))))
+}
+
+/// PUT /speech/accounts/{id}
+#[utoipa::path(
+    put,
+    path = "/api/v1/speech/accounts/{id}",
+    tag = "speech",
+    operation_id = "speech_update_account",
+    params(("id" = String, Path, description = "The account")),
+    request_body = SpeechAccountRequest,
+    responses(
+        (status = 200, description = "OK", body = SpeechAccountView),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn update_account(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: TenantContext,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(req): Json<SpeechAccountRequest>,
+) -> Result<Json<SpeechAccountView>, ApiError> {
+    crate::auth::check_permission(&identity, Permission::PromptManage, state.deployment_mode)?;
+    let id = account_id(&id)?;
+    let store = accounts(&state)?;
+    let kept = store
+        .get_speech_account(&tenant.0, &id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound("No such speech account".into()))?;
+    if req.kind != kept.kind && req.secret.as_deref().is_none_or(|s| s.trim().is_empty()) {
+        return Err(ApiError::BadRequest(
+            "Another vendor needs its own key".into(),
+        ));
+    }
+    let account = account_from(req, tenant.0, Some(&kept))?;
+    if name_taken(&state, &tenant.0, &account.name, Some(id)).await? {
+        return Err(ApiError::Conflict("An account has that name".into()));
+    }
+    store
+        .put_speech_account(&account)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    announce(&state, &tenant.0).await;
+    Ok(Json(SpeechAccountView::of(&account)))
+}
+
+/// DELETE /speech/accounts/{id} — and the settings that chose it go back
+/// to the platform's provider.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/speech/accounts/{id}",
+    tag = "speech",
+    operation_id = "speech_delete_account",
+    params(("id" = String, Path, description = "The account")),
+    responses(
+        (status = 204, description = "Deleted"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn delete_account(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: TenantContext,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<StatusCode, ApiError> {
+    crate::auth::check_permission(&identity, Permission::PromptManage, state.deployment_mode)?;
+    let id = account_id(&id)?;
+    if !accounts(&state)?
+        .delete_speech_account(&tenant.0, &id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+    {
+        return Err(ApiError::NotFound("No such speech account".into()));
+    }
+    // Its voices belong to it: a choice of it is a choice of nothing now.
+    let settings = store(&state)?;
+    if let Some(mut s) = settings
+        .get_tenant_speech(&tenant.0)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+    {
+        if s.provider.as_deref().and_then(fcp_core::speech::account_of) == Some(id) {
+            s.provider = None;
+            s.voice = None;
+            s.voices.clear();
+            s.updated_at = SystemTime::now();
+            settings
+                .put_tenant_speech(&s)
+                .await
+                .map_err(|e| ApiError::Internal(e.to_string()))?;
+        }
+    }
+    announce(&state, &tenant.0).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// A provider named in the settings or a request: one of the TTS
+/// server's, or an account of this tenant's.
+async fn known_provider(
+    state: &ApiState,
+    identity: &AuthIdentity,
+    tenant: &fcp_core::TenantId,
+    provider: Option<&str>,
+) -> Result<(), ApiError> {
+    let Some(p) = provider else { return Ok(()) };
+    if !p.starts_with(ACCOUNT_PREFIX) {
+        // One of the platform's: offered to tenants unless held back.
+        if !identity.is_platform_admin() && held_back(state).await?.iter().any(|h| h == p) {
+            return Err(ApiError::Forbidden(format!(
+                "The platform does not offer {p} to tenants"
+            )));
+        }
+        return Ok(());
+    }
+    let found = match fcp_core::speech::account_of(p) {
+        Some(id) => accounts(state)?
+            .get_speech_account(tenant, &id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .is_some(),
+        None => false,
+    };
+    if found {
+        Ok(())
+    } else {
+        Err(ApiError::BadRequest(format!("No such speech account: {p}")))
+    }
+}
+
+/// The platform's providers held back from tenants.
+async fn held_back(state: &ApiState) -> Result<Vec<String>, ApiError> {
+    match state.storage.as_ref().and_then(|s| s.speech_store()) {
+        Some(store) => store
+            .held_back_providers()
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string())),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// POST /speech/accounts/{id}/test — a sentence spoken through the
+/// account, as WAV: whether its key works.
+#[utoipa::path(
+    post,
+    path = "/api/v1/speech/accounts/{id}/test",
+    tag = "speech",
+    operation_id = "speech_test_account",
+    params(("id" = String, Path, description = "The account")),
+    responses(
+        (status = 200, description = "The account spoke", content_type = "audio/wav", body = Vec<u8>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn test_account(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: TenantContext,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<impl axum::response::IntoResponse, ApiError> {
+    crate::auth::check_permission(&identity, Permission::PromptManage, state.deployment_mode)?;
+    let id = account_id(&id)?;
+    let account = accounts(&state)?
+        .get_speech_account(&tenant.0, &id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound("No such speech account".into()))?;
+    let provider = format!("{ACCOUNT_PREFIX}{}", account.id);
+    let audio = tts(&state)?
+        .preview(
+            &format!("This is {}.", account.name),
+            None,
+            None,
+            Some(&tenant.0),
+            Some(&provider),
+        )
+        .await
+        .map_err(|e| ApiError::ServiceUnavailable(format!("The account could not speak: {e:#}")))?;
+    Ok((
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "audio/wav")],
+        audio,
+    ))
+}
+
+// ── The platform's offer (docs/TENANT_SPEECH.md S3) ────────────────────────
+
+/// One of the TTS server's providers, as the platform offers it.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct OfferedProvider {
+    pub name: String,
+    pub is_default: bool,
+    /// Whether tenants may choose it.
+    pub offered: bool,
+}
+
+/// Which of the TTS server's providers tenants may choose.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct PlatformSpeech {
+    pub providers: Vec<OfferedProvider>,
+    /// Held back from tenants (a provider the server no longer has may
+    /// still be named here).
+    pub held_back: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlatformSpeechRequest {
+    pub held_back: Vec<String>,
+}
+
+fn require_platform(identity: &AuthIdentity) -> Result<(), ApiError> {
+    if identity.is_platform_admin() {
+        Ok(())
+    } else {
+        Err(ApiError::Forbidden("Platform admin access required".into()))
+    }
+}
+
+async fn platform_speech(state: &ApiState) -> Result<PlatformSpeech, ApiError> {
+    let held_back = held_back(state).await?;
+    let providers = match state.tts_service.as_ref() {
+        Some(tts) => tts
+            .providers()
+            .await
+            .map_err(|e| ApiError::ServiceUnavailable(format!("TTS providers: {e:#}")))?,
+        None => Vec::new(),
+    };
+    Ok(PlatformSpeech {
+        providers: providers
+            .into_iter()
+            .map(|p| OfferedProvider {
+                offered: p.is_default || !held_back.contains(&p.name),
+                name: p.name,
+                is_default: p.is_default,
+            })
+            .collect(),
+        held_back,
+    })
+}
+
+/// GET /system/speech
+#[utoipa::path(
+    get,
+    path = "/api/v1/system/speech",
+    tag = "speech",
+    operation_id = "system_get_speech",
+    responses(
+        (status = 200, description = "OK", body = PlatformSpeech),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn get_platform(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+) -> Result<Json<PlatformSpeech>, ApiError> {
+    require_platform(&identity)?;
+    Ok(Json(platform_speech(&state).await?))
+}
+
+/// PUT /system/speech — the providers held back from tenants.
+#[utoipa::path(
+    put,
+    path = "/api/v1/system/speech",
+    tag = "speech",
+    operation_id = "system_put_speech",
+    request_body = PlatformSpeechRequest,
+    responses(
+        (status = 200, description = "OK", body = PlatformSpeech),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn put_platform(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    Json(req): Json<PlatformSpeechRequest>,
+) -> Result<Json<PlatformSpeech>, ApiError> {
+    require_platform(&identity)?;
+    if req.held_back.len() > 50 {
+        return Err(ApiError::BadRequest(
+            "At most 50 providers held back".into(),
+        ));
+    }
+    let mut held: Vec<String> = Vec::new();
+    for p in req.held_back {
+        let p = checked("provider", Some(p))?
+            .ok_or_else(|| ApiError::BadRequest("A provider has a name".into()))?;
+        if p.starts_with(ACCOUNT_PREFIX) {
+            return Err(ApiError::BadRequest(
+                "A tenant's own account is not the platform's".into(),
+            ));
+        }
+        if !held.contains(&p) {
+            held.push(p);
+        }
+    }
+    if let Some(tts) = state.tts_service.as_ref() {
+        if let Ok(providers) = tts.providers().await {
+            if providers
+                .iter()
+                .any(|p| p.is_default && held.contains(&p.name))
+            {
+                return Err(ApiError::BadRequest(
+                    "The default provider speaks for tenants that choose none: it cannot be held back"
+                        .into(),
+                ));
+            }
+        }
+    }
+    store(&state)?
+        .put_held_back_providers(&held)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(platform_speech(&state).await?))
 }

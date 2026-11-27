@@ -22,7 +22,29 @@ pub struct AppState {
     pub speech: Option<Arc<dyn fcp_core::speech::SpeechSettingsStore>>,
     /// What was read, for [`SPEECH_TTL`].
     pub speech_cache: SpeechCache,
+    /// Tenants' own vendor accounts (`docs/TENANT_SPEECH.md` S3).
+    pub accounts: Option<Arc<dyn fcp_core::speech::SpeechAccountStore>>,
+    /// A service per account, built when first spoken with and again when
+    /// the account changes; keyed by the account's id.
+    pub account_services: AccountServices,
+    /// The platform's providers held back from tenants, as last read.
+    pub held_back: HeldBack,
 }
+
+/// When the held-back list was read, and what it said.
+pub type HeldBack = Arc<std::sync::Mutex<Option<(std::time::Instant, Vec<String>)>>>;
+
+/// Each account's service, with when it was read and the account's
+/// `updated_at` it was built from. Keyed by tenant and account, so a
+/// service is only ever handed back to the tenant that owns the account.
+pub type AccountServices = Arc<
+    tokio::sync::Mutex<
+        HashMap<
+            (fcp_core::TenantId, uuid::Uuid),
+            (std::time::Instant, std::time::SystemTime, Arc<TtsService>),
+        >,
+    >,
+>;
 
 /// Tenants' settings as last read, and when.
 pub type SpeechCache = Arc<
@@ -47,6 +69,31 @@ impl AppState {
             Some(n) => self.services.get(n),
             None => self.default_service(),
         }
+    }
+
+    /// The platform's providers tenants may not choose (cached). A read
+    /// that fails holds nothing back.
+    pub async fn held_back(&self) -> Vec<String> {
+        let Some(store) = self.speech.as_ref() else {
+            return Vec::new();
+        };
+        if let Some((at, list)) = self
+            .held_back
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            if at.elapsed() < SPEECH_TTL {
+                return list.clone();
+            }
+        }
+        let list = store.held_back_providers().await.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "The platform's held-back providers could not be read");
+            Vec::new()
+        });
+        *self.held_back.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((std::time::Instant::now(), list.clone()));
+        list
     }
 
     /// `tenant`'s speech settings (cached), when there is a database and the
@@ -85,10 +132,122 @@ impl AppState {
         read
     }
 
+    /// `tenant`'s own account `id` as a service, when the tenant has it:
+    /// read at most every [`SPEECH_TTL`], rebuilt when it changed. `Err`
+    /// says why it cannot speak (no such account, no secret, a bad key).
+    pub async fn account_service(
+        &self,
+        tenant: &str,
+        id: uuid::Uuid,
+    ) -> Result<Arc<TtsService>, String> {
+        let store = self
+            .accounts
+            .as_ref()
+            .ok_or("this TTS server has no database for tenants' accounts")?;
+        let tenant: fcp_core::TenantId = tenant
+            .parse()
+            .or_else(|_| format!("tenant-{tenant}").parse())
+            .map_err(|_| "a tenant names the account".to_string())?;
+        let mut services = self.account_services.lock().await;
+        let key = (tenant, id);
+        if let Some((at, _, service)) = services.get(&key) {
+            if at.elapsed() < SPEECH_TTL {
+                return Ok(Arc::clone(service));
+            }
+        }
+        let account = store
+            .get_speech_account(&tenant, &id)
+            .await
+            .map_err(|e| format!("the account could not be read: {e:#}"))?
+            .ok_or("no such account for this tenant")?;
+        if let Some((_, updated, service)) = services.get(&key) {
+            if *updated == account.updated_at {
+                let service = Arc::clone(service);
+                services.insert(
+                    key,
+                    (
+                        std::time::Instant::now(),
+                        account.updated_at,
+                        Arc::clone(&service),
+                    ),
+                );
+                return Ok(service);
+            }
+        }
+        let provider = provider_of(&account)?;
+        let service = TtsService::new(fcp_media::tts::TtsConfig {
+            provider,
+            cache_dir: self
+                .config
+                .tts
+                .cache_dir
+                .join("accounts")
+                .join(id.to_string()),
+            cache_max_size_mb: (self.config.tts.cache_max_size_mb / 10).max(50),
+            default_language: self.config.tts.default_language.clone(),
+            default_voice: None,
+        })
+        .await
+        .map_err(|e| format!("the account cannot speak: {e:#}"))?;
+        let service = Arc::new(service);
+        services.insert(
+            key,
+            (
+                std::time::Instant::now(),
+                account.updated_at,
+                Arc::clone(&service),
+            ),
+        );
+        Ok(service)
+    }
+
     /// A speech recognition service by name, or the default.
     pub fn stt_service(&self, name: Option<&str>) -> Option<&Arc<SttService>> {
         self.stt.get(name.or(self.stt_default.as_deref())?)
     }
+}
+
+/// The provider an account speaks through.
+pub fn provider_of(
+    a: &fcp_core::speech::SpeechAccount,
+) -> Result<fcp_media::tts::TtsProviderConfig, String> {
+    use fcp_core::speech::SpeechAccountKind as K;
+    use fcp_media::tts::TtsProviderConfig as P;
+    let secret = a
+        .secret
+        .clone()
+        .filter(|s| !s.is_empty())
+        .ok_or("the account has no key")?;
+    let region = || {
+        a.region
+            .clone()
+            .filter(|r| !r.is_empty())
+            .ok_or("the account names no region")
+    };
+    Ok(match a.kind {
+        K::Openai => P::OpenAi {
+            api_key: secret,
+            model: a.model.clone().unwrap_or_else(|| "tts-1".into()),
+        },
+        K::Elevenlabs => P::ElevenLabs {
+            api_key: secret,
+            model_id: a.model.clone(),
+            endpoint: a.endpoint.clone(),
+        },
+        K::Azure => P::Azure {
+            subscription_key: secret,
+            region: region()?,
+            endpoint: a.endpoint.clone(),
+        },
+        K::AwsPolly => P::AwsPolly {
+            region: region()?,
+            access_key_id: a.access_key_id.clone(),
+            secret_access_key: Some(secret),
+            engine: a.model.clone().unwrap_or_else(|| "neural".into()),
+            endpoint: a.endpoint.clone(),
+        },
+        K::GoogleCloud => P::GoogleCloud { api_key: secret },
+    })
 }
 
 #[cfg(test)]
@@ -149,6 +308,9 @@ mod tests {
             stt_default: None,
             speech: None,
             speech_cache: Default::default(),
+            accounts: None,
+            account_services: Default::default(),
+            held_back: Default::default(),
         };
 
         assert!(state.service(None).is_some());

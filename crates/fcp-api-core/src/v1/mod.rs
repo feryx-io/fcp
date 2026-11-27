@@ -446,6 +446,10 @@ pub fn router() -> Router<ApiState> {
         .route("/dashboard/summary", get(dashboard::summary))
         .route("/status", get(system::status_scoped))
         // Encryption at rest (platform admin only, enforced in the handlers)
+        .route(
+            "/system/speech",
+            get(speech::get_platform).put(speech::put_platform),
+        )
         .route("/system/encryption", get(encryption::status))
         .route("/system/encryption/rotate", post(encryption::rotate))
         .route("/system/encryption/reencrypt", post(encryption::reencrypt))
@@ -869,6 +873,15 @@ pub fn router() -> Router<ApiState> {
         .route("/speech/providers", get(speech::list_providers))
         .route("/speech/voices", get(speech::list_voices))
         .route("/speech/preview", post(speech::preview))
+        .route(
+            "/speech/accounts",
+            get(speech::list_accounts).post(speech::create_account),
+        )
+        .route(
+            "/speech/accounts/:id",
+            axum::routing::put(speech::update_account).delete(speech::delete_account),
+        )
+        .route("/speech/accounts/:id/test", post(speech::test_account))
         // The tenant's brand (docs/BRANDING.md): assets up to 5 MB.
         .route(
             "/branding",
