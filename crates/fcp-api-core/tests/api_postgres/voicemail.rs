@@ -1223,11 +1223,24 @@ async fn speech_providers_voices_and_a_preview_come_from_the_tts_server() {
 /// of it with it.
 #[tokio::test]
 async fn a_tenants_speech_account_is_made_chosen_and_deleted() {
-    use axum::routing::get;
-    let router = Router::new().route(
-        "/v1/providers",
-        get(|| async { axum::Json(json!([{ "name": "piper", "is_default": true }])) }),
-    );
+    use axum::routing::{get, post};
+    let asked: Arc<std::sync::Mutex<Vec<Value>>> = Arc::default();
+    let heard = Arc::clone(&asked);
+    let router = Router::new()
+        .route(
+            "/v1/providers",
+            get(|| async { axum::Json(json!([{ "name": "piper", "is_default": true }])) }),
+        )
+        .route(
+            "/v1/synthesize",
+            post(move |axum::Json(body): axum::Json<Value>| {
+                let heard = Arc::clone(&heard);
+                async move {
+                    heard.lock().unwrap().push(body);
+                    (StatusCode::OK, wav_bytes(800))
+                }
+            }),
+        );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move {
@@ -1326,8 +1339,27 @@ async fn a_tenants_speech_account_is_made_chosen_and_deleted() {
         stranger.text
     );
 
-    // Changed without its key: the key is kept. Another vendor needs one.
+    // Tested: a sentence spoken through it, for this tenant.
     let path = format!("/api/v1/speech/accounts/{id}");
+    let tested = app.admin(Method::POST, &format!("{path}/test"), None).await;
+    assert_eq!(tested.status, StatusCode::OK, "{}", tested.text);
+    assert!(tested.bytes.starts_with(b"RIFF"), "a WAV");
+    let sent = asked.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(sent["provider"], provider.as_str(), "{sent}");
+    assert!(sent["tenant_id"].is_string(), "{sent}");
+    let missing = app
+        .admin(
+            Method::POST,
+            &format!(
+                "/api/v1/speech/accounts/speech-{}/test",
+                uuid::Uuid::new_v4()
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND, "{}", missing.text);
+
+    // Changed without its key: the key is kept. Another vendor needs one.
     let renamed = app
         .admin(
             Method::PUT,
@@ -1422,6 +1454,18 @@ async fn the_platform_holds_a_provider_back_from_tenants() {
     assert_eq!(held.json["providers"][1]["name"], "elevenlabs");
     assert_eq!(held.json["providers"][1]["offered"], false);
     assert_eq!(held.json["providers"][0]["offered"], true);
+    let read = app.admin(Method::GET, "/api/v1/system/speech", None).await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.text);
+    assert_eq!(read.json["held_back"], json!(["elevenlabs"]));
+    let not_theirs = app
+        .send_as(&ta, Method::GET, "/api/v1/system/speech", None)
+        .await;
+    assert_eq!(
+        not_theirs.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        not_theirs.text
+    );
 
     // The tenant's administrator: not listed, not choosable.
     let theirs = app
