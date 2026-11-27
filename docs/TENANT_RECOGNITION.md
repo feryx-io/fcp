@@ -146,6 +146,25 @@ offer lists recognizers with their default caps and prices.
   `hears`, held-back recognizers, the server keeping a recognizer per
   tenant account (as it keeps a voice per account), the fallback, the
   test and `/speech/recognize`, the Recognition card.
+  **R2a done (v0.25.665), the server and the API:** `TenantSpeech.recognizer`
+  and `recognition_language` (in the settings' JSON, so no migration and
+  already synced to sites; `heard_language()` falls back to `language`);
+  `SpeechAccountKind::Deepgram` with `speaks()`/`hears()` (OpenAI both,
+  Deepgram hearing, the rest speaking). The server's `/v1/providers` lists
+  its recognizers beside its voices (`speaks`, `hears`,
+  `is_default_recognizer` on `fcp_media::tts::ProviderInfo`; a server from
+  before is taken as speaking only), keeps a recognizer per tenant account
+  (`AppState::account_recognizer`, `recognizer_of`: OpenAI's `whisper-1`,
+  Deepgram's model or `nova-3`), and `transcribe.rs`'s `service` picks the
+  named recognizer, else the tenant's (one of the server's not held back,
+  or its account), else the default — a named one that cannot hear is
+  400. The API's settings take `recognizer` and `recognition_language`, a
+  voice provider must speak and a recognizer hear (`able`),
+  `/speech/providers` and `/system/speech` say which each does, and the
+  default recognizer cannot be held back. Proved by
+  `a_tenant_is_heard_by_the_recognizer_it_chose` and
+  `a_tenant_chooses_what_hears_it`. **R2b** (next): the account test and
+  `/speech/recognize`, the Recognition card.
 - **R3 — usage and caps in minutes.** `recognized_ms`, the cap's unit,
   `price_per_minute`, the server counting and enforcing, the page.
 - **R4 — sites.** The new fields and kind synced (already journaled

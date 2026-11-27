@@ -35,6 +35,11 @@ class SpeechSettingsResponse:
             provider (None | str | Unset): One of the TTS server's providers; null is its default.
             voice (None | str | Unset): The voice where no language below names one; null is the provider's.
             language (None | str | Unset): What a request without a language is spoken in; null is `en-US`.
+            recognizer (None | str | Unset): What hears the tenant (`docs/TENANT_RECOGNITION.md`): one of the
+                server's recognizers or an account of the tenant's that hears; null
+                is the server's default.
+            recognition_language (None | str | Unset): What the tenant is heard in when a request names nothing; null is
+                `language`.
      """
 
     tenant_id: str
@@ -44,6 +49,8 @@ class SpeechSettingsResponse:
     provider: None | str | Unset = UNSET
     voice: None | str | Unset = UNSET
     language: None | str | Unset = UNSET
+    recognizer: None | str | Unset = UNSET
+    recognition_language: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -78,6 +85,18 @@ class SpeechSettingsResponse:
         else:
             language = self.language
 
+        recognizer: None | str | Unset
+        if isinstance(self.recognizer, Unset):
+            recognizer = UNSET
+        else:
+            recognizer = self.recognizer
+
+        recognition_language: None | str | Unset
+        if isinstance(self.recognition_language, Unset):
+            recognition_language = UNSET
+        else:
+            recognition_language = self.recognition_language
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -93,6 +112,10 @@ class SpeechSettingsResponse:
             field_dict["voice"] = voice
         if language is not UNSET:
             field_dict["language"] = language
+        if recognizer is not UNSET:
+            field_dict["recognizer"] = recognizer
+        if recognition_language is not UNSET:
+            field_dict["recognition_language"] = recognition_language
 
         return field_dict
 
@@ -146,6 +169,26 @@ class SpeechSettingsResponse:
         language = _parse_language(d.pop("language", UNSET))
 
 
+        def _parse_recognizer(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        recognizer = _parse_recognizer(d.pop("recognizer", UNSET))
+
+
+        def _parse_recognition_language(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        recognition_language = _parse_recognition_language(d.pop("recognition_language", UNSET))
+
+
         speech_settings_response = cls(
             tenant_id=tenant_id,
             voices=voices,
@@ -154,6 +197,8 @@ class SpeechSettingsResponse:
             provider=provider,
             voice=voice,
             language=language,
+            recognizer=recognizer,
+            recognition_language=recognition_language,
         )
 
 

@@ -23,6 +23,15 @@ pub struct TenantSpeech {
     /// A voice per language (`es-ES` → `es_ES-davefx-medium`), over `voice`.
     #[serde(default)]
     pub voices: BTreeMap<String, String>,
+    /// What hears the tenant (`docs/TENANT_RECOGNITION.md`): one of the
+    /// server's recognizers, or an account of the tenant's that hears;
+    /// unset is the server's default.
+    #[serde(default)]
+    pub recognizer: Option<String>,
+    /// The language the tenant is heard in when a request names none;
+    /// unset is `language`.
+    #[serde(default)]
+    pub recognition_language: Option<String>,
     pub updated_at: SystemTime,
 }
 
@@ -35,8 +44,19 @@ impl TenantSpeech {
             voice: None,
             language: None,
             voices: BTreeMap::new(),
+            recognizer: None,
+            recognition_language: None,
             updated_at: SystemTime::now(),
         }
+    }
+
+    /// The language the tenant is heard in: its own for hearing, else the
+    /// one its words are spoken in.
+    pub fn heard_language(&self) -> Option<&str> {
+        self.recognition_language
+            .as_deref()
+            .or(self.language.as_deref())
+            .filter(|l| !l.trim().is_empty())
     }
 
     /// The voice for `language`: its own, else the tenant's voice.
@@ -112,6 +132,8 @@ pub enum SpeechAccountKind {
     Azure,
     AwsPolly,
     GoogleCloud,
+    /// Recognition only.
+    Deepgram,
 }
 
 impl SpeechAccountKind {
@@ -122,7 +144,19 @@ impl SpeechAccountKind {
             Self::Azure => "azure",
             Self::AwsPolly => "aws_polly",
             Self::GoogleCloud => "google_cloud",
+            Self::Deepgram => "deepgram",
         }
+    }
+
+    /// Whether an account of this kind can speak (a voice provider).
+    pub fn speaks(self) -> bool {
+        !matches!(self, Self::Deepgram)
+    }
+
+    /// Whether it can hear (a recognizer), with what FCP has
+    /// (`docs/TENANT_RECOGNITION.md` Q4): OpenAI and Deepgram.
+    pub fn hears(self) -> bool {
+        matches!(self, Self::Openai | Self::Deepgram)
     }
 
     pub fn parse(s: &str) -> Option<Self> {
@@ -132,6 +166,7 @@ impl SpeechAccountKind {
             Self::Azure,
             Self::AwsPolly,
             Self::GoogleCloud,
+            Self::Deepgram,
         ]
         .into_iter()
         .find(|k| k.as_str() == s)

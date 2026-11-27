@@ -31,12 +31,16 @@ class SpeechSettingsRequest:
             voice (None | str | Unset):
             language (None | str | Unset):
             voices (SpeechSettingsRequestVoices | Unset):
+            recognizer (None | str | Unset):
+            recognition_language (None | str | Unset):
      """
 
     provider: None | str | Unset = UNSET
     voice: None | str | Unset = UNSET
     language: None | str | Unset = UNSET
     voices: SpeechSettingsRequestVoices | Unset = UNSET
+    recognizer: None | str | Unset = UNSET
+    recognition_language: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -67,6 +71,18 @@ class SpeechSettingsRequest:
         if not isinstance(self.voices, Unset):
             voices = self.voices.to_dict()
 
+        recognizer: None | str | Unset
+        if isinstance(self.recognizer, Unset):
+            recognizer = UNSET
+        else:
+            recognizer = self.recognizer
+
+        recognition_language: None | str | Unset
+        if isinstance(self.recognition_language, Unset):
+            recognition_language = UNSET
+        else:
+            recognition_language = self.recognition_language
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -80,6 +96,10 @@ class SpeechSettingsRequest:
             field_dict["language"] = language
         if voices is not UNSET:
             field_dict["voices"] = voices
+        if recognizer is not UNSET:
+            field_dict["recognizer"] = recognizer
+        if recognition_language is not UNSET:
+            field_dict["recognition_language"] = recognition_language
 
         return field_dict
 
@@ -129,11 +149,33 @@ class SpeechSettingsRequest:
 
 
 
+        def _parse_recognizer(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        recognizer = _parse_recognizer(d.pop("recognizer", UNSET))
+
+
+        def _parse_recognition_language(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        recognition_language = _parse_recognition_language(d.pop("recognition_language", UNSET))
+
+
         speech_settings_request = cls(
             provider=provider,
             voice=voice,
             language=language,
             voices=voices,
+            recognizer=recognizer,
+            recognition_language=recognition_language,
         )
 
 

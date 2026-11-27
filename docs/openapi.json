@@ -33875,6 +33875,9 @@
         "required": [
           "name",
           "is_default",
+          "speaks",
+          "hears",
+          "is_default_recognizer",
           "offered"
         ],
         "properties": {
@@ -33882,6 +33885,16 @@
             "type": "string"
           },
           "is_default": {
+            "type": "boolean"
+          },
+          "speaks": {
+            "type": "boolean",
+            "description": "Whether it speaks, and whether it hears (`docs/TENANT_RECOGNITION.md`)."
+          },
+          "hears": {
+            "type": "boolean"
+          },
+          "is_default_recognizer": {
             "type": "boolean"
           },
           "offered": {
@@ -41199,7 +41212,10 @@
                 "name",
                 "label",
                 "is_default",
-                "account"
+                "account",
+                "speaks",
+                "hears",
+                "is_default_recognizer"
               ],
               "properties": {
                 "name": {
@@ -41217,6 +41233,18 @@
                 "account": {
                   "type": "boolean",
                   "description": "One of the tenant's own accounts (`docs/TENANT_SPEECH.md` S3)."
+                },
+                "speaks": {
+                  "type": "boolean",
+                  "description": "Whether it speaks: a voice provider (`docs/TENANT_RECOGNITION.md`)."
+                },
+                "hears": {
+                  "type": "boolean",
+                  "description": "Whether it hears: a recognizer."
+                },
+                "is_default_recognizer": {
+                  "type": "boolean",
+                  "description": "The server's default recognizer."
                 }
               }
             }
@@ -47259,7 +47287,8 @@
           "elevenlabs",
           "azure",
           "aws_polly",
-          "google_cloud"
+          "google_cloud",
+          "deepgram"
         ]
       },
       "SpeechAccountRequest": {
@@ -47499,7 +47528,10 @@
           "name",
           "label",
           "is_default",
-          "account"
+          "account",
+          "speaks",
+          "hears",
+          "is_default_recognizer"
         ],
         "properties": {
           "name": {
@@ -47517,6 +47549,18 @@
           "account": {
             "type": "boolean",
             "description": "One of the tenant's own accounts (`docs/TENANT_SPEECH.md` S3)."
+          },
+          "speaks": {
+            "type": "boolean",
+            "description": "Whether it speaks: a voice provider (`docs/TENANT_RECOGNITION.md`)."
+          },
+          "hears": {
+            "type": "boolean",
+            "description": "Whether it hears: a recognizer."
+          },
+          "is_default_recognizer": {
+            "type": "boolean",
+            "description": "The server's default recognizer."
           }
         }
       },
@@ -47550,6 +47594,18 @@
             "propertyNames": {
               "type": "string"
             }
+          },
+          "recognizer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "recognition_language": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -47596,6 +47652,20 @@
             "propertyNames": {
               "type": "string"
             }
+          },
+          "recognizer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What hears the tenant (`docs/TENANT_RECOGNITION.md`): one of the\nserver's recognizers or an account of the tenant's that hears; null\nis the server's default."
+          },
+          "recognition_language": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the tenant is heard in when a request names nothing; null is\n`language`."
           },
           "configured": {
             "type": "boolean",

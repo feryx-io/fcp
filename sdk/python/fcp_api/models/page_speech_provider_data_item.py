@@ -28,12 +28,18 @@ class PageSpeechProviderDataItem:
             label (str): What to show: the provider's name, or the account's.
             is_default (bool): The TTS server's default: what a tenant without a choice gets.
             account (bool): One of the tenant's own accounts (`docs/TENANT_SPEECH.md` S3).
+            speaks (bool): Whether it speaks: a voice provider (`docs/TENANT_RECOGNITION.md`).
+            hears (bool): Whether it hears: a recognizer.
+            is_default_recognizer (bool): The server's default recognizer.
      """
 
     name: str
     label: str
     is_default: bool
     account: bool
+    speaks: bool
+    hears: bool
+    is_default_recognizer: bool
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -49,6 +55,12 @@ class PageSpeechProviderDataItem:
 
         account = self.account
 
+        speaks = self.speaks
+
+        hears = self.hears
+
+        is_default_recognizer = self.is_default_recognizer
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -57,6 +69,9 @@ class PageSpeechProviderDataItem:
             "label": label,
             "is_default": is_default,
             "account": account,
+            "speaks": speaks,
+            "hears": hears,
+            "is_default_recognizer": is_default_recognizer,
         })
 
         return field_dict
@@ -74,11 +89,20 @@ class PageSpeechProviderDataItem:
 
         account = d.pop("account")
 
+        speaks = d.pop("speaks")
+
+        hears = d.pop("hears")
+
+        is_default_recognizer = d.pop("is_default_recognizer")
+
         page_speech_provider_data_item = cls(
             name=name,
             label=label,
             is_default=is_default,
             account=account,
+            speaks=speaks,
+            hears=hears,
+            is_default_recognizer=is_default_recognizer,
         )
 
 
