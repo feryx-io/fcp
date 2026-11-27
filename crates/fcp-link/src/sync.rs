@@ -78,6 +78,9 @@ pub async fn open_site(database_url: &str, max_connections: u32) -> Result<SiteS
         .with_brand_store(storage.clone() as Arc<dyn fcp_core::branding::BrandStore>)
         .with_contact_store(storage.clone() as Arc<dyn fcp_core::contact::ContactStore>)
         .with_parking_lot_store(storage.clone() as Arc<dyn fcp_core::parking::ParkingLotStore>)
+        .with_speech_store(storage.clone() as Arc<dyn fcp_core::speech::SpeechSettingsStore>)
+        .with_speech_account_store(storage.clone() as Arc<dyn fcp_core::speech::SpeechAccountStore>)
+        .with_speech_usage_store(storage.clone() as Arc<dyn fcp_core::speech::SpeechUsageStore>)
         .with_line_label_store(storage.clone() as Arc<dyn fcp_core::line_label::LineLabelStore>)
         .with_presence_status_store(
             storage.clone() as Arc<dyn fcp_core::presence_status::PresenceStatusStore>
@@ -415,6 +418,27 @@ impl Syncer {
                 }
                 None => warn!(table, id, "No parking lot store at the site; skipped"),
             },
+            // The tenant's speech and accounts (docs/TENANT_SPEECH.md S5):
+            // the account's key, opened by the cloud, is sealed here with
+            // the site's own key as it is written.
+            "tenant_speech" => match storage.speech_store() {
+                Some(store) => {
+                    let speech: fcp_core::speech::TenantSpeech = parse!();
+                    if speech.tenant_id == self.tenant {
+                        store.put_tenant_speech(&speech).await?
+                    }
+                }
+                None => warn!(table, id, "No speech store at the site; skipped"),
+            },
+            "speech_accounts" => match storage.speech_account_store() {
+                Some(store) => {
+                    let account: fcp_core::speech::SpeechAccount = parse!();
+                    if account.tenant_id == self.tenant {
+                        store.put_speech_account(&account).await?
+                    }
+                }
+                None => warn!(table, id, "No speech account store at the site; skipped"),
+            },
             "classes_of_service" => storage.put_class_of_service(parse!()).await?,
             "devices" => storage.put_device(parse!()).await?,
             "extensions" => storage.put_extension(parse!()).await?,
@@ -613,6 +637,16 @@ impl Syncer {
             "parking_lots" => {
                 if let Some(store) = storage.parking_lot_store() {
                     store.delete_parking_lot(&self.tenant, id).await?;
+                }
+            }
+            "tenant_speech" => {
+                if let Some(store) = storage.speech_store() {
+                    store.delete_tenant_speech(&self.tenant).await?;
+                }
+            }
+            "speech_accounts" => {
+                if let Some(store) = storage.speech_account_store() {
+                    store.delete_speech_account(&self.tenant, &id!()).await?;
                 }
             }
             "classes_of_service" => storage.delete_class_of_service(&id!()).await?,

@@ -205,7 +205,7 @@ impl SpeechUsageStore for PostgresStorage {
                 "INSERT INTO speech_usage
                      (tenant_id, provider, hour, requests, characters, synthesized_characters)
                  VALUES ($1, $2, $3, $4, $5, $6)
-                 ON CONFLICT (tenant_id, hour, provider) DO UPDATE SET
+                 ON CONFLICT (tenant_id, hour, provider, site_id) DO UPDATE SET
                      requests = speech_usage.requests + EXCLUDED.requests,
                      characters = speech_usage.characters + EXCLUDED.characters,
                      synthesized_characters =
@@ -231,10 +231,10 @@ impl SpeechUsageStore for PostgresStorage {
         to: std::time::SystemTime,
     ) -> anyhow::Result<Vec<SpeechUsage>> {
         let rows = sqlx::query(
-            "SELECT provider, hour, requests, characters, synthesized_characters
+            "SELECT provider, hour, requests, characters, synthesized_characters, site_id
                FROM speech_usage
               WHERE tenant_id = $1 AND hour >= $2 AND hour < $3
-              ORDER BY hour, provider",
+              ORDER BY hour, provider, site_id",
         )
         .bind(tenant_id.to_string())
         .bind(system_time_to_datetime(from))
@@ -251,8 +251,76 @@ impl SpeechUsageStore for PostgresStorage {
                     characters: r.try_get::<i64, _>("characters")?.max(0) as u64,
                     synthesized_characters: r.try_get::<i64, _>("synthesized_characters")?.max(0)
                         as u64,
+                    site_id: Some(r.try_get::<String, _>("site_id")?).filter(|s| !s.is_empty()),
                 })
             })
             .collect()
+    }
+
+    async fn speech_usage_after(
+        &self,
+        after: i64,
+        limit: usize,
+    ) -> anyhow::Result<Vec<(i64, SpeechUsage)>> {
+        let rows = sqlx::query(
+            "SELECT tenant_id, provider, hour, requests, characters, synthesized_characters, ship_seq
+               FROM speech_usage
+              WHERE site_id = '' AND ship_seq > $1
+              ORDER BY ship_seq
+              LIMIT $2",
+        )
+        .bind(after)
+        .bind(limit.min(10_000) as i64)
+        .fetch_all(self.writes())
+        .await?;
+        rows.iter()
+            .map(|r| {
+                Ok((
+                    r.try_get::<i64, _>("ship_seq")?,
+                    SpeechUsage {
+                        tenant_id: r.try_get::<String, _>("tenant_id")?.parse()?,
+                        provider: r.try_get("provider")?,
+                        hour: datetime_to_system_time(r.try_get::<DateTime<Utc>, _>("hour")?),
+                        requests: r.try_get::<i64, _>("requests")?.max(0) as u64,
+                        characters: r.try_get::<i64, _>("characters")?.max(0) as u64,
+                        synthesized_characters: r
+                            .try_get::<i64, _>("synthesized_characters")?
+                            .max(0) as u64,
+                        site_id: None,
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    async fn put_site_speech_usage(
+        &self,
+        site_id: &str,
+        usage: &[SpeechUsage],
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(!site_id.is_empty(), "a site's usage names the site");
+        let mut tx = self.writes().begin().await?;
+        for u in usage {
+            sqlx::query(
+                "INSERT INTO speech_usage
+                     (tenant_id, provider, hour, site_id, requests, characters, synthesized_characters)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)
+                 ON CONFLICT (tenant_id, hour, provider, site_id) DO UPDATE SET
+                     requests = EXCLUDED.requests,
+                     characters = EXCLUDED.characters,
+                     synthesized_characters = EXCLUDED.synthesized_characters",
+            )
+            .bind(u.tenant_id.to_string())
+            .bind(&u.provider)
+            .bind(system_time_to_datetime(u.hour))
+            .bind(site_id)
+            .bind(u.requests as i64)
+            .bind(u.characters as i64)
+            .bind(u.synthesized_characters as i64)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 }

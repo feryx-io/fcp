@@ -38,6 +38,9 @@ pub struct ShipCursors {
     pub presence_statuses: i64,
     #[serde(default)]
     pub user_presence: i64,
+    /// The site's speech usage (docs/TENANT_SPEECH.md S5).
+    #[serde(default)]
+    pub speech_usage: i64,
 }
 
 /// What the status page shows of the shipping.
@@ -334,6 +337,28 @@ impl Shipper {
                     batch
                         .puts
                         .push(record("user_presence", &row.user_id, &row)?);
+                }
+            }
+        }
+        // The site's speech by hour (docs/TENANT_SPEECH.md S5): a row is
+        // shipped again as its hour fills, the cloud keeping the last.
+        if let Some(store) = storage.speech_usage_store() {
+            for (seq, row) in store
+                .speech_usage_after(cursors.speech_usage, self.batch)
+                .await
+                .context("reading the site's speech usage")?
+            {
+                next.speech_usage = seq;
+                if row.tenant_id == self.tenant {
+                    let id = format!(
+                        "{}:{}",
+                        row.provider,
+                        row.hour
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs()
+                    );
+                    batch.puts.push(record("speech_usage", &id, &row)?);
                 }
             }
         }

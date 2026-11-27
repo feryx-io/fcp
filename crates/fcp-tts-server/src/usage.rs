@@ -78,6 +78,7 @@ impl UsageCounter {
                 requests: c.requests,
                 characters: c.characters,
                 synthesized_characters: c.synthesized,
+                site_id: None,
             })
             .collect();
         if let Err(e) = self.store.add_speech_usage(&rows).await {

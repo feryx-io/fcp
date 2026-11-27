@@ -60,6 +60,11 @@ pub const SYNC_TABLES: &[&str] = &[
     "user_presence",
     // Parking lots (docs/PARKING.md phase 4); a site parks in its own Redis.
     "parking_lots",
+    // The tenant's speech and its own vendor accounts
+    // (docs/TENANT_SPEECH.md S5), an account's key sealed with the site's
+    // own key.
+    "tenant_speech",
+    "speech_accounts",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -51,6 +51,10 @@ pub const SYNCED_RESOURCES: &[&str] = &[
     // Parking lots (docs/PARKING.md phase 4); the calls parked in them are
     // the site's own (`parking/calls`).
     "parking/lots",
+    // The tenant's speech and its own accounts (docs/TENANT_SPEECH.md S5);
+    // a preview or an account's test is the site's own.
+    "speech/settings",
+    "speech/accounts",
 ];
 
 /// Whether `path` (relative to the v1 root, no leading slash) is a synced
@@ -62,7 +66,7 @@ pub fn synced_resource(path: &str) -> Option<&'static str> {
         .copied()
         .find(|r| path == *r || path.starts_with(&format!("{r}/")))?;
     // Actions on a trunk or a queue's agents are the site's own.
-    if resource == "trunks" && path.ends_with("/test") {
+    if (resource == "trunks" || resource == "speech/accounts") && path.ends_with("/test") {
         return None;
     }
     Some(resource)
@@ -124,5 +128,12 @@ mod tests {
         // A site's lots are the cloud's; the calls parked in them its own.
         assert_eq!(synced_resource("parking/lots/lot-1"), Some("parking/lots"));
         assert_eq!(synced_resource("parking/calls/4320/retrieve"), None);
+        assert_eq!(synced_resource("speech/settings"), Some("speech/settings"));
+        assert_eq!(
+            synced_resource("speech/accounts/speech-1"),
+            Some("speech/accounts")
+        );
+        assert_eq!(synced_resource("speech/accounts/speech-1/test"), None);
+        assert_eq!(synced_resource("speech/preview"), None);
     }
 }
