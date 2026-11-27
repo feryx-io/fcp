@@ -360,6 +360,7 @@ pub struct SpeechPreviewRequest {
     request_body = SpeechPreviewRequest,
     responses(
         (status = 200, description = "WAV audio", content_type = "audio/wav", body = Vec<u8>),
+        (status = 429, description = "This month's speech cap on the provider is reached (`speech_cap_reached`)", body = crate::error::ErrorResponse),
         (status = "default", description = "An error", body = crate::error::ErrorResponse),
     ),
 )]
@@ -368,7 +369,7 @@ pub async fn preview(
     Extension(identity): Extension<AuthIdentity>,
     tenant: TenantContext,
     Json(req): Json<SpeechPreviewRequest>,
-) -> Result<impl axum::response::IntoResponse, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
     crate::auth::check_permission(&identity, Permission::PromptRead, state.deployment_mode)?;
     let text = req.text.trim();
     if text.is_empty() || text.chars().count() > 500 {
@@ -388,13 +389,8 @@ pub async fn preview(
             Some(&tenant.0),
             provider.as_deref(),
         )
-        .await
-        .map_err(|e| ApiError::ServiceUnavailable(format!("TTS synthesis failed: {e:#}")))?;
-    Ok((
-        StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "audio/wav")],
-        audio,
-    ))
+        .await;
+    spoken(audio, "TTS synthesis failed")
 }
 
 // ── A tenant's own accounts (docs/TENANT_SPEECH.md S3) ─────────────────────
@@ -769,6 +765,7 @@ async fn held_back(state: &ApiState) -> Result<Vec<String>, ApiError> {
     params(("id" = String, Path, description = "The account")),
     responses(
         (status = 200, description = "The account spoke", content_type = "audio/wav", body = Vec<u8>),
+        (status = 429, description = "This month's speech cap on the provider is reached (`speech_cap_reached`)", body = crate::error::ErrorResponse),
         (status = "default", description = "An error", body = crate::error::ErrorResponse),
     ),
 )]
@@ -777,7 +774,7 @@ pub async fn test_account(
     Extension(identity): Extension<AuthIdentity>,
     tenant: TenantContext,
     axum::extract::Path(id): axum::extract::Path<String>,
-) -> Result<impl axum::response::IntoResponse, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
     crate::auth::check_permission(&identity, Permission::PromptManage, state.deployment_mode)?;
     let id = account_id(&id)?;
     let account = accounts(&state)?
@@ -794,13 +791,8 @@ pub async fn test_account(
             Some(&tenant.0),
             Some(&provider),
         )
-        .await
-        .map_err(|e| ApiError::ServiceUnavailable(format!("The account could not speak: {e:#}")))?;
-    Ok((
-        StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "audio/wav")],
-        audio,
-    ))
+        .await;
+    spoken(audio, "The account could not speak")
 }
 
 // ── The platform's offer (docs/TENANT_SPEECH.md S3) ────────────────────────
@@ -1079,4 +1071,457 @@ pub async fn usage(
     let list: Vec<SpeechUsagePeriod> = periods.into_values().collect();
     let total = list.len() as u64;
     Ok(Json(crate::page::Page::new(list, None, Some(total))))
+}
+
+// ── Caps (docs/SPEECH_CAPS.md C1) ──────────────────────────────────────────
+
+use fcp_core::speech::{effective_cap, month_of, SpeechCap, SpeechCapKind, SpeechUsageStore};
+
+/// The most a cap may be: a trillion characters a month.
+const MAX_CAP: u64 = 1_000_000_000_000;
+
+fn usage_store(state: &ApiState) -> Result<&Arc<dyn SpeechUsageStore>, ApiError> {
+    state
+        .storage
+        .as_ref()
+        .and_then(|s| s.speech_usage_store())
+        .ok_or_else(|| ApiError::ServiceUnavailable("Speech caps are not kept here".into()))
+}
+
+/// One provider's cap on the tenant this month.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SpeechCapView {
+    /// A platform provider's name, or `account:<uuid>`.
+    pub provider: String,
+    /// The provider, or the account's name.
+    pub label: String,
+    /// What the platform holds the tenant to on this provider (its cap
+    /// for this tenant, else its default); never on an account.
+    pub platform_cap: Option<u64>,
+    /// Whether the platform set a cap for this tenant itself, rather than
+    /// its default (null `platform_cap` then means none for this tenant).
+    pub platform_override: bool,
+    /// The tenant's own cap.
+    pub own_cap: Option<u64>,
+    /// The cap that applies: the lowest of the two.
+    pub cap: Option<u64>,
+    /// Synthesized characters this month (UTC), the cloud's and sites'.
+    pub used: u64,
+    /// `ok`, `near` (80 % or more) or `reached`.
+    pub state: String,
+    /// When the month's count starts again (RFC 3339).
+    pub resets_at: String,
+}
+
+/// A cap to keep. `monthly_characters` null is allowed only on a tenant's
+/// platform cap: none for this tenant, whatever the default says.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SpeechCapRequest {
+    pub monthly_characters: Option<u64>,
+    /// `tenant` (the default: the tenant's own) or `platform` (a platform
+    /// administrator's cap on this tenant).
+    #[serde(default)]
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct CapKindQuery {
+    /// `tenant` (the default) or `platform`.
+    pub kind: Option<String>,
+}
+
+fn cap_kind(kind: Option<&str>, identity: &AuthIdentity) -> Result<SpeechCapKind, ApiError> {
+    match kind {
+        None | Some("tenant") => Ok(SpeechCapKind::Tenant),
+        Some("platform") if identity.is_platform_admin() => Ok(SpeechCapKind::Platform),
+        Some("platform") => Err(ApiError::Forbidden(
+            "Only a platform administrator sets the platform's caps".into(),
+        )),
+        Some(_) => Err(ApiError::BadRequest("kind is tenant or platform".into())),
+    }
+}
+
+/// The TTS server's default provider, when the server says.
+async fn default_provider(state: &ApiState) -> Option<String> {
+    let tts = state.tts_service.as_ref()?;
+    tts.providers()
+        .await
+        .ok()?
+        .into_iter()
+        .find(|p| p.is_default)
+        .map(|p| p.name)
+}
+
+/// A provider a cap may be put on: never the default, which speaks when a
+/// cap is reached; a platform provider the server has, or (for a tenant's
+/// own cap) one of its accounts.
+async fn cappable(
+    state: &ApiState,
+    identity: &AuthIdentity,
+    tenant: Option<&fcp_core::TenantId>,
+    provider: &str,
+) -> Result<(), ApiError> {
+    if provider.is_empty() || provider.len() > 200 {
+        return Err(ApiError::BadRequest("A provider has a name".into()));
+    }
+    if provider.starts_with(ACCOUNT_PREFIX) {
+        return match tenant {
+            Some(t) => known_provider(state, identity, t, Some(provider)).await,
+            None => Err(ApiError::BadRequest(
+                "A tenant's own account is not the platform's to cap".into(),
+            )),
+        };
+    }
+    if let Some(tts) = state.tts_service.as_ref() {
+        if let Ok(providers) = tts.providers().await {
+            match providers.iter().find(|p| p.name == provider) {
+                None => {
+                    return Err(ApiError::BadRequest(format!(
+                        "The TTS server has no provider {provider}"
+                    )))
+                }
+                Some(p) if p.is_default => {
+                    return Err(ApiError::BadRequest(
+                        "The default provider speaks when a cap is reached: it cannot be capped"
+                            .into(),
+                    ))
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn limit(n: Option<u64>, may_be_none: bool) -> Result<Option<u64>, ApiError> {
+    match n {
+        Some(n) if n > MAX_CAP => Err(ApiError::BadRequest(format!(
+            "A cap is at most {MAX_CAP} characters a month"
+        ))),
+        None if !may_be_none => Err(ApiError::BadRequest("monthly_characters is the cap".into())),
+        n => Ok(n),
+    }
+}
+
+fn rfc3339(t: std::time::SystemTime) -> String {
+    chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// GET /speech/caps — the caps on the tenant, and where it stands.
+#[utoipa::path(
+    get,
+    path = "/api/v1/speech/caps",
+    tag = "speech",
+    operation_id = "speech_list_caps",
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<SpeechCapView>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn list_caps(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: TenantContext,
+) -> Result<Json<crate::page::Page<SpeechCapView>>, ApiError> {
+    crate::auth::check_permission(&identity, Permission::PromptRead, state.deployment_mode)?;
+    let store = usage_store(&state)?;
+    let err = |e: anyhow::Error| ApiError::Internal(e.to_string());
+    let mut caps = store.speech_caps(None).await.map_err(err)?;
+    caps.extend(store.speech_caps(Some(&tenant.0)).await.map_err(err)?);
+    let default = default_provider(&state).await;
+    let mut providers: Vec<String> = Vec::new();
+    for c in &caps {
+        if !providers.contains(&c.provider) && Some(&c.provider) != default.as_ref() {
+            providers.push(c.provider.clone());
+        }
+    }
+    let now = std::time::SystemTime::now();
+    let (month, next) = month_of(now);
+    let mut used: std::collections::HashMap<String, u64> = Default::default();
+    for h in store
+        .speech_usage(&tenant.0, month, next)
+        .await
+        .map_err(err)?
+    {
+        *used.entry(h.provider).or_default() += h.synthesized_characters;
+    }
+    let names: std::collections::HashMap<String, String> = match accounts(&state) {
+        Ok(a) => a
+            .list_speech_accounts(&tenant.0)
+            .await
+            .map_err(err)?
+            .into_iter()
+            .map(|a| (format!("{ACCOUNT_PREFIX}{}", a.id), a.name))
+            .collect(),
+        Err(_) => Default::default(),
+    };
+    let find = |t: Option<&fcp_core::TenantId>, p: &str, kind| {
+        caps.iter()
+            .find(|c| c.tenant_id.as_ref() == t && c.provider == p && c.kind == kind)
+    };
+    let mut list: Vec<SpeechCapView> = providers
+        .into_iter()
+        .map(|p| {
+            let account = p.starts_with(ACCOUNT_PREFIX);
+            let override_ = find(Some(&tenant.0), &p, SpeechCapKind::Platform);
+            let platform_cap = if account {
+                None
+            } else {
+                match override_ {
+                    Some(c) => c.monthly_characters,
+                    None => {
+                        find(None, &p, SpeechCapKind::Platform).and_then(|c| c.monthly_characters)
+                    }
+                }
+            };
+            let cap = effective_cap(&caps, &tenant.0, &p);
+            let n = used.get(&p).copied().unwrap_or(0);
+            let state = match cap {
+                Some(c) if n >= c => "reached",
+                Some(c) if n.saturating_mul(5) >= c.saturating_mul(4) => "near",
+                _ => "ok",
+            };
+            SpeechCapView {
+                label: names.get(&p).cloned().unwrap_or_else(|| p.clone()),
+                platform_override: !account && override_.is_some(),
+                own_cap: find(Some(&tenant.0), &p, SpeechCapKind::Tenant)
+                    .and_then(|c| c.monthly_characters),
+                platform_cap,
+                cap,
+                used: n,
+                state: state.into(),
+                resets_at: rfc3339(next),
+                provider: p,
+            }
+        })
+        .collect();
+    list.sort_by(|a, b| a.label.cmp(&b.label));
+    let total = list.len() as u64;
+    Ok(Json(crate::page::Page::new(list, None, Some(total))))
+}
+
+/// PUT /speech/caps/{provider} — the tenant's own cap, or (a platform
+/// administrator, `kind: platform`) the platform's cap on this tenant.
+#[utoipa::path(
+    put,
+    path = "/api/v1/speech/caps/{provider}",
+    tag = "speech",
+    operation_id = "speech_put_cap",
+    params(("provider" = String, Path, description = "A platform provider, or account:<uuid>")),
+    request_body = SpeechCapRequest,
+    responses(
+        (status = 204, description = "Kept"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn put_cap(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: TenantContext,
+    axum::extract::Path(provider): axum::extract::Path<String>,
+    Json(req): Json<SpeechCapRequest>,
+) -> Result<StatusCode, ApiError> {
+    crate::auth::check_permission(&identity, Permission::PromptManage, state.deployment_mode)?;
+    let kind = cap_kind(req.kind.as_deref(), &identity)?;
+    if kind == SpeechCapKind::Platform && provider.starts_with(ACCOUNT_PREFIX) {
+        return Err(ApiError::BadRequest(
+            "A tenant's own account is not the platform's to cap".into(),
+        ));
+    }
+    cappable(&state, &identity, Some(&tenant.0), &provider).await?;
+    let monthly_characters = limit(req.monthly_characters, kind == SpeechCapKind::Platform)?;
+    usage_store(&state)?
+        .put_speech_cap(&SpeechCap {
+            tenant_id: Some(tenant.0),
+            provider,
+            kind,
+            monthly_characters,
+        })
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// DELETE /speech/caps/{provider}
+#[utoipa::path(
+    delete,
+    path = "/api/v1/speech/caps/{provider}",
+    tag = "speech",
+    operation_id = "speech_delete_cap",
+    params(
+        ("provider" = String, Path, description = "A platform provider, or account:<uuid>"),
+        CapKindQuery,
+    ),
+    responses(
+        (status = 204, description = "Removed"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn delete_cap(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: TenantContext,
+    axum::extract::Path(provider): axum::extract::Path<String>,
+    axum::extract::Query(q): axum::extract::Query<CapKindQuery>,
+) -> Result<StatusCode, ApiError> {
+    crate::auth::check_permission(&identity, Permission::PromptManage, state.deployment_mode)?;
+    let kind = cap_kind(q.kind.as_deref(), &identity)?;
+    let gone = usage_store(&state)?
+        .delete_speech_cap(Some(&tenant.0), &provider, kind)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    if gone {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound("No such cap".into()))
+    }
+}
+
+/// A platform provider's default cap for every tenant.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct PlatformSpeechCap {
+    pub provider: String,
+    pub monthly_characters: u64,
+}
+
+/// GET /system/speech/caps — the platform's default caps.
+#[utoipa::path(
+    get,
+    path = "/api/v1/system/speech/caps",
+    tag = "speech",
+    operation_id = "system_list_speech_caps",
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<PlatformSpeechCap>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn list_platform_caps(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+) -> Result<Json<crate::page::Page<PlatformSpeechCap>>, ApiError> {
+    require_platform(&identity)?;
+    let list: Vec<PlatformSpeechCap> = usage_store(&state)?
+        .speech_caps(None)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .into_iter()
+        .filter(|c| c.kind == SpeechCapKind::Platform)
+        .filter_map(|c| {
+            Some(PlatformSpeechCap {
+                monthly_characters: c.monthly_characters?,
+                provider: c.provider,
+            })
+        })
+        .collect();
+    let total = list.len() as u64;
+    Ok(Json(crate::page::Page::new(list, None, Some(total))))
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PlatformSpeechCapRequest {
+    pub monthly_characters: u64,
+}
+
+/// PUT /system/speech/caps/{provider} — a platform provider's default cap.
+#[utoipa::path(
+    put,
+    path = "/api/v1/system/speech/caps/{provider}",
+    tag = "speech",
+    operation_id = "system_put_speech_cap",
+    params(("provider" = String, Path, description = "A platform provider")),
+    request_body = PlatformSpeechCapRequest,
+    responses(
+        (status = 204, description = "Kept"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn put_platform_cap(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    axum::extract::Path(provider): axum::extract::Path<String>,
+    Json(req): Json<PlatformSpeechCapRequest>,
+) -> Result<StatusCode, ApiError> {
+    require_platform(&identity)?;
+    cappable(&state, &identity, None, &provider).await?;
+    let monthly_characters = limit(Some(req.monthly_characters), false)?;
+    usage_store(&state)?
+        .put_speech_cap(&SpeechCap {
+            tenant_id: None,
+            provider,
+            kind: SpeechCapKind::Platform,
+            monthly_characters,
+        })
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// DELETE /system/speech/caps/{provider}
+#[utoipa::path(
+    delete,
+    path = "/api/v1/system/speech/caps/{provider}",
+    tag = "speech",
+    operation_id = "system_delete_speech_cap",
+    params(("provider" = String, Path, description = "A platform provider")),
+    responses(
+        (status = 204, description = "Removed"),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn delete_platform_cap(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    axum::extract::Path(provider): axum::extract::Path<String>,
+) -> Result<StatusCode, ApiError> {
+    require_platform(&identity)?;
+    let gone = usage_store(&state)?
+        .delete_speech_cap(None, &provider, SpeechCapKind::Platform)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    if gone {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound("No such cap".into()))
+    }
+}
+
+/// Audio the TTS server spoke, or its refusal at a cap answered as 429
+/// with `speech_cap_reached` (`docs/SPEECH_CAPS.md`).
+fn spoken(
+    result: anyhow::Result<Vec<u8>>,
+    failed: &str,
+) -> Result<axum::response::Response, ApiError> {
+    use axum::response::IntoResponse;
+    match result {
+        Ok(audio) => Ok((
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "audio/wav")],
+            audio,
+        )
+            .into_response()),
+        Err(e) => {
+            let text = format!("{e:#}");
+            if !text.contains("speech_cap_reached") {
+                return Err(ApiError::ServiceUnavailable(format!("{failed}: {text}")));
+            }
+            // The server's own words, where its JSON can be found.
+            let details = text
+                .find('{')
+                .and_then(|i| serde_json::from_str::<serde_json::Value>(&text[i..]).ok())
+                .and_then(|v| v["error"].as_str().map(str::to_string))
+                .unwrap_or_else(|| "This month's speech cap on this provider is reached".into());
+            Ok((
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(crate::error::ErrorResponse {
+                    error: "Too Many Requests".into(),
+                    code: "speech_cap_reached".into(),
+                    details: Some(details),
+                }),
+            )
+                .into_response())
+        }
+    }
 }

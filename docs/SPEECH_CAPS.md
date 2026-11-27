@@ -93,8 +93,10 @@ the truth, and a cap in characters means the same thing next month.
 - `GET /api/v1/system/speech/caps`, `PUT/DELETE
   /api/v1/system/speech/caps/{provider}` — a platform provider's default
   cap for every tenant (platform only).
-- `PUT/DELETE /api/v1/tenants/{id}/speech/caps/{provider}` — one
-  tenant's platform cap (platform only).
+- One tenant's platform cap is `PUT /api/v1/speech/caps/{provider}` with
+  `kind: "platform"` (null `monthly_characters`: none for this tenant) and
+  `DELETE …?kind=platform`, by a platform administrator in the tenant
+  picked (`x-fcp-tenant-id`), as the rest of the admin works on a tenant.
 - `price_per_million` on `/system/speech` (per platform provider) and on
   an account; `estimated_cost` on `/speech/usage` rows where a price is
   known.
@@ -146,6 +148,24 @@ by the cloud's sweep only, once.
   reached falls back to the default; named, 429; the month turning ends
   it) and the Postgres API suite (who may set what, a tenant's cap never
   above the platform's effect, the default refused).
+  **Done (v0.25.660):** `fcp_core::speech::{SpeechCap, SpeechCapKind,
+  effective_cap, month_of}` and the cap methods on `SpeechUsageStore`
+  (`speech_caps`, migration 157; an account's caps deleted with it);
+  `/speech/caps` (list with `platform_cap`, `platform_override`,
+  `own_cap`, `cap`, `used`, `state`, `resets_at`; `PUT`/`DELETE
+  /speech/caps/{provider}`, `kind: platform` for a platform
+  administrator) and `/system/speech/caps[/{provider}]`; a cap refused on
+  the default provider, on a provider the TTS server does not have, on
+  another tenant's account, and the platform's on an account.
+  `fcp-tts-server/src/caps.rs`, read after each usage flush and added to
+  as the server synthesizes; at a cap `synthesize` falls back to the
+  default (its voice, counted as its usage) and answers a named provider
+  `429 speech_cap_reached`, which the admin's preview and account test
+  pass on. Proved by `caps::tests`,
+  `at_its_cap_a_tenant_is_spoken_for_by_the_default`, fcp-core's
+  `the_lowest_cap_that_applies_is_the_cap`, and the Postgres suite's
+  `speech_caps_are_set_by_whoever_pays`; the route matrix seeds a cap in
+  tenant B.
 - **C2 — warnings and the page.** `speech_cap_notices`, the admin's
   sweep, `speech.cap_near`/`cap_reached` in `PlatformEvent::EVENT_TYPES`,
   prices and `estimated_cost`, the Caps section and the platform's

@@ -223,11 +223,189 @@ pub trait SpeechUsageStore: Send + Sync {
     ) -> anyhow::Result<()> {
         anyhow::bail!("this store keeps no sites' speech usage")
     }
+
+    /// Every cap: the platform's defaults and every tenant's
+    /// (`docs/SPEECH_CAPS.md`), for the TTS server to enforce.
+    async fn all_speech_caps(&self) -> anyhow::Result<Vec<SpeechCap>> {
+        Ok(Vec::new())
+    }
+
+    /// The caps on `tenant`, or with `None` the platform's defaults.
+    async fn speech_caps(&self, _tenant_id: Option<&TenantId>) -> anyhow::Result<Vec<SpeechCap>> {
+        Ok(Vec::new())
+    }
+
+    /// Keep a cap, replacing the one of its kind on its tenant and
+    /// provider.
+    async fn put_speech_cap(&self, _cap: &SpeechCap) -> anyhow::Result<()> {
+        anyhow::bail!("this store keeps no speech caps")
+    }
+
+    /// Remove a cap; whether there was one.
+    async fn delete_speech_cap(
+        &self,
+        _tenant_id: Option<&TenantId>,
+        _provider: &str,
+        _kind: SpeechCapKind,
+    ) -> anyhow::Result<bool> {
+        anyhow::bail!("this store keeps no speech caps")
+    }
+
+    /// Every tenant's synthesized characters per provider since `from`
+    /// (the month's start), this deployment's and its sites' together.
+    async fn synthesized_since(
+        &self,
+        _from: SystemTime,
+    ) -> anyhow::Result<Vec<(TenantId, String, u64)>> {
+        Ok(Vec::new())
+    }
+}
+
+/// Who set a cap: the platform, which pays for its providers, or the
+/// tenant, which pays for its own accounts (`docs/SPEECH_CAPS.md` §2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeechCapKind {
+    Platform,
+    Tenant,
+}
+
+impl SpeechCapKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Platform => "platform",
+            Self::Tenant => "tenant",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "platform" => Some(Self::Platform),
+            "tenant" => Some(Self::Tenant),
+            _ => None,
+        }
+    }
+}
+
+/// Synthesized characters a tenant may have spoken with one provider in a
+/// calendar month (UTC).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpeechCap {
+    /// None: the platform's default for every tenant.
+    pub tenant_id: Option<TenantId>,
+    /// A platform provider's name, or `account:<uuid>`.
+    pub provider: String,
+    pub kind: SpeechCapKind,
+    /// None only on a tenant's platform cap: no cap for this tenant, the
+    /// platform's default notwithstanding.
+    pub monthly_characters: Option<u64>,
+}
+
+/// The cap that applies to `tenant` speaking with `provider`: the lowest of
+/// the tenant's own and the platform's (the tenant's platform cap, else
+/// the platform's default). An account is the tenant's alone to cap.
+pub fn effective_cap(caps: &[SpeechCap], tenant: &TenantId, provider: &str) -> Option<u64> {
+    let find = |t: Option<&TenantId>, kind| {
+        caps.iter()
+            .find(|c| c.tenant_id.as_ref() == t && c.provider == provider && c.kind == kind)
+    };
+    let own = find(Some(tenant), SpeechCapKind::Tenant).and_then(|c| c.monthly_characters);
+    if account_of(provider).is_some() {
+        return own;
+    }
+    let platform = match find(Some(tenant), SpeechCapKind::Platform) {
+        Some(c) => c.monthly_characters,
+        None => find(None, SpeechCapKind::Platform).and_then(|c| c.monthly_characters),
+    };
+    match (own, platform) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// The start of the calendar month (UTC) `at` is in, and of the next.
+pub fn month_of(at: SystemTime) -> (SystemTime, SystemTime) {
+    use chrono::{Datelike, TimeZone, Utc};
+    let t: chrono::DateTime<Utc> = at.into();
+    let start = Utc
+        .with_ymd_and_hms(t.year(), t.month(), 1, 0, 0, 0)
+        .single()
+        .unwrap_or(t);
+    let (y, m) = if t.month() == 12 {
+        (t.year() + 1, 1)
+    } else {
+        (t.year(), t.month() + 1)
+    };
+    let next = Utc.with_ymd_and_hms(y, m, 1, 0, 0, 0).single().unwrap_or(t);
+    (start.into(), next.into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cap(
+        tenant: Option<TenantId>,
+        provider: &str,
+        kind: SpeechCapKind,
+        n: Option<u64>,
+    ) -> SpeechCap {
+        SpeechCap {
+            tenant_id: tenant,
+            provider: provider.into(),
+            kind,
+            monthly_characters: n,
+        }
+    }
+
+    #[test]
+    fn the_lowest_cap_that_applies_is_the_cap() {
+        use SpeechCapKind::*;
+        let (a, b) = (TenantId::new(), TenantId::new());
+        let acct = format!("{ACCOUNT_PREFIX}{}", uuid::Uuid::new_v4());
+        let caps = vec![
+            cap(None, "openai", Platform, Some(1000)),
+            cap(Some(a), "openai", Platform, Some(5000)),
+            cap(Some(a), "openai", Tenant, Some(3000)),
+            cap(Some(b), "openai", Platform, None),
+            cap(None, &acct, Platform, Some(1)),
+            cap(Some(a), &acct, Tenant, Some(70)),
+        ];
+        // The tenant's platform cap overrides the default; its own is lower.
+        assert_eq!(effective_cap(&caps, &a, "openai"), Some(3000));
+        // None for this tenant: unlimited, the default notwithstanding.
+        assert_eq!(effective_cap(&caps, &b, "openai"), None);
+        // Neither: the default.
+        assert_eq!(effective_cap(&caps, &TenantId::new(), "openai"), Some(1000));
+        assert_eq!(effective_cap(&caps, &a, "piper"), None);
+        // An account answers to its tenant alone.
+        assert_eq!(effective_cap(&caps, &a, &acct), Some(70));
+        assert_eq!(effective_cap(&caps, &b, &acct), None);
+        // A tenant's own cap higher than the platform's changes nothing.
+        let caps = vec![
+            cap(None, "openai", Platform, Some(1000)),
+            cap(Some(a), "openai", Tenant, Some(9000)),
+        ];
+        assert_eq!(effective_cap(&caps, &a, "openai"), Some(1000));
+    }
+
+    #[test]
+    fn a_month_is_the_calendar_month_in_utc() {
+        use chrono::{TimeZone, Utc};
+        let at: SystemTime = Utc
+            .with_ymd_and_hms(2026, 12, 31, 23, 59, 0)
+            .unwrap()
+            .into();
+        let (start, next) = month_of(at);
+        assert_eq!(
+            start,
+            SystemTime::from(Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap())
+        );
+        assert_eq!(
+            next,
+            SystemTime::from(Utc.with_ymd_and_hms(2027, 1, 1, 0, 0, 0).unwrap())
+        );
+    }
 
     #[test]
     fn a_language_has_its_own_voice_else_the_tenants() {

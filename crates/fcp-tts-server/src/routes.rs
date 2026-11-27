@@ -55,7 +55,7 @@ pub async fn synthesize(
             fcp_core::speech::account_of(p).is_some()
                 || (state.services.contains_key(*p) && !held_back.iter().any(|h| h == *p))
         });
-    let provider_name = req.provider.as_deref().or(tenant_provider);
+    let mut provider_name = req.provider.as_deref().or(tenant_provider);
     let language = req
         .language
         .clone()
@@ -77,6 +77,37 @@ pub async fn synthesize(
     // for an account that could not, whose voice is then not its own.
     let mut spoken_by = provider_name.unwrap_or(&state.default_provider).to_string();
     let mut fell_back = false;
+    // A cap reached (`docs/SPEECH_CAPS.md`): the default speaks for the
+    // rest of the month, as it does for an account that cannot; a request
+    // naming the provider is told. The default itself is never capped.
+    if let (Some(usage), Some(tenant_id), Some(p)) =
+        (&state.usage, req.tenant_id.as_deref(), provider_name)
+    {
+        if p != state.default_provider {
+            if let Some(reached) = usage.caps.reached(tenant_id, p) {
+                if req.provider.is_some() {
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        Json(serde_json::json!({
+                            "error": format!(
+                                "This month's speech cap on {p} is reached ({} of {} characters)",
+                                reached.used, reached.cap
+                            ),
+                            "code": "speech_cap_reached",
+                            "cap": reached.cap,
+                            "used": reached.used,
+                        })),
+                    )
+                        .into_response();
+                }
+                info!(provider = %p, cap = reached.cap, used = reached.used,
+                    "A tenant's speech cap is reached; the default speaks");
+                provider_name = None;
+                spoken_by = state.default_provider.clone();
+                fell_back = true;
+            }
+        }
+    }
     let service: Arc<fcp_media::tts::TtsService> = match provider_name
         .and_then(fcp_core::speech::account_of)
     {
@@ -805,6 +836,143 @@ mod tests {
         assert_eq!(
             heard[0].0, "primary",
             "the default speaks, not the held-back choice"
+        );
+    }
+    /// Usage and caps in memory (`docs/SPEECH_CAPS.md`).
+    #[derive(Default)]
+    struct Capped(std::sync::Mutex<Vec<fcp_core::speech::SpeechCap>>);
+
+    #[async_trait::async_trait]
+    impl fcp_core::speech::SpeechUsageStore for Capped {
+        async fn add_speech_usage(
+            &self,
+            _: &[fcp_core::speech::SpeechUsage],
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn speech_usage(
+            &self,
+            _: &fcp_core::TenantId,
+            _: std::time::SystemTime,
+            _: std::time::SystemTime,
+        ) -> anyhow::Result<Vec<fcp_core::speech::SpeechUsage>> {
+            Ok(Vec::new())
+        }
+        async fn all_speech_caps(&self) -> anyhow::Result<Vec<fcp_core::speech::SpeechCap>> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn at_its_cap_a_tenant_is_spoken_for_by_the_default() {
+        let heard: Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>> = Arc::default();
+        let base = test_state().await;
+        let mut services = std::collections::HashMap::new();
+        services.insert(
+            "primary".to_string(),
+            heard_by("primary", Arc::clone(&heard)).await,
+        );
+        services.insert("alt".to_string(), heard_by("alt", Arc::clone(&heard)).await);
+        let a = fcp_core::TenantId::new();
+        let mut speech = fcp_core::speech::TenantSpeech::defaults(a);
+        speech.provider = Some("alt".into());
+        speech.voice = Some("lucie".into());
+        let store = Arc::new(Capped::default());
+        store.0.lock().unwrap().extend([
+            // The platform's default cap on alt; one on the default is
+            // never enforced.
+            fcp_core::speech::SpeechCap {
+                tenant_id: None,
+                provider: "alt".into(),
+                kind: fcp_core::speech::SpeechCapKind::Platform,
+                monthly_characters: Some(10),
+            },
+            fcp_core::speech::SpeechCap {
+                tenant_id: None,
+                provider: "primary".into(),
+                kind: fcp_core::speech::SpeechCapKind::Platform,
+                monthly_characters: Some(0),
+            },
+        ]);
+        let usage = crate::usage::UsageCounter::new(store.clone());
+        usage.caps.refresh().await;
+        let state = Arc::new(AppState {
+            services,
+            speech: Some(Arc::new(Settings([(a, speech)].into_iter().collect()))),
+            speech_cache: Default::default(),
+            accounts: None,
+            account_services: Default::default(),
+            held_back: Default::default(),
+            usage: Some(usage),
+            config: base.config.clone(),
+            default_provider: base.default_provider.clone(),
+            stt: Default::default(),
+            stt_default: None,
+        });
+        let say = |text: &str, tenant: Option<String>, provider: Option<&str>| {
+            let state = Arc::clone(&state);
+            let req = SynthesizeRequest {
+                text: text.to_string(),
+                language: None,
+                voice: None,
+                provider: provider.map(String::from),
+                tenant_id: tenant,
+            };
+            async move {
+                let r = synthesize(State(state), Json(req)).await;
+                let status = r.status();
+                let body = to_bytes(r.into_body(), usize::MAX).await.unwrap();
+                (status, body)
+            }
+        };
+        let tenant = || Some(a.to_string());
+
+        // Under the cap: the tenant's provider and voice.
+        assert_eq!(say("hello world!", tenant(), None).await.0, StatusCode::OK);
+        // Twelve characters spoken: at the cap, the default speaks, in its
+        // own voice.
+        assert_eq!(say("again", tenant(), None).await.0, StatusCode::OK);
+        // Naming the capped provider is refused and says why.
+        let (status, body) = say("named", tenant(), Some("alt")).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["code"], "speech_cap_reached");
+        assert_eq!(
+            (body["cap"].as_u64(), body["used"].as_u64()),
+            (Some(10), Some(12))
+        );
+        // Another tenant, and a request without one, are not held to it.
+        assert_eq!(
+            say(
+                "theirs",
+                Some(fcp_core::TenantId::new().to_string()),
+                Some("alt")
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+        assert_eq!(say("nobody's", None, Some("alt")).await.0, StatusCode::OK);
+        // The default, capped at nothing, still speaks.
+        assert_eq!(
+            say("primary", tenant(), Some("primary")).await.0,
+            StatusCode::OK
+        );
+
+        let heard = heard.lock().unwrap().clone();
+        let who: Vec<(&str, Option<&str>)> = heard
+            .iter()
+            .map(|(n, b)| (n.as_str(), b["voice"].as_str()))
+            .collect();
+        assert_eq!(
+            who,
+            [
+                ("alt", Some("lucie")),
+                ("primary", None),
+                ("alt", None),
+                ("alt", None),
+                ("primary", None),
+            ]
         );
     }
 }

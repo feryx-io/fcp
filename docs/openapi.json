@@ -17246,6 +17246,16 @@
               }
             }
           },
+          "429": {
+            "description": "This month's speech cap on the provider is reached (`speech_cap_reached`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "default": {
             "description": "An error",
             "content": {
@@ -17503,6 +17513,243 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "This month's speech cap on the provider is reached (`speech_cap_reached`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/speech/caps": {
+      "get": {
+        "tags": [
+          "speech"
+        ],
+        "summary": "GET /speech/caps — the caps on the tenant, and where it stands.",
+        "operationId": "speech_list_caps",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_SpeechCapView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/speech/caps/{provider}": {
+      "put": {
+        "tags": [
+          "speech"
+        ],
+        "summary": "PUT /speech/caps/{provider} — the tenant's own cap, or (a platform\nadministrator, `kind: platform`) the platform's cap on this tenant.",
+        "operationId": "speech_put_cap",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "description": "A platform provider, or account:<uuid>",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpeechCapRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Kept"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "speech"
+        ],
+        "summary": "DELETE /speech/caps/{provider}",
+        "operationId": "speech_delete_cap",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "description": "A platform provider, or account:<uuid>",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "description": "`tenant` (the default) or `platform`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/speech/caps": {
+      "get": {
+        "tags": [
+          "speech"
+        ],
+        "summary": "GET /system/speech/caps — the platform's default caps.",
+        "operationId": "system_list_speech_caps",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_PlatformSpeechCap"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/speech/caps/{provider}": {
+      "put": {
+        "tags": [
+          "speech"
+        ],
+        "summary": "PUT /system/speech/caps/{provider} — a platform provider's default cap.",
+        "operationId": "system_put_speech_cap",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "description": "A platform provider",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlatformSpeechCapRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Kept"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "speech"
+        ],
+        "summary": "DELETE /system/speech/caps/{provider}",
+        "operationId": "system_delete_speech_cap",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "description": "A platform provider",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
           },
           "default": {
             "description": "An error",
@@ -38802,6 +39049,52 @@
           }
         }
       },
+      "Page_PlatformSpeechCap": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A platform provider's default cap for every tenant.",
+              "required": [
+                "provider",
+                "monthly_characters"
+              ],
+              "properties": {
+                "provider": {
+                  "type": "string"
+                },
+                "monthly_characters": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
       "Page_PresenceResponse": {
         "type": "object",
         "description": "A page of a list.",
@@ -40773,6 +41066,101 @@
                 },
                 "updated_at": {
                   "type": "string"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_SpeechCapView": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One provider's cap on the tenant this month.",
+              "required": [
+                "provider",
+                "label",
+                "platform_override",
+                "used",
+                "state",
+                "resets_at"
+              ],
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "description": "A platform provider's name, or `account:<uuid>`."
+                },
+                "label": {
+                  "type": "string",
+                  "description": "The provider, or the account's name."
+                },
+                "platform_cap": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "description": "What the platform holds the tenant to on this provider (its cap\nfor this tenant, else its default); never on an account.",
+                  "minimum": 0
+                },
+                "platform_override": {
+                  "type": "boolean",
+                  "description": "Whether the platform set a cap for this tenant itself, rather than\nits default (null `platform_cap` then means none for this tenant)."
+                },
+                "own_cap": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "description": "The tenant's own cap.",
+                  "minimum": 0
+                },
+                "cap": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64",
+                  "description": "The cap that applies: the lowest of the two.",
+                  "minimum": 0
+                },
+                "used": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Synthesized characters this month (UTC), the cloud's and sites'.",
+                  "minimum": 0
+                },
+                "state": {
+                  "type": "string",
+                  "description": "`ok`, `near` (80 % or more) or `reached`."
+                },
+                "resets_at": {
+                  "type": "string",
+                  "description": "When the month's count starts again (RFC 3339)."
                 }
               }
             }
@@ -43203,6 +43591,38 @@
             "description": "Held back from tenants (a provider the server no longer has may\nstill be named here)."
           }
         }
+      },
+      "PlatformSpeechCap": {
+        "type": "object",
+        "description": "A platform provider's default cap for every tenant.",
+        "required": [
+          "provider",
+          "monthly_characters"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "monthly_characters": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "PlatformSpeechCapRequest": {
+        "type": "object",
+        "required": [
+          "monthly_characters"
+        ],
+        "properties": {
+          "monthly_characters": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "PlatformSpeechRequest": {
         "type": "object",
@@ -46950,6 +47370,95 @@
           },
           "updated_at": {
             "type": "string"
+          }
+        }
+      },
+      "SpeechCapRequest": {
+        "type": "object",
+        "description": "A cap to keep. `monthly_characters` null is allowed only on a tenant's\nplatform cap: none for this tenant, whatever the default says.",
+        "properties": {
+          "monthly_characters": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`tenant` (the default: the tenant's own) or `platform` (a platform\nadministrator's cap on this tenant)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SpeechCapView": {
+        "type": "object",
+        "description": "One provider's cap on the tenant this month.",
+        "required": [
+          "provider",
+          "label",
+          "platform_override",
+          "used",
+          "state",
+          "resets_at"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "A platform provider's name, or `account:<uuid>`."
+          },
+          "label": {
+            "type": "string",
+            "description": "The provider, or the account's name."
+          },
+          "platform_cap": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "What the platform holds the tenant to on this provider (its cap\nfor this tenant, else its default); never on an account.",
+            "minimum": 0
+          },
+          "platform_override": {
+            "type": "boolean",
+            "description": "Whether the platform set a cap for this tenant itself, rather than\nits default (null `platform_cap` then means none for this tenant)."
+          },
+          "own_cap": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The tenant's own cap.",
+            "minimum": 0
+          },
+          "cap": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The cap that applies: the lowest of the two.",
+            "minimum": 0
+          },
+          "used": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Synthesized characters this month (UTC), the cloud's and sites'.",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "description": "`ok`, `near` (80 % or more) or `reached`."
+          },
+          "resets_at": {
+            "type": "string",
+            "description": "When the month's count starts again (RFC 3339)."
           }
         }
       },

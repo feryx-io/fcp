@@ -41,6 +41,13 @@ def _get_kwargs(
 
 
 def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> ErrorResponse:
+    if response.status_code == 429:
+        response_429 = ErrorResponse.from_dict(response.json())
+
+
+
+        return response_429
+
     response_default = ErrorResponse.from_dict(response.json())
 
 
