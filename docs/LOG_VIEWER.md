@@ -151,8 +151,12 @@ the platform sees a site's trouble without reaching into it.
   join lines included); the conference server's audio and video bridge
   spans carry the room's tenant (`tenant-<uuid>` of the room id). Proved
   by `fcp-conference-server/tests/rooms.rs` `a_rooms_log_lines_name_its_tenant`.
-  Not yet: forge-media's room tasks (the frame clock, the mixer), which
-  start outside any span — a forge-media release.
+  A room's own tasks (the frame clock and the mixing it drives, DTMF,
+  the video clock) run under the span the conference server gives the
+  room when a join makes it — `room`, naming the room and its tenant —
+  through forge-conference 0.24.0's `ConferenceRoom::set_log_span`
+  (forge-media v2026.11.27, v0.25.657); a room's video takes the audio
+  room's.
 - **L3 — the API.** Query, tail, levels, export, the permissions and the
   tenant clamp; proved across two tenants.
   **L3a done (v0.25.647):** `log_read` (tenant administrators and
