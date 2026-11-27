@@ -37,6 +37,8 @@ class SpeechAccountView:
             model (None | str | Unset):
             endpoint (None | str | Unset):
             access_key_id (None | str | Unset):
+            price_per_million (float | None | Unset): What the vendor charges per million characters, for an estimated
+                cost (`docs/SPEECH_CAPS.md`).
      """
 
     id: str
@@ -50,6 +52,7 @@ class SpeechAccountView:
     model: None | str | Unset = UNSET
     endpoint: None | str | Unset = UNSET
     access_key_id: None | str | Unset = UNSET
+    price_per_million: float | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -95,6 +98,12 @@ class SpeechAccountView:
         else:
             access_key_id = self.access_key_id
 
+        price_per_million: float | None | Unset
+        if isinstance(self.price_per_million, Unset):
+            price_per_million = UNSET
+        else:
+            price_per_million = self.price_per_million
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -115,6 +124,8 @@ class SpeechAccountView:
             field_dict["endpoint"] = endpoint
         if access_key_id is not UNSET:
             field_dict["access_key_id"] = access_key_id
+        if price_per_million is not UNSET:
+            field_dict["price_per_million"] = price_per_million
 
         return field_dict
 
@@ -180,6 +191,16 @@ class SpeechAccountView:
         access_key_id = _parse_access_key_id(d.pop("access_key_id", UNSET))
 
 
+        def _parse_price_per_million(data: object) -> float | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(float | None | Unset, data)
+
+        price_per_million = _parse_price_per_million(d.pop("price_per_million", UNSET))
+
+
         speech_account_view = cls(
             id=id,
             name=name,
@@ -192,6 +213,7 @@ class SpeechAccountView:
             model=model,
             endpoint=endpoint,
             access_key_id=access_key_id,
+            price_per_million=price_per_million,
         )
 
 

@@ -123,6 +123,8 @@ class WebhookEventEventType(StrEnum):
     REGISTRATION_REGISTERED = "registration.registered"
     REGISTRATION_UNREGISTERED = "registration.unregistered"
     SIP_MESSAGE_CAPTURED = "sip.message_captured"
+    SPEECH_CAP_NEAR = "speech.cap_near"
+    SPEECH_CAP_REACHED = "speech.cap_reached"
     SYSTEM_CLUSTER_VIEW_CHANGED = "system.cluster_view_changed"
     SYSTEM_CONFIG_CHANGED = "system.config_changed"
     SYSTEM_HEALTH_CHECK = "system.health_check"

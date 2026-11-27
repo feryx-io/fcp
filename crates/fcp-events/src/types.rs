@@ -60,6 +60,60 @@ pub enum PlatformEvent {
     /// Trunk event: what a carrier's trunk is doing on this node
     /// (`docs/TENANT_TRUNKS.md` §9)
     Trunk(TrunkEvent),
+
+    /// Speech event: a tenant nearing or at a spending cap
+    /// (`docs/SPEECH_CAPS.md` §2)
+    Speech(SpeechEvent),
+}
+
+/// A tenant's speech against its caps, said once per cap and month by the
+/// admin's sweep (`docs/SPEECH_CAPS.md`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SpeechEvent {
+    /// 80 % of the month's cap on a provider synthesized.
+    CapNear {
+        tenant_id: TenantId,
+        /// A platform provider's name, or `account:<uuid>`.
+        provider: String,
+        /// Synthesized characters the month allows.
+        cap: u64,
+        /// Synthesized so far this month.
+        used: u64,
+        /// `YYYY-MM` (UTC).
+        month: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+    /// The cap reached: the default provider speaks for the tenant on this
+    /// one until the month turns or the cap is raised.
+    CapReached {
+        tenant_id: TenantId,
+        provider: String,
+        cap: u64,
+        used: u64,
+        month: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+}
+
+impl SpeechEvent {
+    pub fn timestamp(&self) -> SystemTime {
+        match self {
+            SpeechEvent::CapNear { timestamp, .. } | SpeechEvent::CapReached { timestamp, .. } => {
+                *timestamp
+            }
+        }
+    }
+
+    pub fn tenant_id(&self) -> &TenantId {
+        match self {
+            SpeechEvent::CapNear { tenant_id, .. } | SpeechEvent::CapReached { tenant_id, .. } => {
+                tenant_id
+            }
+        }
+    }
 }
 
 /// What a trunk is doing, on the node it is doing it on.
@@ -2275,6 +2329,8 @@ impl PlatformEvent {
         "compliance.hold_placed",
         "compliance.hold_released",
         "compliance.subject_request_completed",
+        "speech.cap_near",
+        "speech.cap_reached",
     ];
 
     pub fn event_type_name(&self) -> &'static str {
@@ -2461,6 +2517,10 @@ impl PlatformEvent {
                 CdrEvent::Written { .. } => "cdr.written",
                 CdrEvent::Archived { .. } => "cdr.archived",
             },
+            PlatformEvent::Speech(e) => match e {
+                SpeechEvent::CapNear { .. } => "speech.cap_near",
+                SpeechEvent::CapReached { .. } => "speech.cap_reached",
+            },
             PlatformEvent::Trunk(e) => match e {
                 TrunkEvent::Registered { .. } => "trunk.registered",
                 TrunkEvent::RegistrationFailed { .. } => "trunk.registration_failed",
@@ -2643,6 +2703,7 @@ impl PlatformEvent {
                 | ComplianceEvent::SubjectRequestCompleted { tenant_id, .. },
             ) => Some(tenant_id),
             PlatformEvent::Trunk(e) => e.tenant_id(),
+            PlatformEvent::Speech(e) => Some(e.tenant_id()),
             PlatformEvent::Recording(
                 RecordingEvent::Started { tenant_id, .. }
                 | RecordingEvent::Completed { tenant_id, .. }
@@ -2673,6 +2734,7 @@ impl PlatformEvent {
             PlatformEvent::Cdr(CdrEvent::Archived { .. }) => None,
             PlatformEvent::Compliance(_) => None,
             PlatformEvent::Trunk(_) => None,
+            PlatformEvent::Speech(_) => None,
         }
     }
 
@@ -2702,6 +2764,7 @@ impl PlatformEvent {
                 | ComplianceEvent::SubjectRequestCompleted { timestamp, .. },
             ) => *timestamp,
             PlatformEvent::Trunk(event) => event.timestamp(),
+            PlatformEvent::Speech(event) => event.timestamp(),
         }
     }
 }
