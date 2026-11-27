@@ -1,6 +1,7 @@
 # Speech recognition per tenant
 
-Designed 2026-11-27. `docs/TENANT_SPEECH.md` gave each tenant its own text
+Designed 2026-11-27, agreed the same day on every recommendation.
+`docs/TENANT_SPEECH.md` gave each tenant its own text
 to speech (a provider, voices, a language, its own vendor accounts, usage,
 caps, sites) and said recognition would follow the same model afterwards.
 This is that follow-up.
