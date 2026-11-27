@@ -352,6 +352,60 @@ async fn what_a_site_writes_reaches_the_cloud_and_its_files_are_reached_through_
     )
     .await;
 
+    // The site's speech by hour comes up as the site's
+    // (docs/TENANT_SPEECH.md S5); counted again in the same hour, the
+    // cloud holds the site's count, not the two added.
+    {
+        use fcp_core::speech::{SpeechUsage, SpeechUsageStore};
+        let hour = SystemTime::UNIX_EPOCH
+            + Duration::from_secs(
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    / 3600
+                    * 3600,
+            );
+        let usage = |characters| SpeechUsage {
+            tenant_id,
+            provider: "piper".into(),
+            hour,
+            requests: 1,
+            characters,
+            synthesized_characters: characters,
+            site_id: None,
+        };
+        async fn cloud_has(
+            cloud: &fcp_storage_postgres::PostgresStorage,
+            tenant: fcp_core::TenantId,
+            site: &str,
+            hour: SystemTime,
+            want: u64,
+        ) -> bool {
+            cloud
+                .speech_usage(&tenant, hour, hour + Duration::from_secs(3600))
+                .await
+                .unwrap()
+                .iter()
+                .any(|u| u.site_id.as_deref() == Some(site) && u.characters == want)
+        }
+        let site_name = cloud.site_id.clone();
+        site.add_speech_usage(&[usage(50)]).await.unwrap();
+        eventually(
+            "the site's speech reaching the cloud",
+            Duration::from_secs(30),
+            || cloud_has(&cloud_store, tenant_id, &site_name, hour, 50),
+        )
+        .await;
+        site.add_speech_usage(&[usage(20)]).await.unwrap();
+        eventually(
+            "the site's hour shipped again",
+            Duration::from_secs(30),
+            || cloud_has(&cloud_store, tenant_id, &site_name, hour, 70),
+        )
+        .await;
+    }
+
     // The link's status says what it shipped.
     let (_, text) = http_request("GET", &loopback(cloud.link_health, "/status"), &[], None)
         .await
