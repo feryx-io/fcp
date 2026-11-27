@@ -8,6 +8,7 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
+from ...models.account_heard import AccountHeard
 from ...models.error_response import ErrorResponse
 from typing import cast
 
@@ -33,7 +34,14 @@ def _get_kwargs(
 
 
 
-def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> ErrorResponse:
+def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> AccountHeard | ErrorResponse:
+    if response.status_code == 200:
+        response_200 = AccountHeard.from_dict(response.json())
+
+
+
+        return response_200
+
     if response.status_code == 429:
         response_429 = ErrorResponse.from_dict(response.json())
 
@@ -49,7 +57,7 @@ def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Res
 
 
 
-def _build_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> Response[ErrorResponse]:
+def _build_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> Response[AccountHeard | ErrorResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -63,7 +71,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
 
-) -> Response[ErrorResponse]:
+) -> Response[AccountHeard | ErrorResponse]:
     """ POST /speech/accounts/{id}/test — a sentence spoken through the
     account, as WAV: whether its key works.
 
@@ -75,7 +83,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ErrorResponse]
+        Response[AccountHeard | ErrorResponse]
      """
 
 
@@ -95,7 +103,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
 
-) -> ErrorResponse | None:
+) -> AccountHeard | ErrorResponse | None:
     """ POST /speech/accounts/{id}/test — a sentence spoken through the
     account, as WAV: whether its key works.
 
@@ -107,7 +115,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ErrorResponse
+        AccountHeard | ErrorResponse
      """
 
 
@@ -122,7 +130,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
 
-) -> Response[ErrorResponse]:
+) -> Response[AccountHeard | ErrorResponse]:
     """ POST /speech/accounts/{id}/test — a sentence spoken through the
     account, as WAV: whether its key works.
 
@@ -134,7 +142,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ErrorResponse]
+        Response[AccountHeard | ErrorResponse]
      """
 
 
@@ -154,7 +162,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
 
-) -> ErrorResponse | None:
+) -> AccountHeard | ErrorResponse | None:
     """ POST /speech/accounts/{id}/test — a sentence spoken through the
     account, as WAV: whether its key works.
 
@@ -166,7 +174,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ErrorResponse
+        AccountHeard | ErrorResponse
      """
 
 

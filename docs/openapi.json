@@ -17232,7 +17232,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The account spoke",
+            "description": "The account spoke (WAV), or an account that only hears heard the default voice (JSON)",
             "content": {
               "audio/wav": {
                 "schema": {
@@ -17242,6 +17242,11 @@
                     "format": "int32",
                     "minimum": 0
                   }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountHeard"
                 }
               }
             }
@@ -17520,6 +17525,73 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/speech/recognize": {
+      "post": {
+        "tags": [
+          "speech"
+        ],
+        "summary": "POST /speech/recognize — a WAV recording in, what the tenant's\nrecognizer (or the one named) heard out: a preview.",
+        "operationId": "speech_recognize",
+        "parameters": [
+          {
+            "name": "recognizer",
+            "in": "query",
+            "description": "One of the server's recognizers or `account:<uuid>`; the tenant's\nchoice when unset.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "language",
+            "in": "query",
+            "description": "The language heard; the tenant's when unset.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "A WAV recording, up to 10 MB",
+          "content": {
+            "audio/wav": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What was heard",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Heard"
                 }
               }
             }
@@ -24171,6 +24243,22 @@
   },
   "components": {
     "schemas": {
+      "AccountHeard": {
+        "type": "object",
+        "description": "An account that only hears, tested: what the default voice said and what\nthe account heard.",
+        "required": [
+          "spoken",
+          "heard"
+        ],
+        "properties": {
+          "spoken": {
+            "type": "string"
+          },
+          "heard": {
+            "type": "string"
+          }
+        }
+      },
       "AddMemberRequest": {
         "type": "object",
         "description": "Who to add.",
@@ -31700,6 +31788,26 @@
           }
         },
         "additionalProperties": false
+      },
+      "Heard": {
+        "type": "object",
+        "description": "What a recognition heard.",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The recognizer's confidence, 0 to 1, when it gives one."
+          }
+        }
       },
       "HoldRequest": {
         "type": "object",

@@ -1,5 +1,6 @@
 """ Contains all the data models used in inputs/outputs """
 
+from .account_heard import AccountHeard
 from .add_member_request import AddMemberRequest
 from .agent_login_request import AgentLoginRequest
 from .agent_response import AgentResponse
@@ -175,6 +176,7 @@ from .group_member_response import GroupMemberResponse
 from .group_request import GroupRequest
 from .group_response import GroupResponse
 from .group_role import GroupRole
+from .heard import Heard
 from .hold_request import HoldRequest
 from .hold_response import HoldResponse
 from .hold_response_held_type_0 import HoldResponseHeldType0
@@ -661,6 +663,7 @@ from .webhook_with_secret import WebhookWithSecret
 from .weekly_window import WeeklyWindow
 
 __all__ = (
+    "AccountHeard",
     "AddMemberRequest",
     "AgentLoginRequest",
     "AgentResponse",
@@ -836,6 +839,7 @@ __all__ = (
     "GroupRequest",
     "GroupResponse",
     "GroupRole",
+    "Heard",
     "HoldRequest",
     "HoldResponse",
     "HoldResponseHeldType0",

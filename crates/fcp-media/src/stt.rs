@@ -59,6 +59,11 @@ pub struct SttOptions {
     /// language; any other provider ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenant_id: Option<String>,
+    /// The shared server's recognizer to hear with, over the one the
+    /// provider was made for (a preview of a choice not yet saved); any
+    /// other provider ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 impl SttOptions {

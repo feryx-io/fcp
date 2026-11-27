@@ -117,3 +117,52 @@ test("a tenant caps its own account's speech and takes the cap off", async ({ pa
   await page.getByRole('button', { name: 'Delete Capped voices' }).click()
   await expect(page.getByRole('row', { name: /Capped voices/ })).toHaveCount(0)
 })
+
+// Recognition (docs/TENANT_RECOGNITION.md R2b): the language a tenant is
+// heard in saved and kept; a Deepgram account listed as one that hears; a
+// recording chosen here sent to be heard (the admin under test has no
+// speech server, so it says it could not be).
+test("a tenant's recognition is chosen, kept and tried", async ({ page, api }) => {
+  const made = await api.post('/api/v1/speech/accounts', {
+    data: { name: 'Our ears', kind: 'deepgram', secret: 'dg-never-shown' },
+  })
+  expect(made.ok()).toBe(true)
+
+  await signIn(page, tenantAdmin())
+  await page.goto('/admin/speech')
+  await settled(page)
+  await expect(page.getByRole('heading', { name: 'Recognition' })).toBeVisible()
+  await expect(page.getByRole('row', { name: /Our ears/ })).toContainText('Hears')
+
+  await page.getByLabel('Recognition language').fill('fr-CA')
+  await page.getByRole('button', { name: 'Save' }).click()
+  await settled(page)
+  await expect(page.getByRole('button', { name: 'Saved' })).toBeVisible()
+  const kept = await (await api.get('/api/v1/speech/settings')).json()
+  expect(kept.recognition_language).toBe('fr-CA')
+  await page.reload()
+  await settled(page)
+  await expect(page.getByLabel('Recognition language')).toHaveValue('fr-CA')
+
+  // A second of a 440 Hz tone as a WAV, chosen as the recording.
+  const rate = 16000
+  const samples = new Int16Array(rate).map((_, i) => Math.round(8000 * Math.sin((2 * Math.PI * 440 * i) / rate)))
+  const header = Buffer.alloc(44)
+  header.write('RIFF', 0); header.writeUInt32LE(36 + samples.length * 2, 4); header.write('WAVE', 8)
+  header.write('fmt ', 12); header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22)
+  header.writeUInt32LE(rate, 24); header.writeUInt32LE(rate * 2, 28); header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34)
+  header.write('data', 36); header.writeUInt32LE(samples.length * 2, 40)
+  const wav = Buffer.concat([header, Buffer.from(samples.buffer)])
+  const sent = page.waitForRequest((r) => r.url().includes('/api/v1/speech/recognize') && r.method() === 'POST')
+  await page.locator('#speech-recognize-file').setInputFiles({ name: 'tone.wav', mimeType: 'audio/wav', buffer: wav })
+  // Sent, converted to WAV on the way (a Blob body Playwright cannot read).
+  await sent
+  await expect(page.getByText('The recording could not be heard')).toBeVisible()
+
+  page.once('dialog', (d) => d.accept())
+  await page.getByRole('button', { name: 'Defaults' }).click()
+  await settled(page)
+  page.once('dialog', (d) => d.accept())
+  await page.getByRole('button', { name: 'Delete Our ears' }).click()
+  await expect(page.getByRole('row', { name: /Our ears/ })).toHaveCount(0)
+})

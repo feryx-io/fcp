@@ -870,7 +870,8 @@ async fn held_back(state: &ApiState) -> Result<Vec<String>, ApiError> {
     operation_id = "speech_test_account",
     params(("id" = String, Path, description = "The account")),
     responses(
-        (status = 200, description = "The account spoke", content_type = "audio/wav", body = Vec<u8>),
+        (status = 200, description = "The account spoke (WAV), or an account that only hears heard the default voice (JSON)",
+            content((Vec<u8> = "audio/wav"), (AccountHeard = "application/json"))),
         (status = 429, description = "This month's speech cap on the provider is reached (`speech_cap_reached`)", body = crate::error::ErrorResponse),
         (status = "default", description = "An error", body = crate::error::ErrorResponse),
     ),
@@ -889,6 +890,30 @@ pub async fn test_account(
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::NotFound("No such speech account".into()))?;
     let provider = format!("{ACCOUNT_PREFIX}{}", account.id);
+    // An account that only hears (docs/TENANT_RECOGNITION.md R2b): a
+    // sentence spoken by the default voice, heard by the account.
+    if !account.kind.speaks() {
+        let sentence = format!("This is {}.", account.name);
+        let spoken = tts(&state)?
+            .preview(&sentence, None, None, Some(&tenant.0), None)
+            .await
+            .map_err(|e| {
+                ApiError::ServiceUnavailable(format!(
+                    "Nothing to hear: the default voice could not speak: {e:#}"
+                ))
+            })?;
+        let heard = hear(&state, &tenant.0, &spoken, Some(provider), None)
+            .await
+            .map_err(|e| {
+                ApiError::ServiceUnavailable(format!("The account could not hear: {}", e.message()))
+            })?;
+        use axum::response::IntoResponse;
+        return Ok(Json(AccountHeard {
+            spoken: sentence,
+            heard: heard.text,
+        })
+        .into_response());
+    }
     let audio = tts(&state)?
         .preview(
             &format!("This is {}.", account.name),
@@ -1696,6 +1721,117 @@ fn spoken(
                 .into_response())
         }
     }
+}
+
+// ── Hearing a tenant (docs/TENANT_RECOGNITION.md R2b) ──────────────────────
+
+/// The longest recording a recognition preview takes.
+pub const RECOGNIZE_MAX_BYTES: usize = 10 * 1024 * 1024;
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct RecognizeQuery {
+    /// One of the server's recognizers or `account:<uuid>`; the tenant's
+    /// choice when unset.
+    pub recognizer: Option<String>,
+    /// The language heard; the tenant's when unset.
+    pub language: Option<String>,
+}
+
+/// An account that only hears, tested: what the default voice said and what
+/// the account heard.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct AccountHeard {
+    pub spoken: String,
+    pub heard: String,
+}
+
+/// What a recognition heard.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct Heard {
+    pub text: String,
+    /// The recognizer's confidence, 0 to 1, when it gives one.
+    pub confidence: Option<f64>,
+}
+
+fn stt(state: &ApiState) -> Result<&Arc<fcp_media::stt::SttService>, ApiError> {
+    state.stt_service.as_ref().ok_or_else(|| {
+        ApiError::ServiceUnavailable(
+            "No speech recognition here: set [tts] remote_url on the admin".into(),
+        )
+    })
+}
+
+/// Hear `wav` with the tenant's recognizer, or the one named.
+async fn hear(
+    state: &ApiState,
+    tenant: &fcp_core::TenantId,
+    wav: &[u8],
+    recognizer: Option<String>,
+    language: Option<String>,
+) -> Result<Heard, ApiError> {
+    let pcm = {
+        let wav = wav.to_vec();
+        tokio::task::spawn_blocking(move || fcp_media::stt::wav_bytes_16k_mono(&wav))
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .map_err(|e| ApiError::BadRequest(format!("Not a WAV recording: {e:#}")))?
+    };
+    let transcript = stt(state)?
+        .transcribe_pcm(
+            &pcm,
+            &fcp_media::stt::SttOptions {
+                language,
+                tenant_id: Some(tenant.to_string()),
+                provider: recognizer,
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| ApiError::ServiceUnavailable(format!("Recognition failed: {e:#}")))?;
+    Ok(Heard {
+        text: transcript.text,
+        confidence: transcript.confidence,
+    })
+}
+
+/// POST /speech/recognize — a WAV recording in, what the tenant's
+/// recognizer (or the one named) heard out: a preview.
+#[utoipa::path(
+    post,
+    path = "/api/v1/speech/recognize",
+    tag = "speech",
+    operation_id = "speech_recognize",
+    params(RecognizeQuery),
+    request_body(content = Vec<u8>, content_type = "audio/wav", description = "A WAV recording, up to 10 MB"),
+    responses(
+        (status = 200, description = "What was heard", body = Heard),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn recognize(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: TenantContext,
+    axum::extract::Query(q): axum::extract::Query<RecognizeQuery>,
+    body: axum::body::Bytes,
+) -> Result<Json<Heard>, ApiError> {
+    crate::auth::check_permission(&identity, Permission::PromptRead, state.deployment_mode)?;
+    if body.is_empty() {
+        return Err(ApiError::BadRequest("The body is a WAV recording".into()));
+    }
+    if body.len() > RECOGNIZE_MAX_BYTES {
+        return Err(ApiError::PayloadTooLarge(
+            "A recording is at most 10 MB".into(),
+        ));
+    }
+    let recognizer = checked("recognizer", q.recognizer)?;
+    known_provider(&state, &identity, &tenant.0, recognizer.as_deref()).await?;
+    able(&state, &tenant.0, recognizer.as_deref(), Ability::Hears).await?;
+    let language = checked("language", q.language)?;
+    Ok(Json(
+        hear(&state, &tenant.0, &body, recognizer, language).await?,
+    ))
 }
 
 // ── Warnings (docs/SPEECH_CAPS.md C2) ──────────────────────────────────────

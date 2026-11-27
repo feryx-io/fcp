@@ -120,6 +120,7 @@ impl Listening {
             interim_results: true,
             speech_timeout_ms: speech.speech_timeout_ms,
             tenant_id: tenant.map(|t| t.to_string()),
+            provider: None,
         };
         match media.recognize(session, MediaLeg::A, &options).await {
             Ok(stream) => self.speech = Some(stream),
@@ -371,6 +372,7 @@ pub(crate) async fn start_transcript(
         interim_results: request.interim_results,
         speech_timeout_ms: None,
         tenant_id: Some(tenant_id.to_string()),
+        provider: None,
     };
     let mut streams = Vec::with_capacity(legs.len());
     for (leg, name) in legs {

@@ -21,7 +21,14 @@ const KINDS: { value: SpeechAccountKind; label: string; key: string }[] = [
   { value: 'azure', label: 'Azure AI Speech', key: 'Subscription key' },
   { value: 'aws_polly', label: 'Amazon Polly', key: 'Secret access key' },
   { value: 'google_cloud', label: 'Google Cloud', key: 'API key' },
+  // Recognition only (docs/TENANT_RECOGNITION.md).
+  { value: 'deepgram', label: 'Deepgram', key: 'API key' },
 ]
+/** What an account of a kind does: OpenAI speaks and hears, Deepgram hears. */
+const HEARS: SpeechAccountKind[] = ['openai', 'deepgram']
+const SPEAKS = (k: SpeechAccountKind) => k !== 'deepgram'
+export const doesLabel = (k: SpeechAccountKind) =>
+  SPEAKS(k) && HEARS.includes(k) ? 'Speaks and hears' : SPEAKS(k) ? 'Speaks' : 'Hears'
 const kindLabel = (k: SpeechAccountKind) => KINDS.find((x) => x.value === k)?.label ?? k
 
 interface Draft {
@@ -86,6 +93,11 @@ export function SpeechAccounts() {
   const test = async (a: SpeechAccount) => {
     setTested(null)
     try {
+      if (!SPEAKS(a.kind)) {
+        const r = await speech.testHearing(a.id)
+        setTested({ id: a.id, ok: true, message: `${a.name} heard “${r.heard}” (the default voice said “${r.spoken}”).` })
+        return
+      }
       const url = await speech.testAccount(a.id)
       const audio = new Audio(url)
       audio.onended = () => URL.revokeObjectURL(url)
@@ -131,7 +143,7 @@ export function SpeechAccounts() {
                 {(accounts.data ?? []).map((a) => (
                   <TableRow key={a.id}>
                     <TableCell className="font-medium">{a.name}</TableCell>
-                    <TableCell>{kindLabel(a.kind)}</TableCell>
+                    <TableCell>{kindLabel(a.kind)} <span className="text-muted-foreground">· {doesLabel(a.kind)}</span></TableCell>
                     <TableCell>{a.region ?? '—'}</TableCell>
                     <TableCell>{a.has_key ? <KeyRound className="h-4 w-4" aria-label="Key kept" /> : '—'}</TableCell>
                     <TableCell className="text-right">

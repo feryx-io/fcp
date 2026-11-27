@@ -5394,6 +5394,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/speech/recognize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /speech/recognize — a WAV recording in, what the tenant's
+         *     recognizer (or the one named) heard out: a preview.
+         */
+        post: operations["speech_recognize"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/speech/caps": {
         parameters: {
             query?: never;
@@ -7453,6 +7473,14 @@ export interface webhooks {
 }
 export interface components {
     schemas: {
+        /**
+         * @description An account that only hears, tested: what the default voice said and what
+         *     the account heard.
+         */
+        AccountHeard: {
+            spoken: string;
+            heard: string;
+        };
         /** @description Who to add. */
         AddMemberRequest: {
             username: string;
@@ -9862,6 +9890,15 @@ export interface components {
             group: string;
             /** @description Any role but `super_admin`, which no tenant's provider grants. */
             role: string;
+        };
+        /** @description What a recognition heard. */
+        Heard: {
+            text: string;
+            /**
+             * Format: double
+             * @description The recognizer's confidence, 0 to 1, when it gives one.
+             */
+            confidence?: number | null;
         };
         /** @description Who is put on hold. */
         HoldRequest: {
@@ -29549,13 +29586,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The account spoke */
+            /** @description The account spoke (WAV), or an account that only hears heard the default voice (JSON) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "audio/wav": number[];
+                    "application/json": components["schemas"]["AccountHeard"];
                 };
             };
             /** @description This month's speech cap on the provider is reached (`speech_cap_reached`) */
@@ -29771,6 +29809,48 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    speech_recognize: {
+        parameters: {
+            query?: {
+                /**
+                 * @description One of the server's recognizers or `account:<uuid>`; the tenant's
+                 *     choice when unset.
+                 */
+                recognizer?: string;
+                /** @description The language heard; the tenant's when unset. */
+                language?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description A WAV recording, up to 10 MB */
+        requestBody: {
+            content: {
+                "audio/wav": number[];
+            };
+        };
+        responses: {
+            /** @description What was heard */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Heard"];
                 };
             };
             /** @description An error */

@@ -50,7 +50,7 @@ impl RemoteStt {
         if !options.hints.is_empty() {
             query.push(("hints", options.hints.join(",")));
         }
-        if let Some(provider) = &self.provider {
+        if let Some(provider) = options.provider.as_ref().or(self.provider.as_ref()) {
             query.push(("provider", provider.clone()));
         }
         if streaming {

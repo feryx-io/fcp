@@ -839,6 +839,18 @@ export const speech = {
   deleteAccount: (id: string) => apiClient.delete<void>(`/speech/accounts/${encodeURIComponent(id)}`),
   /** A sentence spoken through the account, as a playable URL. */
   testAccount: (id: string) => apiClient.postBlobUrl(`/speech/accounts/${encodeURIComponent(id)}/test`, {}),
+  /** An account that only hears, tested: the default voice spoken, heard by it. */
+  testHearing: (id: string) =>
+    apiClient.post<{ spoken: string; heard: string }>(`/speech/accounts/${encodeURIComponent(id)}/test`, {}),
+  /** A WAV recording heard by the tenant's recognizer, or the one named
+   *  (docs/TENANT_RECOGNITION.md R2b). */
+  recognize: (wav: Blob, recognizer?: string, language?: string) => {
+    const q = new URLSearchParams()
+    if (recognizer) q.set('recognizer', recognizer)
+    if (language) q.set('language', language)
+    const tail = q.toString()
+    return apiClient.uploadRaw<{ text: string; confidence?: number | null }>(`/speech/recognize${tail ? `?${tail}` : ''}`, wav)
+  },
   // The platform's offer: which of the TTS server's providers tenants may choose.
   platform: () => apiClient.get<PlatformSpeech>('/system/speech'),
   savePlatform: (held_back: string[], prices?: Record<string, number>) =>

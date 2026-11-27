@@ -130,6 +130,9 @@ pub struct ApiState {
 
     /// TTS service for synthesizing prompt audio (optional)
     pub tts_service: Option<Arc<fcp_media::tts::TtsService>>,
+    /// The shared speech server's recognition, for a tenant's preview
+    /// (`docs/TENANT_RECOGNITION.md` R2b); the same server as `tts_service`.
+    pub stt_service: Option<Arc<fcp_media::stt::SttService>>,
 
     /// Auth config for WebSocket first-message authentication (optional).
     /// When set, WebSocket endpoints require a valid token in the first message.
@@ -277,6 +280,7 @@ impl ApiState {
             prompts_dir: None,
             security_policy: SecurityPolicy::default(),
             tts_service: None,
+            stt_service: None,
             auth_config: None,
             session_keys: None,
             session_ttl: fcp_core::session::DEFAULT_SESSION_TTL,
@@ -398,6 +402,12 @@ impl ApiState {
     /// Set the security policy for login protection.
     pub fn with_security_policy(mut self, policy: SecurityPolicy) -> Self {
         self.security_policy = policy;
+        self
+    }
+
+    /// Set the shared server's recognition.
+    pub fn with_stt_service(mut self, stt: Arc<fcp_media::stt::SttService>) -> Self {
+        self.stt_service = Some(stt);
         self
     }
 

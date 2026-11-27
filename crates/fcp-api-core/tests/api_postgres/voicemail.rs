@@ -50,7 +50,22 @@ impl App {
         })
         .await
         .expect("TTS service");
-        self.state = self.state.clone().with_tts_service(Arc::new(tts));
+        // The same server's recognition (docs/TENANT_RECOGNITION.md R2b).
+        let stt = fcp_media::stt::SttService::new(fcp_media::stt::SttConfig {
+            provider: fcp_media::stt::SttProviderConfig::Remote {
+                url: url.to_string(),
+                auth_token: "tts-token".to_string(),
+                provider: None,
+            },
+            language: "en-US".to_string(),
+        })
+        .await
+        .expect("STT service");
+        self.state = self
+            .state
+            .clone()
+            .with_tts_service(Arc::new(tts))
+            .with_stt_service(Arc::new(stt));
         self.router = create_router(self.state.clone(), &test_api_config());
         self
     }
@@ -2364,5 +2379,130 @@ async fn a_tenant_chooses_what_hears_it() {
         )
         .await;
     assert_eq!(default.status, StatusCode::BAD_REQUEST, "{}", default.text);
+    app.finish().await;
+}
+
+/// `docs/TENANT_RECOGNITION.md` R2b: a recording heard as a preview — by the
+/// tenant's recognizer (the server's choice, the tenant named), or one
+/// named; an account that only hears tested by hearing the default voice.
+#[tokio::test]
+async fn a_tenant_hears_a_preview_and_tests_an_account_that_hears() {
+    use axum::routing::{get, post};
+    let router = Router::new()
+        .route(
+            "/v1/providers",
+            get(|| async {
+                axum::Json(json!([
+                    { "name": "piper", "is_default": true, "speaks": true, "hears": false },
+                    { "name": "deepgram", "is_default": false, "speaks": false, "hears": true,
+                      "is_default_recognizer": true },
+                ]))
+            }),
+        )
+        .route(
+            "/v1/synthesize",
+            post(|| async { (StatusCode::OK, wav_bytes(800)) }),
+        )
+        .route(
+            "/v1/transcribe",
+            post(
+                |axum::extract::Query(q): axum::extract::Query<
+                    std::collections::HashMap<String, String>,
+                >| async move {
+                    // What it was asked for, as the text.
+                    axum::Json(json!({
+                        "text": format!(
+                            "{}|{}",
+                            q.get("provider").cloned().unwrap_or_default(),
+                            q.get("tenant_id").cloned().unwrap_or_default(),
+                        ),
+                        "is_final": true,
+                    }))
+                },
+            ),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let app = app.with_tts(&url).await;
+    app.create_user_with_role("hearta", "tenant_admin").await;
+    let login = app.login("hearta", PASSWORD).await;
+    let ta = login.json["token"].as_str().unwrap().to_string();
+    let tenant = app.tenant_a.to_string();
+    let recording = wav_bytes(1600);
+
+    let heard = app
+        .send_raw(
+            &ta,
+            Method::POST,
+            "/api/v1/speech/recognize",
+            "audio/wav",
+            recording.clone(),
+        )
+        .await;
+    assert_eq!(heard.status, StatusCode::OK, "{}", heard.text);
+    assert_eq!(
+        heard.json["text"],
+        format!("|{tenant}"),
+        "the tenant's, chosen there"
+    );
+
+    let made = app
+        .send_as(
+            &ta,
+            Method::POST,
+            "/api/v1/speech/accounts",
+            Some(json!({ "name": "Our ears", "kind": "deepgram", "secret": "dg" })),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let ears = made.json["provider"].as_str().unwrap().to_string();
+    let id = made.json["id"].as_str().unwrap().to_string();
+    let named = app
+        .send_raw(
+            &ta,
+            Method::POST,
+            &format!("/api/v1/speech/recognize?recognizer={ears}"),
+            "audio/wav",
+            recording.clone(),
+        )
+        .await;
+    assert_eq!(named.status, StatusCode::OK, "{}", named.text);
+    assert_eq!(named.json["text"], format!("{ears}|{tenant}"));
+    for (path, body, why) in [
+        (
+            "/api/v1/speech/recognize?recognizer=piper",
+            recording.clone(),
+            "piper does not hear",
+        ),
+        (
+            "/api/v1/speech/recognize",
+            b"not a wav".to_vec(),
+            "not a WAV",
+        ),
+    ] {
+        let r = app
+            .send_raw(&ta, Method::POST, path, "audio/wav", body)
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{why}: {}", r.text);
+    }
+
+    // The account that only hears, tested: the default voice, heard by it.
+    let tested = app
+        .send_as(
+            &ta,
+            Method::POST,
+            &format!("/api/v1/speech/accounts/{id}/test"),
+            None,
+        )
+        .await;
+    assert_eq!(tested.status, StatusCode::OK, "{}", tested.text);
+    assert_eq!(tested.json["spoken"], "This is Our ears.");
+    assert_eq!(tested.json["heard"], format!("{ears}|{tenant}"));
     app.finish().await;
 }
