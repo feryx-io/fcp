@@ -27,6 +27,9 @@ pub struct AppState {
     /// A service per account, built when first spoken with and again when
     /// the account changes; keyed by the account's id.
     pub account_services: AccountServices,
+    /// A recognizer per account that hears (`docs/TENANT_RECOGNITION.md`
+    /// R2), built and rebuilt as the services above.
+    pub account_recognizers: AccountRecognizers,
     /// The platform's providers held back from tenants, as last read.
     pub held_back: HeldBack,
     /// Each tenant's speech counted (`docs/TENANT_SPEECH.md` S4), where
@@ -45,6 +48,17 @@ pub type AccountServices = Arc<
         HashMap<
             (fcp_core::TenantId, uuid::Uuid),
             (std::time::Instant, std::time::SystemTime, Arc<TtsService>),
+        >,
+    >,
+>;
+
+/// Recognizers per tenant account: when each was read, the account's
+/// `updated_at`, the service.
+pub type AccountRecognizers = Arc<
+    tokio::sync::Mutex<
+        HashMap<
+            (fcp_core::TenantId, uuid::Uuid),
+            (std::time::Instant, std::time::SystemTime, Arc<SttService>),
         >,
     >,
 >;
@@ -208,6 +222,96 @@ impl AppState {
     pub fn stt_service(&self, name: Option<&str>) -> Option<&Arc<SttService>> {
         self.stt.get(name.or(self.stt_default.as_deref())?)
     }
+
+    /// `tenant`'s own account `id` as a recognizer, when the tenant has it
+    /// and it hears; `Err` says why not. Read at most every [`SPEECH_TTL`]
+    /// and rebuilt when the account changed, as [`Self::account_service`].
+    pub async fn account_recognizer(
+        &self,
+        tenant: &str,
+        id: uuid::Uuid,
+    ) -> Result<Arc<SttService>, String> {
+        let store = self
+            .accounts
+            .as_ref()
+            .ok_or("this server has no database for tenants' accounts")?;
+        let tenant: fcp_core::TenantId = tenant
+            .parse()
+            .or_else(|_| format!("tenant-{tenant}").parse())
+            .map_err(|_| "a tenant names the account".to_string())?;
+        let mut recognizers = self.account_recognizers.lock().await;
+        let key = (tenant, id);
+        if let Some((at, _, service)) = recognizers.get(&key) {
+            if at.elapsed() < SPEECH_TTL {
+                return Ok(Arc::clone(service));
+            }
+        }
+        let account = store
+            .get_speech_account(&tenant, &id)
+            .await
+            .map_err(|e| format!("the account could not be read: {e:#}"))?
+            .ok_or("no such account for this tenant")?;
+        if let Some((_, updated, service)) = recognizers.get(&key) {
+            if *updated == account.updated_at {
+                let service = Arc::clone(service);
+                recognizers.insert(
+                    key,
+                    (
+                        std::time::Instant::now(),
+                        account.updated_at,
+                        Arc::clone(&service),
+                    ),
+                );
+                return Ok(service);
+            }
+        }
+        let provider = recognizer_of(&account)?;
+        let service = SttService::new(fcp_media::stt::SttConfig {
+            provider,
+            language: self.config.stt.language.clone(),
+        })
+        .await
+        .map_err(|e| format!("the account cannot hear: {e:#}"))?;
+        let service = Arc::new(service);
+        recognizers.insert(
+            key,
+            (
+                std::time::Instant::now(),
+                account.updated_at,
+                Arc::clone(&service),
+            ),
+        );
+        Ok(service)
+    }
+}
+
+/// The recognizer an account hears through (`docs/TENANT_RECOGNITION.md`
+/// Q3–Q4): OpenAI's transcription with its key, Deepgram's; the other kinds
+/// only speak. The account's `model` is its voice model for OpenAI, so its
+/// recognition is OpenAI's default; Deepgram's `model` is its own.
+pub fn recognizer_of(
+    a: &fcp_core::speech::SpeechAccount,
+) -> Result<fcp_media::stt::SttProviderConfig, String> {
+    use fcp_core::speech::SpeechAccountKind as K;
+    use fcp_media::stt::SttProviderConfig as P;
+    let secret = a
+        .secret
+        .clone()
+        .filter(|s| !s.is_empty())
+        .ok_or("the account has no key")?;
+    Ok(match a.kind {
+        K::Openai => P::OpenAi {
+            api_key: secret,
+            model: "whisper-1".into(),
+            base_url: a.endpoint.clone(),
+        },
+        K::Deepgram => P::Deepgram {
+            api_key: secret,
+            model: a.model.clone().unwrap_or_else(|| "nova-3".into()),
+            base_url: a.endpoint.clone(),
+        },
+        k => return Err(format!("a {} account does not hear", k.as_str())),
+    })
 }
 
 /// The provider an account speaks through.
@@ -250,6 +354,7 @@ pub fn provider_of(
             endpoint: a.endpoint.clone(),
         },
         K::GoogleCloud => P::GoogleCloud { api_key: secret },
+        K::Deepgram => return Err("a Deepgram account hears; it does not speak".into()),
     })
 }
 
@@ -313,6 +418,7 @@ mod tests {
             speech_cache: Default::default(),
             accounts: None,
             account_services: Default::default(),
+            account_recognizers: Default::default(),
             held_back: Default::default(),
             usage: None,
         };

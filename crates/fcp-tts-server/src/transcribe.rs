@@ -60,19 +60,21 @@ impl TranscribeQuery {
     }
 
     /// The options, with what the request left unset taken from its
-    /// tenant: the language its words are spoken in, until a recognition
-    /// language of its own (R2); else the provider's default.
-    async fn resolved(&self, state: &AppState, service: &SttService) -> SttOptions {
+    /// tenant: the language it is heard in (`docs/TENANT_RECOGNITION.md`);
+    /// else the recognizer's default, always told to a provider behind it.
+    fn resolved(
+        &self,
+        tenant: Option<&fcp_core::speech::TenantSpeech>,
+        service: &SttService,
+    ) -> SttOptions {
         let mut options = self.options();
         if options.language.is_none() {
-            options.language = state
-                .tenant_speech(self.tenant_id.as_deref())
-                .await
-                .and_then(|t| t.language)
-                .filter(|l| !l.trim().is_empty())
-                // Here the choosing ends: a provider behind this one is
-                // told a language, never left to pick.
-                .or_else(|| Some(service.language().to_string()));
+            options.language = Some(
+                tenant
+                    .and_then(|t| t.heard_language())
+                    .unwrap_or(service.language())
+                    .to_string(),
+            );
         }
         options
     }
@@ -82,29 +84,57 @@ fn error(status: StatusCode, message: String) -> Response {
     (status, Json(serde_json::json!({ "error": message }))).into_response()
 }
 
-/// The provider a request names, or why there is none.
-fn service(
+/// What hears a request (`docs/TENANT_RECOGNITION.md` R2), and the
+/// tenant's settings: the recognizer it names; else the tenant's choice —
+/// one of the server's that is offered, or the tenant's own account that
+/// hears — falling back to the server's default when that cannot hear, so
+/// a Gather is never deaf; a recognizer a request names that cannot hear
+/// says why.
+async fn service(
     state: &AppState,
     query: &TranscribeQuery,
-) -> Result<Arc<SttService>, (StatusCode, String)> {
-    if state.stt.is_empty() {
-        return Err((
+) -> Result<(Arc<SttService>, Option<fcp_core::speech::TenantSpeech>), (StatusCode, String)> {
+    let tenant = state.tenant_speech(query.tenant_id.as_deref()).await;
+    let named = query.provider.as_deref().filter(|p| !p.is_empty());
+    let chosen = named.or_else(|| tenant.as_ref().and_then(|t| t.recognizer.as_deref()));
+    let refuse = |why: String| Err((StatusCode::BAD_REQUEST, why));
+    if let Some(p) = chosen {
+        match fcp_core::speech::account_of(p) {
+            Some(id) => match query.tenant_id.as_deref() {
+                Some(t) => match state.account_recognizer(t, id).await {
+                    Ok(s) => return Ok((s, tenant)),
+                    Err(why) if named.is_some() => return refuse(why),
+                    Err(why) => {
+                        warn!(account = %id, why = %why, "A tenant's account cannot hear; the default hears");
+                    }
+                },
+                None if named.is_some() => {
+                    return refuse("an account hears for its tenant only".into())
+                }
+                None => {}
+            },
+            None => {
+                // The tenant's own choice of the platform's is held to what
+                // the platform offers; a named one (a preview the admin
+                // checked) is not.
+                let offered = named.is_some() || !state.held_back().await.iter().any(|h| h == p);
+                match state.stt.get(p) {
+                    Some(s) if offered => return Ok((Arc::clone(s), tenant)),
+                    _ if named.is_some() => {
+                        return refuse(format!("unknown speech provider '{p}'"))
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    match state.stt_service(None) {
+        Some(s) => Ok((Arc::clone(s), tenant)),
+        None => Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "speech recognition is not configured ([stt.providers])".into(),
-        ));
+        )),
     }
-    state
-        .stt_service(query.provider.as_deref())
-        .cloned()
-        .ok_or_else(|| {
-            (
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "unknown speech provider '{}'",
-                    query.provider.as_deref().unwrap_or_default()
-                ),
-            )
-        })
 }
 
 /// `POST /v1/transcribe`: a WAV file in the body, one final transcript
@@ -114,7 +144,7 @@ pub async fn transcribe(
     Query(query): Query<TranscribeQuery>,
     body: Bytes,
 ) -> Response {
-    let service = match service(&state, &query) {
+    let (service, tenant) = match service(&state, &query).await {
         Ok(s) => s,
         Err((status, message)) => return error(status, message),
     };
@@ -124,7 +154,7 @@ pub async fn transcribe(
         Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
     let seconds = pcm.len() as f32 / stt::STT_SAMPLE_RATE as f32;
-    let options = query.resolved(&state, &service).await;
+    let options = query.resolved(tenant.as_ref(), &service);
     match service.transcribe_pcm(&pcm, &options).await {
         Ok(transcript) => {
             info!(
@@ -150,11 +180,11 @@ pub async fn transcribe_stream(
     Query(query): Query<TranscribeQuery>,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    let service = match service(&state, &query) {
+    let (service, tenant) = match service(&state, &query).await {
         Ok(s) => s,
         Err((status, message)) => return error(status, message),
     };
-    let options = query.resolved(&state, &service).await;
+    let options = query.resolved(tenant.as_ref(), &service);
     upgrade.on_upgrade(move |socket| stream_session(socket, service, options))
 }
 
@@ -244,6 +274,7 @@ mod tests {
             speech_cache: Default::default(),
             accounts: None,
             account_services: Default::default(),
+            account_recognizers: Default::default(),
             held_back: Default::default(),
             usage: None,
             config: base.config.clone(),
@@ -286,5 +317,154 @@ mod tests {
             .map(|r| r.query.get("language").cloned().unwrap_or_default())
             .collect();
         assert_eq!(languages, ["fr-CA", "es-ES", "en-US", "en-US"]);
+    }
+
+    /// `docs/TENANT_RECOGNITION.md` R2: the tenant's recognizer hears it —
+    /// one of the server's, or its own account that hears — in its
+    /// recognition language; one held back, or an account that cannot
+    /// hear, leaves the default to hear; a request naming one that cannot
+    /// is refused.
+    #[tokio::test]
+    async fn a_tenant_is_heard_by_the_recognizer_it_chose() {
+        use axum::routing::post;
+        let primary = ScriptedStt::start("up", &[(700, "primary")]).await;
+        let alt = ScriptedStt::start("up", &[(700, "alt")]).await;
+        // OpenAI's transcription, as the tenant's own account reaches it.
+        let router = axum::Router::new().route(
+            "/v1/audio/transcriptions",
+            post(|| async { Json(serde_json::json!({ "text": "the account" })) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let openai = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let remote = |url: &str| {
+            let url = url.to_string();
+            async move {
+                Arc::new(
+                    SttService::new(SttConfig {
+                        provider: SttProviderConfig::Remote {
+                            url,
+                            auth_token: "up".into(),
+                            provider: None,
+                        },
+                        language: "en-US".into(),
+                    })
+                    .await
+                    .unwrap(),
+                )
+            }
+        };
+        let now = std::time::SystemTime::now();
+        // From JSON, so a field the account gains later takes its default.
+        let account =
+            |t: fcp_core::TenantId, kind: fcp_core::speech::SpeechAccountKind, id: uuid::Uuid| {
+                serde_json::from_value::<fcp_core::speech::SpeechAccount>(serde_json::json!({
+                    "id": id,
+                    "tenant_id": t,
+                    "name": "ours",
+                    "kind": kind,
+                    "endpoint": openai,
+                    "secret": "sk",
+                    "created_at": now,
+                    "updated_at": now,
+                }))
+                .unwrap()
+            };
+        let (a, b, c, d) = (
+            fcp_core::TenantId::new(),
+            fcp_core::TenantId::new(),
+            fcp_core::TenantId::new(),
+            fcp_core::TenantId::new(),
+        );
+        let (hears, speaks) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let settings = |t, recognizer: &str, language: Option<&str>| {
+            let mut s = fcp_core::speech::TenantSpeech::defaults(t);
+            s.recognizer = Some(recognizer.into());
+            s.language = Some("de-DE".into());
+            s.recognition_language = language.map(String::from);
+            (t, s)
+        };
+        let base = test_state().await;
+        let state = Arc::new(AppState {
+            services: base.services.clone(),
+            speech: Some(Arc::new(Settings(
+                [
+                    settings(a, "alt", Some("fr-CA")),
+                    settings(b, &format!("account:{hears}"), None),
+                    settings(c, &format!("account:{speaks}"), None),
+                    settings(d, "held", None),
+                ]
+                .into_iter()
+                .collect(),
+            ))),
+            speech_cache: Default::default(),
+            accounts: Some(Arc::new(crate::routes::tests::Accounts(vec![
+                account(b, fcp_core::speech::SpeechAccountKind::Openai, hears),
+                account(c, fcp_core::speech::SpeechAccountKind::Elevenlabs, speaks),
+            ]))),
+            account_services: Default::default(),
+            account_recognizers: Default::default(),
+            held_back: Arc::new(std::sync::Mutex::new(Some((
+                std::time::Instant::now(),
+                vec!["held".to_string()],
+            )))),
+            usage: None,
+            config: base.config.clone(),
+            default_provider: base.default_provider.clone(),
+            stt: [
+                ("primary".to_string(), remote(primary.url()).await),
+                ("alt".to_string(), remote(alt.url()).await),
+                ("held".to_string(), remote(alt.url()).await),
+            ]
+            .into_iter()
+            .collect(),
+            stt_default: Some("primary".into()),
+        });
+        let tone: Vec<i16> = (0..16 * 400)
+            .map(|i| {
+                (9000.0 * (2.0 * std::f64::consts::PI * 700.0 * i as f64 / 16_000.0).sin()) as i16
+            })
+            .collect();
+        let hear = |tenant: fcp_core::TenantId, provider: Option<&str>| {
+            let state = Arc::clone(&state);
+            let query = TranscribeQuery {
+                tenant_id: Some(tenant.to_string()),
+                provider: provider.map(String::from),
+                ..Default::default()
+            };
+            let body = Bytes::from(wav_bytes(&tone));
+            async move {
+                let r = transcribe(State(state), Query(query), body).await;
+                let status = r.status();
+                let body = axum::body::to_bytes(r.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+                (status, v["text"].as_str().unwrap_or_default().to_string())
+            }
+        };
+        // Its own pick of the server's, in its recognition language.
+        assert_eq!(hear(a, None).await, (StatusCode::OK, "alt".into()));
+        // Its own account that hears.
+        assert_eq!(hear(b, None).await, (StatusCode::OK, "the account".into()));
+        // An account that only speaks, and one held back: the default.
+        assert_eq!(hear(c, None).await, (StatusCode::OK, "primary".into()));
+        assert_eq!(hear(d, None).await, (StatusCode::OK, "primary".into()));
+        // Named and unable to hear: refused.
+        let named = format!("account:{speaks}");
+        assert_eq!(hear(c, Some(&named)).await.0, StatusCode::BAD_REQUEST);
+        let languages: Vec<String> = alt
+            .requests()
+            .iter()
+            .map(|r| r.query.get("language").cloned().unwrap_or_default())
+            .collect();
+        assert_eq!(languages, ["fr-CA"]);
+        let languages: Vec<String> = primary
+            .requests()
+            .iter()
+            .map(|r| r.query.get("language").cloned().unwrap_or_default())
+            .collect();
+        // No recognition language of their own: their speech language.
+        assert_eq!(languages, ["de-DE", "de-DE"]);
     }
 }

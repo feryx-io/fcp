@@ -182,6 +182,7 @@ async fn main() -> Result<()> {
         speech_cache: Default::default(),
         accounts,
         account_services: Default::default(),
+        account_recognizers: Default::default(),
         held_back: Default::default(),
         usage,
     });

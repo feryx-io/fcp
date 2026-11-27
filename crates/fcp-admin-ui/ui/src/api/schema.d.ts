@@ -10655,6 +10655,10 @@ export interface components {
         OfferedProvider: {
             name: string;
             is_default: boolean;
+            /** @description Whether it speaks, and whether it hears (`docs/TENANT_RECOGNITION.md`). */
+            speaks: boolean;
+            hears: boolean;
+            is_default_recognizer: boolean;
             /** @description Whether tenants may choose it. */
             offered: boolean;
             /**
@@ -13017,6 +13021,12 @@ export interface components {
                 is_default: boolean;
                 /** @description One of the tenant's own accounts (`docs/TENANT_SPEECH.md` S3). */
                 account: boolean;
+                /** @description Whether it speaks: a voice provider (`docs/TENANT_RECOGNITION.md`). */
+                speaks: boolean;
+                /** @description Whether it hears: a recognizer. */
+                hears: boolean;
+                /** @description The server's default recognizer. */
+                is_default_recognizer: boolean;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -15193,7 +15203,7 @@ export interface components {
          * @description The vendors a tenant may bring an account with.
          * @enum {string}
          */
-        SpeechAccountKind: "openai" | "elevenlabs" | "azure" | "aws_polly" | "google_cloud";
+        SpeechAccountKind: "openai" | "elevenlabs" | "azure" | "aws_polly" | "google_cloud" | "deepgram";
         /**
          * @description An account to make or change. On a change, an unset `secret` keeps the
          *     one kept.
@@ -15309,6 +15319,12 @@ export interface components {
             is_default: boolean;
             /** @description One of the tenant's own accounts (`docs/TENANT_SPEECH.md` S3). */
             account: boolean;
+            /** @description Whether it speaks: a voice provider (`docs/TENANT_RECOGNITION.md`). */
+            speaks: boolean;
+            /** @description Whether it hears: a recognizer. */
+            hears: boolean;
+            /** @description The server's default recognizer. */
+            is_default_recognizer: boolean;
         };
         /** @description The settings to keep; null or absent is the platform's default. */
         SpeechSettingsRequest: {
@@ -15318,6 +15334,8 @@ export interface components {
             voices?: {
                 [key: string]: string;
             };
+            recognizer?: string | null;
+            recognition_language?: string | null;
         };
         /** @description The tenant's speech settings; nothing set is the platform's defaults. */
         SpeechSettingsResponse: {
@@ -15332,6 +15350,17 @@ export interface components {
             voices: {
                 [key: string]: string;
             };
+            /**
+             * @description What hears the tenant (`docs/TENANT_RECOGNITION.md`): one of the
+             *     server's recognizers or an account of the tenant's that hears; null
+             *     is the server's default.
+             */
+            recognizer?: string | null;
+            /**
+             * @description What the tenant is heard in when a request names nothing; null is
+             *     `language`.
+             */
+            recognition_language?: string | null;
             /** @description False until the tenant saved settings. */
             configured: boolean;
             /** Format: date-time */

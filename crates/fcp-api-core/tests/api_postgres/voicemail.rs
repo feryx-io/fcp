@@ -2235,3 +2235,134 @@ async fn speech_caps_are_carried_to_a_tenant_s_sites() {
     assert!(app.storage.all_speech_caps().await.unwrap().is_empty());
     app.finish().await;
 }
+
+/// `docs/TENANT_RECOGNITION.md` R2: a tenant chooses what hears it — one of
+/// the server's recognizers the platform offers, or its own account that
+/// hears (Deepgram) — and the language it is heard in; a voice provider
+/// that cannot speak, or a recognizer that cannot hear, is refused; the
+/// default recognizer cannot be held back.
+#[tokio::test]
+async fn a_tenant_chooses_what_hears_it() {
+    use axum::routing::get;
+    let router = Router::new().route(
+        "/v1/providers",
+        get(|| async {
+            axum::Json(json!([
+                { "name": "piper", "is_default": true, "speaks": true, "hears": false },
+                { "name": "deepgram", "is_default": false, "speaks": false, "hears": true,
+                  "is_default_recognizer": true },
+                { "name": "whisper", "is_default": false, "speaks": false, "hears": true },
+            ]))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let app = app.with_tts(&url).await;
+    app.create_user_with_role("heardta", "tenant_admin").await;
+    let login = app.login("heardta", PASSWORD).await;
+    let ta = login.json["token"].as_str().unwrap().to_string();
+
+    let made = app
+        .send_as(
+            &ta,
+            Method::POST,
+            "/api/v1/speech/accounts",
+            Some(json!({ "name": "Our ears", "kind": "deepgram", "secret": "dg" })),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let ears = made.json["provider"].as_str().unwrap().to_string();
+
+    let providers = app
+        .send_as(&ta, Method::GET, "/api/v1/speech/providers", None)
+        .await;
+    assert_eq!(providers.status, StatusCode::OK, "{}", providers.text);
+    let find = |name: &str| {
+        providers
+            .json
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("{name}: {}", providers.text))
+    };
+    assert_eq!(
+        (find(&ears)["speaks"].clone(), find(&ears)["hears"].clone()),
+        (json!(false), json!(true))
+    );
+    assert_eq!(find("deepgram")["is_default_recognizer"], true);
+    assert_eq!(find("piper")["hears"], false);
+
+    let put = |body: Value| {
+        let ta = ta.clone();
+        let app = &app;
+        async move {
+            app.send_as(&ta, Method::PUT, "/api/v1/speech/settings", Some(body))
+                .await
+        }
+    };
+    let kept = put(json!({ "recognizer": ears, "recognition_language": "fr-CA" })).await;
+    assert_eq!(kept.status, StatusCode::OK, "{}", kept.text);
+    assert_eq!(kept.json["recognizer"], ears.as_str());
+    assert_eq!(kept.json["recognition_language"], "fr-CA");
+    let read = app
+        .send_as(&ta, Method::GET, "/api/v1/speech/settings", None)
+        .await;
+    assert_eq!(read.json["recognizer"], ears.as_str(), "{}", read.text);
+    for (body, why) in [
+        (
+            json!({ "provider": ears }),
+            "a Deepgram account does not speak",
+        ),
+        (json!({ "recognizer": "piper" }), "piper does not hear"),
+        (json!({ "recognizer": "nope" }), "no such recognizer"),
+    ] {
+        let r = put(body).await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{why}: {}", r.text);
+    }
+    assert_eq!(
+        put(json!({ "recognizer": "whisper" })).await.status,
+        StatusCode::OK
+    );
+
+    // Held back: not the tenant's to choose; the default recognizer never.
+    let held = app
+        .admin(
+            Method::PUT,
+            "/api/v1/system/speech",
+            Some(json!({ "held_back": ["whisper"] })),
+        )
+        .await;
+    assert_eq!(held.status, StatusCode::OK, "{}", held.text);
+    let offer = held.json["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "whisper")
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        (offer["hears"].clone(), offer["offered"].clone()),
+        (json!(true), json!(false))
+    );
+    assert_eq!(
+        put(json!({ "recognizer": "whisper" })).await.status,
+        StatusCode::FORBIDDEN
+    );
+    let default = app
+        .admin(
+            Method::PUT,
+            "/api/v1/system/speech",
+            Some(json!({ "held_back": ["deepgram"] })),
+        )
+        .await;
+    assert_eq!(default.status, StatusCode::BAD_REQUEST, "{}", default.text);
+    app.finish().await;
+}

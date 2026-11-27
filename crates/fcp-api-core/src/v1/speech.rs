@@ -35,6 +35,13 @@ pub struct SpeechSettingsResponse {
     pub language: Option<String>,
     /// A voice per language (`es` or `es-ES`), over `voice`.
     pub voices: BTreeMap<String, String>,
+    /// What hears the tenant (`docs/TENANT_RECOGNITION.md`): one of the
+    /// server's recognizers or an account of the tenant's that hears; null
+    /// is the server's default.
+    pub recognizer: Option<String>,
+    /// What the tenant is heard in when a request names nothing; null is
+    /// `language`.
+    pub recognition_language: Option<String>,
     /// False until the tenant saved settings.
     pub configured: bool,
     #[serde(with = "crate::time::rfc3339")]
@@ -50,6 +57,8 @@ impl SpeechSettingsResponse {
             voice: s.voice,
             language: s.language,
             voices: s.voices,
+            recognizer: s.recognizer,
+            recognition_language: s.recognition_language,
             configured,
             updated_at: s.updated_at,
         }
@@ -67,6 +76,10 @@ pub struct SpeechSettingsRequest {
     pub language: Option<String>,
     #[serde(default)]
     pub voices: BTreeMap<String, String>,
+    #[serde(default)]
+    pub recognizer: Option<String>,
+    #[serde(default)]
+    pub recognition_language: Option<String>,
 }
 
 /// A name the TTS server might know: letters, digits, `-`, `_`, `.`, `:`.
@@ -146,12 +159,18 @@ pub async fn put_settings(
     }
     let provider = checked("provider", req.provider)?;
     known_provider(&state, &identity, &tenant.0, provider.as_deref()).await?;
+    able(&state, &tenant.0, provider.as_deref(), Ability::Speaks).await?;
+    let recognizer = checked("recognizer", req.recognizer)?;
+    known_provider(&state, &identity, &tenant.0, recognizer.as_deref()).await?;
+    able(&state, &tenant.0, recognizer.as_deref(), Ability::Hears).await?;
     let speech = TenantSpeech {
         tenant_id: tenant.0,
         provider,
         voice: checked("voice", req.voice)?,
         language: checked("language", req.language)?,
         voices,
+        recognizer,
+        recognition_language: checked("recognition_language", req.recognition_language)?,
         updated_at: SystemTime::now(),
     };
     store(&state)?
@@ -219,6 +238,12 @@ pub struct SpeechProvider {
     pub is_default: bool,
     /// One of the tenant's own accounts (`docs/TENANT_SPEECH.md` S3).
     pub account: bool,
+    /// Whether it speaks: a voice provider (`docs/TENANT_RECOGNITION.md`).
+    pub speaks: bool,
+    /// Whether it hears: a recognizer.
+    pub hears: bool,
+    /// The server's default recognizer.
+    pub is_default_recognizer: bool,
 }
 
 /// GET /speech/providers — the TTS server's providers.
@@ -252,13 +277,16 @@ pub async fn list_providers(
             name: p.name,
             is_default: p.is_default,
             account: false,
+            speaks: p.speaks,
+            hears: p.hears,
+            is_default_recognizer: p.is_default_recognizer,
         })
         .collect();
     list.sort_by(|a, b| b.is_default.cmp(&a.is_default).then(a.name.cmp(&b.name)));
-    // A tenant sees what the platform offers it; the default always is.
+    // A tenant sees what the platform offers it; the defaults always are.
     if !identity.is_platform_admin() {
         let held = held_back(&state).await?;
-        list.retain(|p| p.is_default || !held.contains(&p.name));
+        list.retain(|p| p.is_default || p.is_default_recognizer || !held.contains(&p.name));
     }
     // Then the tenant's own accounts, by name.
     if let Ok(store) = accounts(&state) {
@@ -268,9 +296,12 @@ pub async fn list_providers(
             .map_err(|e| ApiError::Internal(e.to_string()))?;
         list.extend(mine.into_iter().map(|a| SpeechProvider {
             name: format!("{ACCOUNT_PREFIX}{}", a.id),
+            speaks: a.kind.speaks(),
+            hears: a.kind.hears(),
             label: a.name,
             is_default: false,
             account: true,
+            is_default_recognizer: false,
         }));
     }
     let total = list.len() as u64;
@@ -762,6 +793,63 @@ async fn known_provider(
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ability {
+    Speaks,
+    Hears,
+}
+
+/// A provider chosen to speak, or a recognizer chosen to hear, can: an
+/// account by its kind, one of the server's by what the server says (when
+/// it answers) (`docs/TENANT_RECOGNITION.md` R2).
+async fn able(
+    state: &ApiState,
+    tenant: &fcp_core::TenantId,
+    provider: Option<&str>,
+    ability: Ability,
+) -> Result<(), ApiError> {
+    let Some(p) = provider else { return Ok(()) };
+    let what = match ability {
+        Ability::Speaks => "speak",
+        Ability::Hears => "hear",
+    };
+    let can = match fcp_core::speech::account_of(p) {
+        Some(id) => match accounts(state)?
+            .get_speech_account(tenant, &id)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+        {
+            Some(a) => match ability {
+                Ability::Speaks => a.kind.speaks(),
+                Ability::Hears => a.kind.hears(),
+            },
+            None => true,
+        },
+        None => match state.tts_service.as_ref() {
+            Some(tts) => match tts.providers().await {
+                Ok(list) => match list.iter().find(|x| x.name == p) {
+                    Some(x) => match ability {
+                        Ability::Speaks => x.speaks,
+                        Ability::Hears => x.hears,
+                    },
+                    None => {
+                        return Err(ApiError::BadRequest(format!(
+                            "The speech server has no provider {p}"
+                        )))
+                    }
+                },
+                Err(_) => true,
+            },
+            None => true,
+        },
+    };
+    if can {
+        Ok(())
+    } else {
+        Err(ApiError::BadRequest(format!("{p} does not {what}")))
+    }
+}
+
 /// The platform's providers held back from tenants.
 async fn held_back(state: &ApiState) -> Result<Vec<String>, ApiError> {
     match state.storage.as_ref().and_then(|s| s.speech_store()) {
@@ -820,6 +908,10 @@ pub async fn test_account(
 pub struct OfferedProvider {
     pub name: String,
     pub is_default: bool,
+    /// Whether it speaks, and whether it hears (`docs/TENANT_RECOGNITION.md`).
+    pub speaks: bool,
+    pub hears: bool,
+    pub is_default_recognizer: bool,
     /// Whether tenants may choose it.
     pub offered: bool,
     /// What the platform charges tenants per million characters, for an
@@ -879,7 +971,10 @@ async fn platform_speech(state: &ApiState) -> Result<PlatformSpeech, ApiError> {
         providers: providers
             .into_iter()
             .map(|p| OfferedProvider {
-                offered: p.is_default || !held_back.contains(&p.name),
+                offered: p.is_default || p.is_default_recognizer || !held_back.contains(&p.name),
+                speaks: p.speaks,
+                hears: p.hears,
+                is_default_recognizer: p.is_default_recognizer,
                 price_per_million: prices.get(&p.name).copied(),
                 name: p.name,
                 is_default: p.is_default,
@@ -948,10 +1043,10 @@ pub async fn put_platform(
         if let Ok(providers) = tts.providers().await {
             if providers
                 .iter()
-                .any(|p| p.is_default && held.contains(&p.name))
+                .any(|p| (p.is_default || p.is_default_recognizer) && held.contains(&p.name))
             {
                 return Err(ApiError::BadRequest(
-                    "The default provider speaks for tenants that choose none: it cannot be held back"
+                    "The default provider and recognizer serve tenants that choose none: neither can be held back"
                         .into(),
                 ));
             }

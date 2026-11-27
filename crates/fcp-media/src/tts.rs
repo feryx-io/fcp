@@ -580,6 +580,9 @@ pub trait TtsProvider: Send + Sync {
         Ok(vec![ProviderInfo {
             name: self.name(),
             is_default: true,
+            speaks: true,
+            hears: false,
+            is_default_recognizer: false,
         }])
     }
 
@@ -602,8 +605,23 @@ pub trait TtsProvider: Send + Sync {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderInfo {
     pub name: String,
+    /// The default voice provider.
     #[serde(default)]
     pub is_default: bool,
+    /// Whether it speaks (`docs/TENANT_RECOGNITION.md`); a server from
+    /// before says nothing, and spoke only.
+    #[serde(default = "yes")]
+    pub speaks: bool,
+    /// Whether it hears.
+    #[serde(default)]
+    pub hears: bool,
+    /// The default recognizer.
+    #[serde(default)]
+    pub is_default_recognizer: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// Information about a TTS voice.

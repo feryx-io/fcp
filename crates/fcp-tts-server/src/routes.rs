@@ -274,21 +274,39 @@ pub async fn list_voices(
 // GET /v1/providers
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize)]
-pub struct ProviderInfo {
-    name: String,
-    is_default: bool,
-}
+use fcp_media::tts::ProviderInfo;
 
+/// The server's voice providers and recognizers (`docs/TENANT_RECOGNITION.md`
+/// R2), one entry for a name that does both.
 pub async fn list_providers(State(state): State<Arc<AppState>>) -> Json<Vec<ProviderInfo>> {
-    let list: Vec<ProviderInfo> = state
+    let mut list: Vec<ProviderInfo> = state
         .services
         .keys()
         .map(|name| ProviderInfo {
             name: name.clone(),
             is_default: name == &state.default_provider,
+            speaks: true,
+            hears: false,
+            is_default_recognizer: false,
         })
         .collect();
+    for name in state.stt.keys() {
+        let default = state.stt_default.as_deref() == Some(name.as_str())
+            || (state.stt_default.is_none() && state.stt.len() == 1);
+        match list.iter_mut().find(|p| &p.name == name) {
+            Some(p) => {
+                p.hears = true;
+                p.is_default_recognizer = default;
+            }
+            None => list.push(ProviderInfo {
+                name: name.clone(),
+                is_default: false,
+                speaks: false,
+                hears: true,
+                is_default_recognizer: default,
+            }),
+        }
+    }
     Json(list)
 }
 
@@ -430,6 +448,7 @@ pub(crate) mod tests {
             speech_cache: Default::default(),
             accounts: None,
             account_services: Default::default(),
+            account_recognizers: Default::default(),
             held_back: Default::default(),
             usage: None,
         })
@@ -569,6 +588,7 @@ pub(crate) mod tests {
             speech_cache: Default::default(),
             accounts: None,
             account_services: Default::default(),
+            account_recognizers: Default::default(),
             held_back: Default::default(),
             usage: None,
             config: base.config.clone(),
@@ -664,7 +684,7 @@ pub(crate) mod tests {
     }
 
     /// A tenant's accounts in memory.
-    struct Accounts(Vec<fcp_core::speech::SpeechAccount>);
+    pub(crate) struct Accounts(pub(crate) Vec<fcp_core::speech::SpeechAccount>);
 
     #[async_trait::async_trait]
     impl fcp_core::speech::SpeechAccountStore for Accounts {
@@ -746,6 +766,7 @@ pub(crate) mod tests {
             speech_cache: Default::default(),
             accounts: Some(Arc::new(Accounts(vec![account.clone()]))),
             account_services: Default::default(),
+            account_recognizers: Default::default(),
             held_back: Default::default(),
             usage: None,
             config: base.config.clone(),
@@ -813,6 +834,7 @@ pub(crate) mod tests {
             speech_cache: Default::default(),
             accounts: None,
             account_services: Default::default(),
+            account_recognizers: Default::default(),
             held_back: Arc::new(std::sync::Mutex::new(Some((
                 std::time::Instant::now(),
                 vec!["costly".to_string()],
@@ -905,6 +927,7 @@ pub(crate) mod tests {
             speech_cache: Default::default(),
             accounts: None,
             account_services: Default::default(),
+            account_recognizers: Default::default(),
             held_back: Default::default(),
             usage: Some(usage),
             config: base.config.clone(),

@@ -27,6 +27,9 @@ class OfferedProvider:
         Attributes:
             name (str):
             is_default (bool):
+            speaks (bool): Whether it speaks, and whether it hears (`docs/TENANT_RECOGNITION.md`).
+            hears (bool):
+            is_default_recognizer (bool):
             offered (bool): Whether tenants may choose it.
             price_per_million (float | None | Unset): What the platform charges tenants per million characters, for an
                 estimated cost beside their usage (`docs/SPEECH_CAPS.md`).
@@ -34,6 +37,9 @@ class OfferedProvider:
 
     name: str
     is_default: bool
+    speaks: bool
+    hears: bool
+    is_default_recognizer: bool
     offered: bool
     price_per_million: float | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -46,6 +52,12 @@ class OfferedProvider:
         name = self.name
 
         is_default = self.is_default
+
+        speaks = self.speaks
+
+        hears = self.hears
+
+        is_default_recognizer = self.is_default_recognizer
 
         offered = self.offered
 
@@ -61,6 +73,9 @@ class OfferedProvider:
         field_dict.update({
             "name": name,
             "is_default": is_default,
+            "speaks": speaks,
+            "hears": hears,
+            "is_default_recognizer": is_default_recognizer,
             "offered": offered,
         })
         if price_per_million is not UNSET:
@@ -77,6 +92,12 @@ class OfferedProvider:
 
         is_default = d.pop("is_default")
 
+        speaks = d.pop("speaks")
+
+        hears = d.pop("hears")
+
+        is_default_recognizer = d.pop("is_default_recognizer")
+
         offered = d.pop("offered")
 
         def _parse_price_per_million(data: object) -> float | None | Unset:
@@ -92,6 +113,9 @@ class OfferedProvider:
         offered_provider = cls(
             name=name,
             is_default=is_default,
+            speaks=speaks,
+            hears=hears,
+            is_default_recognizer=is_default_recognizer,
             offered=offered,
             price_per_million=price_per_million,
         )
