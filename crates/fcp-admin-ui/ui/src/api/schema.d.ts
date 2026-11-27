@@ -10657,6 +10657,12 @@ export interface components {
             is_default: boolean;
             /** @description Whether tenants may choose it. */
             offered: boolean;
+            /**
+             * Format: double
+             * @description What the platform charges tenants per million characters, for an
+             *     estimated cost beside their usage (`docs/SPEECH_CAPS.md`).
+             */
+            price_per_million?: number | null;
         };
         /** @description A user's own statuses in a new order: every id, once. */
         OrderStatusesRequest: {
@@ -12934,6 +12940,12 @@ export interface components {
                 access_key_id?: string | null;
                 /** @description Whether a key is kept; the key itself is never returned. */
                 has_key: boolean;
+                /**
+                 * Format: double
+                 * @description What the vendor charges per million characters, for an estimated
+                 *     cost (`docs/SPEECH_CAPS.md`).
+                 */
+                price_per_million?: number | null;
                 created_at: string;
                 updated_at: string;
             }[];
@@ -13032,6 +13044,12 @@ export interface components {
                  * @description What the provider spoke, and bills for; the rest came from the cache.
                  */
                 synthesized_characters: number;
+                /**
+                 * Format: double
+                 * @description The synthesized characters at the provider's price per million
+                 *     (the platform's, or the account's own), where one is set.
+                 */
+                estimated_cost?: number | null;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -13772,6 +13790,13 @@ export interface components {
         };
         PlatformSpeechRequest: {
             held_back: string[];
+            /**
+             * @description Prices per million characters by provider; absent keeps them, and a
+             *     provider left out has none.
+             */
+            prices?: {
+                [key: string]: number;
+            } | null;
         };
         /** @description A prompt played into the call. */
         PlayRequest: {
@@ -15182,6 +15207,11 @@ export interface components {
             access_key_id?: string | null;
             /** @description Write-only: the API key, subscription key or AWS secret access key. */
             secret?: string | null;
+            /**
+             * Format: double
+             * @description What the vendor charges per million characters; null for none.
+             */
+            price_per_million?: number | null;
         };
         /** @description A tenant's account with a TTS vendor, its key never shown. */
         SpeechAccountView: {
@@ -15197,6 +15227,12 @@ export interface components {
             access_key_id?: string | null;
             /** @description Whether a key is kept; the key itself is never returned. */
             has_key: boolean;
+            /**
+             * Format: double
+             * @description What the vendor charges per million characters, for an estimated
+             *     cost (`docs/SPEECH_CAPS.md`).
+             */
+            price_per_million?: number | null;
             created_at: string;
             updated_at: string;
         };
@@ -15318,6 +15354,12 @@ export interface components {
              * @description What the provider spoke, and bills for; the rest came from the cache.
              */
             synthesized_characters: number;
+            /**
+             * Format: double
+             * @description The synthesized characters at the provider's price per million
+             *     (the platform's, or the account's own), where one is set.
+             */
+            estimated_cost?: number | null;
         };
         /** @description A voice a provider speaks. */
         SpeechVoice: {
@@ -16884,7 +16926,7 @@ export interface components {
              * @description A name from `/api/v1/webhooks/event-types`, or `webhook.test`
              * @enum {string}
              */
-            event_type: "call.initiated" | "call.ringing" | "call.progress" | "call.answered" | "call.ended" | "call.failed" | "call.emergency" | "call.emergency_completed" | "emergency.notification_failed" | "call.parked" | "call.unparked" | "call.park_timed_out" | "call.quality_poor" | "call.held" | "call.resumed" | "call.transcript" | "call.party_joined" | "call.party_left" | "media.session_started" | "media.session_ended" | "media.dtmf_received" | "media.quality_warning" | "ivr.prompt_started" | "ivr.prompt_completed" | "ivr.input_gathered" | "ivr.gather_timeout" | "recording.started" | "recording.completed" | "recording.failed" | "flow.started" | "flow.node_executed" | "flow.waiting_for_input" | "flow.completed" | "flow.failed" | "system.started" | "system.stopping" | "system.health_check" | "system.config_changed" | "system.node_draining" | "system.node_drained" | "system.node_joined" | "system.node_left" | "system.cluster_view_changed" | "system.version_skew" | "system.site_link_changed" | "system.service_up" | "system.service_down" | "device.firmware_behind" | "device.push_failed" | "user.created" | "user.updated" | "user.deleted" | "user.deprovisioned" | "user.restored" | "user.renamed" | "user.enabled" | "user.disabled" | "user.calling_changed" | "user.contact_changed" | "user.signed_in" | "user.sign_in_failed" | "hoteling.login" | "hoteling.logout" | "registration.registered" | "registration.refreshed" | "registration.unregistered" | "registration.expired" | "registration.failed" | "voicemail.message_recorded" | "voicemail.transcribed" | "voicemail.message_deleted" | "voicemail.message_played" | "voicemail.mwi_updated" | "voicemail.mailbox_created" | "voicemail.mailbox_updated" | "voicemail.mailbox_deleted" | "conference.participant_joined" | "conference.participant_left" | "conference.room_locked" | "conference.room_unlocked" | "conference.recording_started" | "conference.recording_stopped" | "conference.pin_failed" | "conference.room_destroyed" | "conference.meeting_created" | "conference.meeting_updated" | "conference.meeting_deleted" | "conference.meeting_started" | "conference.meeting_ended" | "conference.dial_out_invited" | "conference.dial_out_failed" | "conference.video_state_changed" | "conference.content_started" | "conference.content_stopped" | "conference.video_overload" | "conference.video_layout_changed" | "conference.active_speaker_changed" | "conference.hand_raised" | "conference.hand_lowered" | "conference.stage_joined" | "conference.stage_left" | "conference.question_asked" | "conference.question_published" | "conference.question_answered" | "conference.question_dismissed" | "conference.chat_deleted" | "conference.chat_muted" | "conference.webinar_live" | "conference.webinar_ended" | "conference.rtmp_live" | "conference.rtmp_failed" | "queue.caller_enqueued" | "queue.caller_dequeued" | "queue.caller_abandoned" | "queue.caller_overflowed" | "queue.agent_logged_in" | "queue.agent_logged_out" | "queue.agent_state_changed" | "queue.agent_kicked" | "queue.callback_initiated" | "queue.stats_snapshot" | "queue.caller_transferred" | "queue.supervisor_joined" | "queue.supervisor_left" | "queue.callback_attempted" | "queue.callback_completed" | "queue.callback_failed" | "queue.service_level_warning" | "queue.queue_draining" | "queue.queue_drained" | "queue.campaign_call_placed" | "queue.campaign_call_connected" | "queue.campaign_call_failed" | "presence.status_changed" | "presence.watcher_added" | "presence.watcher_removed" | "presence.publish_received" | "presence.dialog_changed" | "presence.user_changed" | "presence.user_call" | "presence.publish_expiry_warning" | "presence.publish_expired" | "line.appearance_changed" | "sip.message_captured" | "billing.call_rated" | "billing.balance_changed" | "billing.balance_low" | "billing.balance_depleted" | "billing.call_rejected" | "billing.call_cut_off" | "cdr.written" | "cdr.archived" | "trunk.registered" | "trunk.registration_failed" | "trunk.health_changed" | "compliance.hold_placed" | "compliance.hold_released" | "compliance.subject_request_completed" | "webhook.test";
+            event_type: "call.initiated" | "call.ringing" | "call.progress" | "call.answered" | "call.ended" | "call.failed" | "call.emergency" | "call.emergency_completed" | "emergency.notification_failed" | "call.parked" | "call.unparked" | "call.park_timed_out" | "call.quality_poor" | "call.held" | "call.resumed" | "call.transcript" | "call.party_joined" | "call.party_left" | "media.session_started" | "media.session_ended" | "media.dtmf_received" | "media.quality_warning" | "ivr.prompt_started" | "ivr.prompt_completed" | "ivr.input_gathered" | "ivr.gather_timeout" | "recording.started" | "recording.completed" | "recording.failed" | "flow.started" | "flow.node_executed" | "flow.waiting_for_input" | "flow.completed" | "flow.failed" | "system.started" | "system.stopping" | "system.health_check" | "system.config_changed" | "system.node_draining" | "system.node_drained" | "system.node_joined" | "system.node_left" | "system.cluster_view_changed" | "system.version_skew" | "system.site_link_changed" | "system.service_up" | "system.service_down" | "device.firmware_behind" | "device.push_failed" | "user.created" | "user.updated" | "user.deleted" | "user.deprovisioned" | "user.restored" | "user.renamed" | "user.enabled" | "user.disabled" | "user.calling_changed" | "user.contact_changed" | "user.signed_in" | "user.sign_in_failed" | "hoteling.login" | "hoteling.logout" | "registration.registered" | "registration.refreshed" | "registration.unregistered" | "registration.expired" | "registration.failed" | "voicemail.message_recorded" | "voicemail.transcribed" | "voicemail.message_deleted" | "voicemail.message_played" | "voicemail.mwi_updated" | "voicemail.mailbox_created" | "voicemail.mailbox_updated" | "voicemail.mailbox_deleted" | "conference.participant_joined" | "conference.participant_left" | "conference.room_locked" | "conference.room_unlocked" | "conference.recording_started" | "conference.recording_stopped" | "conference.pin_failed" | "conference.room_destroyed" | "conference.meeting_created" | "conference.meeting_updated" | "conference.meeting_deleted" | "conference.meeting_started" | "conference.meeting_ended" | "conference.dial_out_invited" | "conference.dial_out_failed" | "conference.video_state_changed" | "conference.content_started" | "conference.content_stopped" | "conference.video_overload" | "conference.video_layout_changed" | "conference.active_speaker_changed" | "conference.hand_raised" | "conference.hand_lowered" | "conference.stage_joined" | "conference.stage_left" | "conference.question_asked" | "conference.question_published" | "conference.question_answered" | "conference.question_dismissed" | "conference.chat_deleted" | "conference.chat_muted" | "conference.webinar_live" | "conference.webinar_ended" | "conference.rtmp_live" | "conference.rtmp_failed" | "queue.caller_enqueued" | "queue.caller_dequeued" | "queue.caller_abandoned" | "queue.caller_overflowed" | "queue.agent_logged_in" | "queue.agent_logged_out" | "queue.agent_state_changed" | "queue.agent_kicked" | "queue.callback_initiated" | "queue.stats_snapshot" | "queue.caller_transferred" | "queue.supervisor_joined" | "queue.supervisor_left" | "queue.callback_attempted" | "queue.callback_completed" | "queue.callback_failed" | "queue.service_level_warning" | "queue.queue_draining" | "queue.queue_drained" | "queue.campaign_call_placed" | "queue.campaign_call_connected" | "queue.campaign_call_failed" | "presence.status_changed" | "presence.watcher_added" | "presence.watcher_removed" | "presence.publish_received" | "presence.dialog_changed" | "presence.user_changed" | "presence.user_call" | "presence.publish_expiry_warning" | "presence.publish_expired" | "line.appearance_changed" | "sip.message_captured" | "billing.call_rated" | "billing.balance_changed" | "billing.balance_low" | "billing.balance_depleted" | "billing.call_rejected" | "billing.call_cut_off" | "cdr.written" | "cdr.archived" | "trunk.registered" | "trunk.registration_failed" | "trunk.health_changed" | "compliance.hold_placed" | "compliance.hold_released" | "compliance.subject_request_completed" | "speech.cap_near" | "speech.cap_reached" | "webhook.test";
             /**
              * Format: date-time
              * @description When the event happened, RFC 3339.

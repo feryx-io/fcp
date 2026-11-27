@@ -68,6 +68,16 @@ pub trait SpeechSettingsStore: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// What the platform charges per million characters for each of its
+    /// providers (`docs/SPEECH_CAPS.md` §2): an estimated cost, not a cap.
+    async fn speech_prices(&self) -> anyhow::Result<BTreeMap<String, f64>> {
+        Ok(BTreeMap::new())
+    }
+
+    async fn put_speech_prices(&self, _prices: &BTreeMap<String, f64>) -> anyhow::Result<()> {
+        anyhow::bail!("this store keeps no speech prices")
+    }
+
     async fn put_held_back_providers(&self, _providers: &[String]) -> anyhow::Result<()> {
         anyhow::bail!("this store keeps no platform speech settings")
     }
@@ -98,6 +108,11 @@ pub struct SpeechAccount {
     /// written and never read back by the API.
     #[serde(default)]
     pub secret: Option<String>,
+    /// What the vendor charges per million characters, for an estimated
+    /// cost beside the usage (`docs/SPEECH_CAPS.md` §2); in the tenant's
+    /// own currency.
+    #[serde(default)]
+    pub price_per_million: Option<f64>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -251,6 +266,21 @@ pub trait SpeechUsageStore: Send + Sync {
         anyhow::bail!("this store keeps no speech caps")
     }
 
+    /// Note that `tenant` passed `level` of its cap on `provider` in the
+    /// month starting `month`; whether this is the first time (so the
+    /// warning is raised once).
+    async fn note_speech_cap(
+        &self,
+        _tenant_id: &TenantId,
+        _provider: &str,
+        _month: SystemTime,
+        _level: CapLevel,
+        _cap: u64,
+        _used: u64,
+    ) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
     /// Every tenant's synthesized characters per provider since `from`
     /// (the month's start), this deployment's and its sites' together.
     async fn synthesized_since(
@@ -258,6 +288,37 @@ pub trait SpeechUsageStore: Send + Sync {
         _from: SystemTime,
     ) -> anyhow::Result<Vec<(TenantId, String, u64)>> {
         Ok(Vec::new())
+    }
+}
+
+/// How far into its cap a tenant is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapLevel {
+    Ok,
+    /// 80 % or more.
+    Near,
+    Reached,
+}
+
+impl CapLevel {
+    /// Where `used` of `cap` stands.
+    pub fn of(used: u64, cap: u64) -> Self {
+        if used >= cap {
+            Self::Reached
+        } else if used.saturating_mul(5) >= cap.saturating_mul(4) {
+            Self::Near
+        } else {
+            Self::Ok
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Near => "near",
+            Self::Reached => "reached",
+        }
     }
 }
 

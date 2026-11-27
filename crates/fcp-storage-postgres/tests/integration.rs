@@ -3039,6 +3039,7 @@ async fn a_tenants_speech_account_keeps_its_key_sealed() {
         endpoint: None,
         access_key_id: None,
         secret: Some("xi-secret-key".into()),
+        price_per_million: None,
         created_at: now,
         updated_at: now,
     };
