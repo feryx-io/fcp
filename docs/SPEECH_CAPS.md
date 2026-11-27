@@ -1,6 +1,7 @@
 # Speech spending caps
 
-Designed 2026-11-27. The follow-up `docs/TENANT_SPEECH.md` §7 question 4
+Designed 2026-11-27, agreed the same day on every recommendation. The
+follow-up `docs/TENANT_SPEECH.md` §7 question 4
 left for later: usage is counted and shown (S4), nothing stops it.
 
 ## 1. What there is
