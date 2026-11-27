@@ -742,6 +742,31 @@ async fn main() -> Result<()> {
                 None
             }
         });
+    // The same server's recognition, for a tenant's recognition preview
+    // and its account test (docs/TENANT_RECOGNITION.md R2b).
+    let api_state = match config
+        .tts
+        .as_ref()
+        .and_then(|t| t.remote_url.clone().map(|u| (u, t)))
+    {
+        Some((url, tts)) => match fcp_media::stt::SttService::new(fcp_media::stt::SttConfig {
+            provider: fcp_media::stt::SttProviderConfig::Remote {
+                url,
+                auth_token: tts.auth_token.clone().unwrap_or_default(),
+                provider: None,
+            },
+            language: "en-US".to_string(),
+        })
+        .await
+        {
+            Ok(stt) => api_state.with_stt_service(std::sync::Arc::new(stt)),
+            Err(e) => {
+                warn!(error = %e, "Speech recognition through the TTS server unavailable");
+                api_state
+            }
+        },
+        None => api_state,
+    };
     let api_state = if let (Some(tts_config), Some(provider)) = (&config.tts, tts_provider) {
         let described = match &provider {
             fcp_media::tts::TtsProviderConfig::Remote { url, .. } => url.clone(),

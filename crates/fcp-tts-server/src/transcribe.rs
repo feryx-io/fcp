@@ -56,6 +56,8 @@ impl TranscribeQuery {
             interim_results: self.interim_results,
             speech_timeout_ms: self.speech_timeout_ms,
             tenant_id: self.tenant_id.clone(),
+            // Chosen here; a provider behind this one is not told a name.
+            provider: None,
         }
     }
 

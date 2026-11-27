@@ -163,8 +163,22 @@ offer lists recognizers with their default caps and prices.
   `/speech/providers` and `/system/speech` say which each does, and the
   default recognizer cannot be held back. Proved by
   `a_tenant_is_heard_by_the_recognizer_it_chose` and
-  `a_tenant_chooses_what_hears_it`. **R2b** (next): the account test and
-  `/speech/recognize`, the Recognition card.
+  `a_tenant_chooses_what_hears_it`.
+  **R2b done (v0.25.666), the preview and the page:** the admin reaches the
+  shared server's recognition through `[tts] remote_url`
+  (`ApiState::stt_service`); `SttOptions.provider` names a recognizer per
+  request. `POST /speech/recognize` takes a WAV (10 MB at most; any rate,
+  as `wav_bytes_16k_mono` reads it) and answers what the tenant's
+  recognizer, or `?recognizer=`, heard. The test of an account that only
+  hears speaks "This is <name>." with the default voice and answers
+  `{spoken, heard}` as the account heard it. The Speech page gains a
+  Recognition card (the recognizer among those that hear, the recognition
+  language, Try it recording up to ten seconds in the browser or a file,
+  either turned into a 16 kHz WAV by `lib/wav.ts`), the voice picker
+  lists only those that speak, and accounts say what each does, Deepgram
+  among the vendors. Proved by
+  `a_tenant_hears_a_preview_and_tests_an_account_that_hears` and
+  `e2e/speech.spec.ts`'s recognition test.
 - **R3 — usage and caps in minutes.** `recognized_ms`, the cap's unit,
   `price_per_minute`, the server counting and enforcing, the page.
 - **R4 — sites.** The new fields and kind synced (already journaled

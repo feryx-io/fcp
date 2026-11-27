@@ -884,6 +884,11 @@ pub fn router() -> Router<ApiState> {
         .route("/speech/voices", get(speech::list_voices))
         .route("/speech/preview", post(speech::preview))
         .route(
+            "/speech/recognize",
+            post(speech::recognize)
+                .layer(DefaultBodyLimit::max(speech::RECOGNIZE_MAX_BYTES + 1024)),
+        )
+        .route(
             "/speech/accounts",
             get(speech::list_accounts).post(speech::create_account),
         )
