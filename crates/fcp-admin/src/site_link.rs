@@ -781,6 +781,22 @@ async fn records(
                     true
                 }
             }
+            // An hour of the site's speech as it counted it
+            // (docs/TENANT_SPEECH.md S5): kept as the site's, set rather
+            // than added to, so a row shipped again counts once.
+            "speech_usage" => {
+                let row: fcp_core::speech::SpeechUsage = serde_json::from_value(put.object)
+                    .map_err(|e| bad_row(&put.table, &put.id, e))?;
+                match storage.speech_usage_store() {
+                    Some(store) if row.tenant_id == site.tenant_id => {
+                        store
+                            .put_site_speech_usage(&site.id.to_string(), std::slice::from_ref(&row))
+                            .await?;
+                        true
+                    }
+                    _ => false,
+                }
+            }
             _ => false,
         };
         if applied {
@@ -1286,6 +1302,18 @@ async fn slice_of(state: &LinkState, tenant: &TenantId) -> Result<Vec<SyncItem>>
             items.push(item("group_members", &m.row_id(), &m)?);
         }
     }
+    // The tenant's speech and its accounts, keys opened for the link's
+    // mutual TLS and sealed again by the site (docs/TENANT_SPEECH.md S5).
+    if let Some(store) = storage.speech_store() {
+        if let Some(s) = store.get_tenant_speech(tenant).await? {
+            items.push(item("tenant_speech", tenant, &s)?);
+        }
+    }
+    if let Some(store) = storage.speech_account_store() {
+        for a in store.list_speech_accounts(tenant).await? {
+            items.push(item("speech_accounts", &a.id, &a)?);
+        }
+    }
     Ok(items)
 }
 
@@ -1473,6 +1501,14 @@ async fn object_now(
             (Some(store), Some((group, user))) => {
                 same_tenant!(store.get_member(&group, &user).await?)
             }
+            _ => None,
+        },
+        "tenant_speech" if id == tenant.to_string() => match storage.speech_store() {
+            Some(store) => same_tenant!(store.get_tenant_speech(tenant).await?),
+            None => None,
+        },
+        "speech_accounts" => match (storage.speech_account_store(), id.parse()) {
+            (Some(store), Ok(id)) => same_tenant!(store.get_speech_account(tenant, &id).await?),
             _ => None,
         },
         _ => None,

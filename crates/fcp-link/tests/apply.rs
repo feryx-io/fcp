@@ -354,6 +354,105 @@ format = "compact"
     .unwrap();
     assert_eq!(code, 403, "a synced provider is the cloud's: {text}");
 
+    // The tenant's own TTS account and its speech reach the site, the key
+    // with them (docs/TENANT_SPEECH.md S5); the site's admin may read them,
+    // not change them, and may still test the account.
+    let (code, account) = cloud
+        .admin_call(
+            "POST",
+            "/api/v1/speech/accounts",
+            true,
+            Some(
+                &serde_json::json!({"name": "Acme voices", "kind": "openai", "secret": "sk-acme"})
+                    .to_string(),
+            ),
+        )
+        .await;
+    assert_eq!(code, 201, "{account}");
+    let provider = account["provider"].as_str().unwrap().to_string();
+    let (code, chose) = cloud
+        .admin_call(
+            "PUT",
+            "/api/v1/speech/settings",
+            true,
+            Some(&serde_json::json!({"provider": provider, "language": "en-GB"}).to_string()),
+        )
+        .await;
+    assert_eq!(code, 200, "{chose}");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let (code, text) = http_request(
+            "GET",
+            &loopback(site_admin_http, "/api/v1/speech/settings"),
+            &site_headers,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(code, 200, "{text}");
+        let settings: serde_json::Value = serde_json::from_str(&text).unwrap();
+        if settings["provider"] == provider.as_str() {
+            assert_eq!(settings["language"], "en-GB", "{text}");
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the tenant's speech never reached the site: {text}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let (code, text) = http_request(
+        "GET",
+        &loopback(site_admin_http, "/api/v1/speech/accounts"),
+        &site_headers,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(code, 200, "{text}");
+    let listed: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(listed["data"][0]["name"], "Acme voices", "{text}");
+    assert_eq!(
+        listed["data"][0]["has_key"], true,
+        "the key came with it: {text}"
+    );
+    assert!(!text.contains("sk-acme"), "{text}");
+    let account_id = listed["data"][0]["id"].as_str().unwrap().to_string();
+    for (method, path, body) in [
+        (
+            "PUT",
+            "/api/v1/speech/settings".to_string(),
+            Some(r#"{"language":"fr-FR"}"#),
+        ),
+        (
+            "DELETE",
+            format!("/api/v1/speech/accounts/{account_id}"),
+            None,
+        ),
+    ] {
+        let (code, text) = http_request(
+            method,
+            &loopback(site_admin_http, &path),
+            &site_headers,
+            body,
+        )
+        .await
+        .unwrap();
+        assert_eq!(code, 403, "{method} {path} is the cloud's: {text}");
+    }
+    let (code, text) = http_request(
+        "POST",
+        &loopback(
+            site_admin_http,
+            &format!("/api/v1/speech/accounts/{account_id}/test"),
+        ),
+        &site_headers,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_ne!(code, 403, "testing an account is the site's own: {text}");
+
     // What only the site holds of Alice: a declared location and a queue
     // seat, which no feed carries.
     let site_pool = sqlx::PgPool::connect(site_db.url()).await.unwrap();

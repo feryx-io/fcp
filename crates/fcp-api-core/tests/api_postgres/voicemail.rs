@@ -1546,6 +1546,7 @@ async fn speech_usage_is_read_by_month_or_day_and_provider() {
         requests: 1,
         characters: chars,
         synthesized_characters: synthesized,
+        site_id: None,
     };
     let a = app.tenant_a;
     let other = seed_tenant(&app.storage, "speech-usage-other").await;

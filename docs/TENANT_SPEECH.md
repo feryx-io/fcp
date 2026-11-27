@@ -186,7 +186,19 @@ sealed again with the site's key; usage comes up with the site's records.
   `counts_are_summed_per_tenant_and_provider_and_kept_through_a_failure`
   and `speech_usage_is_read_by_month_or_day_and_provider`. Caps are for
   later (§7 question 4).
-- **S5 — sites.**
+- **S5 done (v0.25.656) — sites.** `tenant_speech` and `speech_accounts`
+  are journaled (migration 156) and in `SYNC_TABLES`: the snapshot and
+  the feed carry them down, an account's key opened for the link's mutual
+  TLS and sealed again with the site's own key as the link writes it. The
+  site's admin refuses writes to `speech/settings` and `speech/accounts`
+  (`fcp_api_core::managed`), a preview or an account's test being the
+  site's own. Up: `speech_usage` gains `site_id` and `ship_seq`; the link
+  ships the site's own hours (`ShipCursors.speech_usage`) and the cloud
+  sets each as the site's (`put_site_speech_usage`), so an hour shipped
+  again as it fills counts once, and `/speech/usage` sums them with the
+  cloud's. Proved by `fcp-link/tests/apply.rs` (the speech and account
+  reaching the site, refused there, tested there) and `records.rs` (an
+  hour shipped and shipped again). All five phases done.
 
 STT (`docs/SPEECH.md` §1–7) follows the same model afterwards: a
 tenant's recognizer and its own key.

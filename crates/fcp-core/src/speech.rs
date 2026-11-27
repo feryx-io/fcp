@@ -186,6 +186,10 @@ pub struct SpeechUsage {
     pub characters: u64,
     /// What the provider spoke; the rest came from the cache.
     pub synthesized_characters: u64,
+    /// The site that counted it (`docs/TENANT_SPEECH.md` S5); none for
+    /// this deployment's own.
+    #[serde(default)]
+    pub site_id: Option<String>,
 }
 
 /// Where speech usage is counted.
@@ -200,6 +204,25 @@ pub trait SpeechUsageStore: Send + Sync {
         from: SystemTime,
         to: SystemTime,
     ) -> anyhow::Result<Vec<SpeechUsage>>;
+
+    /// This deployment's own hours changed since `after` (a `ship_seq`),
+    /// oldest change first: what a site's link ships up.
+    async fn speech_usage_after(
+        &self,
+        _after: i64,
+        _limit: usize,
+    ) -> anyhow::Result<Vec<(i64, SpeechUsage)>> {
+        Ok(Vec::new())
+    }
+
+    /// A site's hours as it counted them, each set rather than added to.
+    async fn put_site_speech_usage(
+        &self,
+        _site_id: &str,
+        _usage: &[SpeechUsage],
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("this store keeps no sites' speech usage")
+    }
 }
 
 #[cfg(test)]
