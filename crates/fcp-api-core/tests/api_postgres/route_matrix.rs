@@ -357,6 +357,26 @@ async fn seed_tenant_b(app: &App) -> Seeded {
         )
         .await,
     );
+    // B's cap on its own account (docs/SPEECH_CAPS.md).
+    let b_account = format!(
+        "account:{}",
+        ids["/speech/accounts"].trim_start_matches("speech-")
+    );
+    let b_str = b.to_string();
+    let capped = app
+        .send(
+            Method::PUT,
+            &format!("/api/v1/speech/caps/{b_account}"),
+            &[(AUTH_HEADER, BEARER), ("x-fcp-tenant-id", b_str.as_str())],
+            Some(json!({"monthly_characters": 1234})),
+        )
+        .await;
+    assert!(
+        capped.status.is_success(),
+        "seed a cap in tenant B: {}",
+        capped.text
+    );
+    ids.insert("/speech/caps", b_account);
     ids.insert(
         "/parking/lots",
         make_in_b(
@@ -778,6 +798,9 @@ fn not_cross_tenant(method: &str, path: &str) -> Option<&'static str> {
     }
     if path.starts_with("/queues/") {
         return Some("the runtime queue manager's queues by name; seeded only for tenant A");
+    }
+    if path.starts_with("/system/speech/caps/") {
+        return Some("a platform provider's default cap, by the provider's name: no tenant's");
     }
     if bound_elsewhere(path) {
         return Some("bound by fcp-admin, not this router");

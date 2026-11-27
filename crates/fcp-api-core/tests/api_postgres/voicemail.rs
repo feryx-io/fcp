@@ -1614,3 +1614,359 @@ async fn speech_usage_is_read_by_month_or_day_and_provider() {
     }
     app.finish().await;
 }
+
+/// `docs/SPEECH_CAPS.md` C1: who caps what. The platform caps its
+/// providers by default and per tenant, never the default provider nor a
+/// tenant's account; a tenant caps its accounts and the platform's
+/// providers (the lowest applying); where it stands this month; a preview
+/// at a cap answers 429 `speech_cap_reached`.
+#[tokio::test]
+async fn speech_caps_are_set_by_whoever_pays() {
+    use axum::routing::{get, post};
+    use fcp_core::speech::{SpeechUsage, SpeechUsageStore};
+    let router = Router::new()
+        .route(
+            "/v1/providers",
+            get(|| async {
+                axum::Json(json!([
+                    { "name": "piper", "is_default": true },
+                    { "name": "elevenlabs", "is_default": false },
+                ]))
+            }),
+        )
+        .route(
+            "/v1/synthesize",
+            post(|| async {
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    axum::Json(json!({
+                        "error": "This month's speech cap on elevenlabs is reached (500 of 500 characters)",
+                        "code": "speech_cap_reached",
+                        "cap": 500,
+                        "used": 500,
+                    })),
+                )
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let app = app.with_tts(&url).await;
+    app.create_user_with_role("capta", "tenant_admin").await;
+    let login = app.login("capta", PASSWORD).await;
+    let ta = login.json["token"].as_str().unwrap().to_string();
+
+    // The platform's default caps: not on the default, nor an unknown
+    // provider, nor an account; a tenant's administrator may not.
+    let put = |path: &str| format!("/api/v1/system/speech/caps/{path}");
+    for (p, want) in [
+        ("piper", StatusCode::BAD_REQUEST),
+        ("nope", StatusCode::BAD_REQUEST),
+        (
+            "account:0f6a4e1c-5a8b-4d2e-9f00-000000000001",
+            StatusCode::BAD_REQUEST,
+        ),
+        ("elevenlabs", StatusCode::NO_CONTENT),
+    ] {
+        let r = app
+            .admin(
+                Method::PUT,
+                &put(p),
+                Some(json!({ "monthly_characters": 500 })),
+            )
+            .await;
+        assert_eq!(r.status, want, "{p}: {}", r.text);
+    }
+    let theirs = app
+        .send_as(
+            &ta,
+            Method::PUT,
+            &put("elevenlabs"),
+            Some(json!({ "monthly_characters": 9 })),
+        )
+        .await;
+    assert_eq!(theirs.status, StatusCode::FORBIDDEN, "{}", theirs.text);
+    let listed = app
+        .admin(Method::GET, "/api/v1/system/speech/caps", None)
+        .await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
+    assert_eq!(
+        listed.json,
+        json!([{ "provider": "elevenlabs", "monthly_characters": 500 }])
+    );
+    let not_theirs = app
+        .send_as(&ta, Method::GET, "/api/v1/system/speech/caps", None)
+        .await;
+    assert_eq!(
+        not_theirs.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        not_theirs.text
+    );
+
+    // The tenant's own: higher than the platform's changes nothing.
+    let own = app
+        .send_as(
+            &ta,
+            Method::PUT,
+            "/api/v1/speech/caps/elevenlabs",
+            Some(json!({ "monthly_characters": 1000 })),
+        )
+        .await;
+    assert_eq!(own.status, StatusCode::NO_CONTENT, "{}", own.text);
+    for (body, why) in [
+        (
+            json!({ "monthly_characters": null }),
+            "a tenant's cap has a limit",
+        ),
+        (
+            json!({ "monthly_characters": 2_000_000_000_000u64 }),
+            "too big",
+        ),
+        (
+            json!({ "monthly_characters": 5, "kind": "weekly" }),
+            "no such kind",
+        ),
+    ] {
+        let r = app
+            .send_as(
+                &ta,
+                Method::PUT,
+                "/api/v1/speech/caps/elevenlabs",
+                Some(body),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{why}: {}", r.text);
+    }
+    let platform = app
+        .send_as(
+            &ta,
+            Method::PUT,
+            "/api/v1/speech/caps/elevenlabs",
+            Some(json!({ "monthly_characters": 5, "kind": "platform" })),
+        )
+        .await;
+    assert_eq!(platform.status, StatusCode::FORBIDDEN, "{}", platform.text);
+    let default = app
+        .send_as(
+            &ta,
+            Method::PUT,
+            "/api/v1/speech/caps/piper",
+            Some(json!({ "monthly_characters": 5 })),
+        )
+        .await;
+    assert_eq!(default.status, StatusCode::BAD_REQUEST, "{}", default.text);
+
+    // This month: 450 synthesized of 500, near.
+    let hour = SystemTime::UNIX_EPOCH
+        + std::time::Duration::from_secs(
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                / 3600
+                * 3600,
+        );
+    app.storage
+        .add_speech_usage(&[SpeechUsage {
+            tenant_id: app.tenant_a,
+            provider: "elevenlabs".into(),
+            hour,
+            requests: 3,
+            characters: 900,
+            synthesized_characters: 450,
+            site_id: None,
+        }])
+        .await
+        .unwrap();
+    let caps = app
+        .send_as(&ta, Method::GET, "/api/v1/speech/caps", None)
+        .await;
+    assert_eq!(caps.status, StatusCode::OK, "{}", caps.text);
+    let row = &caps.json[0];
+    assert_eq!(row["provider"], "elevenlabs", "{}", caps.text);
+    assert_eq!(
+        (
+            &row["platform_cap"],
+            &row["own_cap"],
+            &row["cap"],
+            &row["used"],
+            &row["state"]
+        ),
+        (
+            &json!(500),
+            &json!(1000),
+            &json!(500),
+            &json!(450),
+            &json!("near")
+        ),
+        "{}",
+        caps.text
+    );
+    assert_eq!(row["platform_override"], false);
+    assert!(row["resets_at"]
+        .as_str()
+        .unwrap()
+        .ends_with("-01T00:00:00Z"));
+
+    // The platform lifts its cap for this tenant: the tenant's own applies.
+    let lifted = app
+        .admin(
+            Method::PUT,
+            "/api/v1/speech/caps/elevenlabs",
+            Some(json!({ "monthly_characters": null, "kind": "platform" })),
+        )
+        .await;
+    assert_eq!(lifted.status, StatusCode::NO_CONTENT, "{}", lifted.text);
+    let caps = app
+        .send_as(&ta, Method::GET, "/api/v1/speech/caps", None)
+        .await;
+    let row = &caps.json[0];
+    assert_eq!(
+        (
+            &row["platform_cap"],
+            &row["platform_override"],
+            &row["cap"],
+            &row["state"]
+        ),
+        (&Value::Null, &json!(true), &json!(1000), &json!("ok")),
+        "{}",
+        caps.text
+    );
+
+    // An account: the tenant's alone to cap, named by its name, gone with it.
+    let made = app
+        .send_as(
+            &ta,
+            Method::POST,
+            "/api/v1/speech/accounts",
+            Some(json!({ "name": "Ours", "kind": "openai", "secret": "sk" })),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let account = made.json["provider"].as_str().unwrap().to_string();
+    let account_id = made.json["id"].as_str().unwrap().to_string();
+    let capped = app
+        .send_as(
+            &ta,
+            Method::PUT,
+            &format!("/api/v1/speech/caps/{account}"),
+            Some(json!({ "monthly_characters": 100 })),
+        )
+        .await;
+    assert_eq!(capped.status, StatusCode::NO_CONTENT, "{}", capped.text);
+    let platform = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/speech/caps/{account}"),
+            Some(json!({ "monthly_characters": 1, "kind": "platform" })),
+        )
+        .await;
+    assert_eq!(
+        platform.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        platform.text
+    );
+    let stranger = app
+        .send_as(
+            &ta,
+            Method::PUT,
+            "/api/v1/speech/caps/account:0f6a4e1c-5a8b-4d2e-9f00-000000000001",
+            Some(json!({ "monthly_characters": 100 })),
+        )
+        .await;
+    assert_eq!(
+        stranger.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        stranger.text
+    );
+    let caps = app
+        .send_as(&ta, Method::GET, "/api/v1/speech/caps", None)
+        .await;
+    assert!(
+        caps.json
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["provider"] == account.as_str() && r["label"] == "Ours" && r["cap"] == 100),
+        "{}",
+        caps.text
+    );
+    let gone = app
+        .send_as(
+            &ta,
+            Method::DELETE,
+            &format!("/api/v1/speech/accounts/{account_id}"),
+            None,
+        )
+        .await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT, "{}", gone.text);
+    let caps = app
+        .send_as(&ta, Method::GET, "/api/v1/speech/caps", None)
+        .await;
+    assert!(!caps.text.contains(&account), "{}", caps.text);
+
+    // A preview at a cap: 429, said why.
+    let preview = app
+        .send_as(
+            &ta,
+            Method::POST,
+            "/api/v1/speech/preview",
+            Some(json!({ "text": "Hello", "provider": "elevenlabs" })),
+        )
+        .await;
+    assert_eq!(
+        preview.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "{}",
+        preview.text
+    );
+    assert_eq!(
+        preview.json["code"], "speech_cap_reached",
+        "{}",
+        preview.text
+    );
+    assert!(preview.json["details"]
+        .as_str()
+        .unwrap()
+        .contains("500 of 500"));
+
+    // Removed, each by whoever set it.
+    let refused = app
+        .send_as(
+            &ta,
+            Method::DELETE,
+            "/api/v1/speech/caps/elevenlabs?kind=platform",
+            None,
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    for (path, by_admin) in [
+        ("/api/v1/speech/caps/elevenlabs?kind=platform", true),
+        ("/api/v1/speech/caps/elevenlabs", false),
+        ("/api/v1/system/speech/caps/elevenlabs", true),
+    ] {
+        let r = if by_admin {
+            app.admin(Method::DELETE, path, None).await
+        } else {
+            app.send_as(&ta, Method::DELETE, path, None).await
+        };
+        assert_eq!(r.status, StatusCode::NO_CONTENT, "{path}: {}", r.text);
+    }
+    let twice = app
+        .send_as(&ta, Method::DELETE, "/api/v1/speech/caps/elevenlabs", None)
+        .await;
+    assert_eq!(twice.status, StatusCode::NOT_FOUND, "{}", twice.text);
+    let caps = app
+        .send_as(&ta, Method::GET, "/api/v1/speech/caps", None)
+        .await;
+    assert_eq!(caps.json, json!([]), "{}", caps.text);
+    app.finish().await;
+}

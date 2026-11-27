@@ -450,6 +450,11 @@ pub fn router() -> Router<ApiState> {
             "/system/speech",
             get(speech::get_platform).put(speech::put_platform),
         )
+        .route("/system/speech/caps", get(speech::list_platform_caps))
+        .route(
+            "/system/speech/caps/:provider",
+            put(speech::put_platform_cap).delete(speech::delete_platform_cap),
+        )
         .route("/system/encryption", get(encryption::status))
         .route("/system/encryption/rotate", post(encryption::rotate))
         .route("/system/encryption/reencrypt", post(encryption::reencrypt))
@@ -869,6 +874,11 @@ pub fn router() -> Router<ApiState> {
             get(speech::get_settings)
                 .put(speech::put_settings)
                 .delete(speech::delete_settings),
+        )
+        .route("/speech/caps", get(speech::list_caps))
+        .route(
+            "/speech/caps/:provider",
+            put(speech::put_cap).delete(speech::delete_cap),
         )
         .route("/speech/providers", get(speech::list_providers))
         .route("/speech/voices", get(speech::list_voices))

@@ -4,6 +4,7 @@
 //! services share a single Kokoro/cloud TTS backend instead of each spawning
 //! their own subprocess.
 
+mod caps;
 mod cli;
 mod config;
 mod routes;

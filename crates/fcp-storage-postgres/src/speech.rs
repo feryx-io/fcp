@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fcp_core::speech::{
-    SpeechAccount, SpeechAccountKind, SpeechAccountStore, SpeechSettingsStore, SpeechUsage,
-    SpeechUsageStore, TenantSpeech,
+    SpeechAccount, SpeechAccountKind, SpeechAccountStore, SpeechCap, SpeechCapKind,
+    SpeechSettingsStore, SpeechUsage, SpeechUsageStore, TenantSpeech,
 };
 use fcp_core::TenantId;
 use sqlx::Row;
@@ -184,11 +184,19 @@ impl SpeechAccountStore for PostgresStorage {
         tenant_id: &TenantId,
         id: &uuid::Uuid,
     ) -> anyhow::Result<bool> {
+        let mut tx = self.writes().begin().await?;
         let done = sqlx::query("DELETE FROM speech_accounts WHERE tenant_id = $1 AND id = $2")
             .bind(tenant_id.to_string())
             .bind(id.to_string())
-            .execute(self.writes())
+            .execute(&mut *tx)
             .await?;
+        // Its caps go with it (docs/SPEECH_CAPS.md).
+        sqlx::query("DELETE FROM speech_caps WHERE tenant_id = $1 AND provider = $2")
+            .bind(tenant_id.to_string())
+            .bind(format!("{}{id}", fcp_core::speech::ACCOUNT_PREFIX))
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         Ok(done.rows_affected() > 0)
     }
 }
@@ -323,4 +331,106 @@ impl SpeechUsageStore for PostgresStorage {
         tx.commit().await?;
         Ok(())
     }
+
+    async fn all_speech_caps(&self) -> anyhow::Result<Vec<SpeechCap>> {
+        let rows = sqlx::query(
+            "SELECT tenant_id, provider, kind, monthly_characters FROM speech_caps
+              ORDER BY tenant_id NULLS FIRST, provider, kind",
+        )
+        .fetch_all(self.reads())
+        .await?;
+        rows.iter().map(cap_row).collect()
+    }
+
+    async fn speech_caps(&self, tenant_id: Option<&TenantId>) -> anyhow::Result<Vec<SpeechCap>> {
+        let rows = sqlx::query(
+            "SELECT tenant_id, provider, kind, monthly_characters FROM speech_caps
+              WHERE tenant_id IS NOT DISTINCT FROM $1
+              ORDER BY provider, kind",
+        )
+        .bind(tenant_id.map(|t| t.to_string()))
+        .fetch_all(self.reads())
+        .await?;
+        rows.iter().map(cap_row).collect()
+    }
+
+    async fn put_speech_cap(&self, cap: &SpeechCap) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO speech_caps (tenant_id, provider, kind, monthly_characters)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT ((COALESCE(tenant_id, '')), provider, kind) DO UPDATE SET
+                 monthly_characters = EXCLUDED.monthly_characters,
+                 updated_at = NOW()",
+        )
+        .bind(cap.tenant_id.map(|t| t.to_string()))
+        .bind(&cap.provider)
+        .bind(cap.kind.as_str())
+        .bind(
+            cap.monthly_characters
+                .map(|n| n.min(i64::MAX as u64) as i64),
+        )
+        .execute(self.writes())
+        .await?;
+        Ok(())
+    }
+
+    async fn delete_speech_cap(
+        &self,
+        tenant_id: Option<&TenantId>,
+        provider: &str,
+        kind: SpeechCapKind,
+    ) -> anyhow::Result<bool> {
+        let done = sqlx::query(
+            "DELETE FROM speech_caps
+              WHERE tenant_id IS NOT DISTINCT FROM $1 AND provider = $2 AND kind = $3",
+        )
+        .bind(tenant_id.map(|t| t.to_string()))
+        .bind(provider)
+        .bind(kind.as_str())
+        .execute(self.writes())
+        .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn synthesized_since(
+        &self,
+        from: std::time::SystemTime,
+    ) -> anyhow::Result<Vec<(TenantId, String, u64)>> {
+        let rows = sqlx::query(
+            "SELECT tenant_id, provider, SUM(synthesized_characters)::BIGINT AS n
+               FROM speech_usage
+              WHERE hour >= $1
+              GROUP BY tenant_id, provider",
+        )
+        .bind(system_time_to_datetime(from))
+        .fetch_all(self.reads())
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in &rows {
+            let tenant: String = r.try_get("tenant_id")?;
+            let Ok(tenant) = tenant.parse::<TenantId>() else {
+                continue;
+            };
+            out.push((
+                tenant,
+                r.try_get("provider")?,
+                r.try_get::<Option<i64>, _>("n")?.unwrap_or(0).max(0) as u64,
+            ));
+        }
+        Ok(out)
+    }
+}
+
+fn cap_row(r: &sqlx::postgres::PgRow) -> anyhow::Result<SpeechCap> {
+    let tenant: Option<String> = r.try_get("tenant_id")?;
+    let kind: String = r.try_get("kind")?;
+    Ok(SpeechCap {
+        tenant_id: tenant.map(|t| t.parse()).transpose()?,
+        provider: r.try_get("provider")?,
+        kind: SpeechCapKind::parse(&kind)
+            .ok_or_else(|| anyhow::anyhow!("speech cap kind {kind:?}"))?,
+        monthly_characters: r
+            .try_get::<Option<i64>, _>("monthly_characters")?
+            .map(|n| n.max(0) as u64),
+    })
 }

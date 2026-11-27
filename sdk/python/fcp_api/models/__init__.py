@@ -347,6 +347,8 @@ from .page_personal_contact_response import PagePersonalContactResponse
 from .page_personal_contact_response_data_item import PagePersonalContactResponseDataItem
 from .page_phone_number_response import PagePhoneNumberResponse
 from .page_phone_number_response_data_item import PagePhoneNumberResponseDataItem
+from .page_platform_speech_cap import PagePlatformSpeechCap
+from .page_platform_speech_cap_data_item import PagePlatformSpeechCapDataItem
 from .page_presence_response import PagePresenceResponse
 from .page_presence_response_data_item import PagePresenceResponseDataItem
 from .page_prompt_response import PagePromptResponse
@@ -390,6 +392,8 @@ from .page_sitting_response import PageSittingResponse
 from .page_sitting_response_data_item import PageSittingResponseDataItem
 from .page_speech_account_view import PageSpeechAccountView
 from .page_speech_account_view_data_item import PageSpeechAccountViewDataItem
+from .page_speech_cap_view import PageSpeechCapView
+from .page_speech_cap_view_data_item import PageSpeechCapViewDataItem
 from .page_speech_provider import PageSpeechProvider
 from .page_speech_provider_data_item import PageSpeechProviderDataItem
 from .page_speech_usage_period import PageSpeechUsagePeriod
@@ -431,6 +435,8 @@ from .personal_contact_response import PersonalContactResponse
 from .phone_number_response import PhoneNumberResponse
 from .place_hold_request import PlaceHoldRequest
 from .platform_speech import PlatformSpeech
+from .platform_speech_cap import PlatformSpeechCap
+from .platform_speech_cap_request import PlatformSpeechCapRequest
 from .platform_speech_request import PlatformSpeechRequest
 from .play_request import PlayRequest
 from .policy_response import PolicyResponse
@@ -537,6 +543,8 @@ from .softphone_video_send import SoftphoneVideoSend
 from .speech_account_kind import SpeechAccountKind
 from .speech_account_request import SpeechAccountRequest
 from .speech_account_view import SpeechAccountView
+from .speech_cap_request import SpeechCapRequest
+from .speech_cap_view import SpeechCapView
 from .speech_preview_request import SpeechPreviewRequest
 from .speech_provider import SpeechProvider
 from .speech_settings_request import SpeechSettingsRequest
@@ -999,6 +1007,8 @@ __all__ = (
     "PagePersonPresenceResponseDataItem",
     "PagePhoneNumberResponse",
     "PagePhoneNumberResponseDataItem",
+    "PagePlatformSpeechCap",
+    "PagePlatformSpeechCapDataItem",
     "PagePresenceResponse",
     "PagePresenceResponseDataItem",
     "PagePromptResponse",
@@ -1042,6 +1052,8 @@ __all__ = (
     "PageSittingResponseDataItem",
     "PageSpeechAccountView",
     "PageSpeechAccountViewDataItem",
+    "PageSpeechCapView",
+    "PageSpeechCapViewDataItem",
     "PageSpeechProvider",
     "PageSpeechProviderDataItem",
     "PageSpeechUsagePeriod",
@@ -1083,6 +1095,8 @@ __all__ = (
     "PhoneNumberResponse",
     "PlaceHoldRequest",
     "PlatformSpeech",
+    "PlatformSpeechCap",
+    "PlatformSpeechCapRequest",
     "PlatformSpeechRequest",
     "PlayRequest",
     "PolicyResponse",
@@ -1189,6 +1203,8 @@ __all__ = (
     "SpeechAccountKind",
     "SpeechAccountRequest",
     "SpeechAccountView",
+    "SpeechCapRequest",
+    "SpeechCapView",
     "SpeechPreviewRequest",
     "SpeechProvider",
     "SpeechSettingsRequest",

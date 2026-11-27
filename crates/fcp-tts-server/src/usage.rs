@@ -24,11 +24,14 @@ struct Counts {
 pub struct UsageCounter {
     store: Arc<dyn SpeechUsageStore>,
     pending: Mutex<HashMap<Key, Counts>>,
+    /// The caps the counts are held to (`docs/SPEECH_CAPS.md`).
+    pub caps: crate::caps::Caps,
 }
 
 impl UsageCounter {
     pub fn new(store: Arc<dyn SpeechUsageStore>) -> Arc<Self> {
         Arc::new(Self {
+            caps: crate::caps::Caps::new(store.clone()),
             store,
             pending: Mutex::default(),
         })
@@ -57,6 +60,11 @@ impl UsageCounter {
         c.characters += characters as u64;
         if synthesized {
             c.synthesized += characters as u64;
+        }
+        drop(pending);
+        if synthesized {
+            self.caps
+                .add(&tenant.to_string(), provider, characters as u64);
         }
     }
 
@@ -93,15 +101,18 @@ impl UsageCounter {
         }
     }
 
-    /// Flush every [`FLUSH`] for as long as the server runs.
+    /// Flush every [`FLUSH`] for as long as the server runs, and read the
+    /// caps and the month's totals back after each.
     pub fn spawn(self: &Arc<Self>) {
         let me = Arc::clone(self);
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(FLUSH);
             tick.tick().await;
+            me.caps.refresh().await;
             loop {
                 tick.tick().await;
                 me.flush().await;
+                me.caps.refresh().await;
             }
         });
     }

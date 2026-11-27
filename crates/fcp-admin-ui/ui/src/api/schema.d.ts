@@ -5394,6 +5394,79 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/speech/caps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /speech/caps — the caps on the tenant, and where it stands. */
+        get: operations["speech_list_caps"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/speech/caps/{provider}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * PUT /speech/caps/{provider} — the tenant's own cap, or (a platform
+         *     administrator, `kind: platform`) the platform's cap on this tenant.
+         */
+        put: operations["speech_put_cap"];
+        post?: never;
+        /** DELETE /speech/caps/{provider} */
+        delete: operations["speech_delete_cap"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/speech/caps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /system/speech/caps — the platform's default caps. */
+        get: operations["system_list_speech_caps"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/speech/caps/{provider}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** PUT /system/speech/caps/{provider} — a platform provider's default cap. */
+        put: operations["system_put_speech_cap"];
+        post?: never;
+        /** DELETE /system/speech/caps/{provider} */
+        delete: operations["system_delete_speech_cap"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/branding": {
         parameters: {
             query?: never;
@@ -12224,6 +12297,21 @@ export interface components {
             total?: number | null;
         };
         /** @description A page of a list. */
+        Page_PlatformSpeechCap: {
+            data: {
+                provider: string;
+                /** Format: int64 */
+                monthly_characters: number;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
         Page_PresenceResponse: {
             data: {
                 aor: string;
@@ -12848,6 +12936,52 @@ export interface components {
                 has_key: boolean;
                 created_at: string;
                 updated_at: string;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_SpeechCapView: {
+            data: {
+                /** @description A platform provider's name, or `account:<uuid>`. */
+                provider: string;
+                /** @description The provider, or the account's name. */
+                label: string;
+                /**
+                 * Format: int64
+                 * @description What the platform holds the tenant to on this provider (its cap
+                 *     for this tenant, else its default); never on an account.
+                 */
+                platform_cap?: number | null;
+                /**
+                 * @description Whether the platform set a cap for this tenant itself, rather than
+                 *     its default (null `platform_cap` then means none for this tenant).
+                 */
+                platform_override: boolean;
+                /**
+                 * Format: int64
+                 * @description The tenant's own cap.
+                 */
+                own_cap?: number | null;
+                /**
+                 * Format: int64
+                 * @description The cap that applies: the lowest of the two.
+                 */
+                cap?: number | null;
+                /**
+                 * Format: int64
+                 * @description Synthesized characters this month (UTC), the cloud's and sites'.
+                 */
+                used: number;
+                /** @description `ok`, `near` (80 % or more) or `reached`. */
+                state: string;
+                /** @description When the month's count starts again (RFC 3339). */
+                resets_at: string;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -13625,6 +13759,16 @@ export interface components {
              *     still be named here).
              */
             held_back: string[];
+        };
+        /** @description A platform provider's default cap for every tenant. */
+        PlatformSpeechCap: {
+            provider: string;
+            /** Format: int64 */
+            monthly_characters: number;
+        };
+        PlatformSpeechCapRequest: {
+            /** Format: int64 */
+            monthly_characters: number;
         };
         PlatformSpeechRequest: {
             held_back: string[];
@@ -15055,6 +15199,56 @@ export interface components {
             has_key: boolean;
             created_at: string;
             updated_at: string;
+        };
+        /**
+         * @description A cap to keep. `monthly_characters` null is allowed only on a tenant's
+         *     platform cap: none for this tenant, whatever the default says.
+         */
+        SpeechCapRequest: {
+            /** Format: int64 */
+            monthly_characters?: number | null;
+            /**
+             * @description `tenant` (the default: the tenant's own) or `platform` (a platform
+             *     administrator's cap on this tenant).
+             */
+            kind?: string | null;
+        };
+        /** @description One provider's cap on the tenant this month. */
+        SpeechCapView: {
+            /** @description A platform provider's name, or `account:<uuid>`. */
+            provider: string;
+            /** @description The provider, or the account's name. */
+            label: string;
+            /**
+             * Format: int64
+             * @description What the platform holds the tenant to on this provider (its cap
+             *     for this tenant, else its default); never on an account.
+             */
+            platform_cap?: number | null;
+            /**
+             * @description Whether the platform set a cap for this tenant itself, rather than
+             *     its default (null `platform_cap` then means none for this tenant).
+             */
+            platform_override: boolean;
+            /**
+             * Format: int64
+             * @description The tenant's own cap.
+             */
+            own_cap?: number | null;
+            /**
+             * Format: int64
+             * @description The cap that applies: the lowest of the two.
+             */
+            cap?: number | null;
+            /**
+             * Format: int64
+             * @description Synthesized characters this month (UTC), the cloud's and sites'.
+             */
+            used: number;
+            /** @description `ok`, `near` (80 % or more) or `reached`. */
+            state: string;
+            /** @description When the month's count starts again (RFC 3339). */
+            resets_at: string;
         };
         /**
          * @description What to speak for a preview; unset is the tenant's choice, then the
@@ -29293,6 +29487,15 @@ export interface operations {
                     "audio/wav": number[];
                 };
             };
+            /** @description This month's speech cap on the provider is reached (`speech_cap_reached`) */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description An error */
             default: {
                 headers: {
@@ -29489,6 +29692,204 @@ export interface operations {
                 content: {
                     "audio/wav": number[];
                 };
+            };
+            /** @description This month's speech cap on the provider is reached (`speech_cap_reached`) */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    speech_list_caps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_SpeechCapView"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    speech_put_cap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description A platform provider, or account:<uuid> */
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SpeechCapRequest"];
+            };
+        };
+        responses: {
+            /** @description Kept */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    speech_delete_cap: {
+        parameters: {
+            query?: {
+                /** @description `tenant` (the default) or `platform`. */
+                kind?: string;
+            };
+            header?: never;
+            path: {
+                /** @description A platform provider, or account:<uuid> */
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    system_list_speech_caps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_PlatformSpeechCap"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    system_put_speech_cap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description A platform provider */
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlatformSpeechCapRequest"];
+            };
+        };
+        responses: {
+            /** @description Kept */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    system_delete_speech_cap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description A platform provider */
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description An error */
             default: {
