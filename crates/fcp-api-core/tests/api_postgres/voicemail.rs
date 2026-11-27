@@ -1970,3 +1970,150 @@ async fn speech_caps_are_set_by_whoever_pays() {
     assert_eq!(caps.json, json!([]), "{}", caps.text);
     app.finish().await;
 }
+
+/// `docs/SPEECH_CAPS.md` C2: 80 % and 100 % of a cap said once per cap and
+/// month, near never after reached; prices make an estimated cost.
+#[tokio::test]
+async fn speech_caps_warn_once_and_usage_is_priced() {
+    use fcp_core::speech::{SpeechCap, SpeechCapKind, SpeechUsage, SpeechUsageStore};
+    use fcp_events::SpeechEvent;
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let hour = SystemTime::UNIX_EPOCH
+        + std::time::Duration::from_secs(
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                / 3600
+                * 3600,
+        );
+    let spoke = |tenant, provider: &str, n| SpeechUsage {
+        tenant_id: tenant,
+        provider: provider.into(),
+        hour,
+        requests: 1,
+        characters: n,
+        synthesized_characters: n,
+        site_id: None,
+    };
+    let a = app.tenant_a;
+    let other = seed_tenant(&app.storage, "speech-caps-other").await;
+    app.storage
+        .put_speech_cap(&SpeechCap {
+            tenant_id: None,
+            provider: "elevenlabs".into(),
+            kind: SpeechCapKind::Platform,
+            monthly_characters: Some(100),
+        })
+        .await
+        .unwrap();
+    let kinds = |raised: &[SpeechEvent]| -> Vec<(String, &'static str, u64)> {
+        raised
+            .iter()
+            .map(|e| match e {
+                SpeechEvent::CapNear {
+                    tenant_id, used, ..
+                } => (tenant_id.to_string(), "near", *used),
+                SpeechEvent::CapReached {
+                    tenant_id, used, ..
+                } => (tenant_id.to_string(), "reached", *used),
+            })
+            .collect()
+    };
+    let now = SystemTime::now();
+    assert!(fcp_api_core::v1::speech::sweep_caps(&app.state, now)
+        .await
+        .is_empty());
+
+    // A: 85 of 100, near. The other tenant: straight past the cap.
+    app.storage
+        .add_speech_usage(&[spoke(a, "elevenlabs", 85), spoke(other, "elevenlabs", 150)])
+        .await
+        .unwrap();
+    let raised = fcp_api_core::v1::speech::sweep_caps(&app.state, now).await;
+    let mut got = kinds(&raised);
+    got.sort();
+    let mut want = vec![
+        (a.to_string(), "near", 85),
+        (other.to_string(), "reached", 150),
+    ];
+    want.sort();
+    assert_eq!(got, want);
+    let SpeechEvent::CapNear { month, cap, .. } = raised
+        .iter()
+        .find(|e| matches!(e, SpeechEvent::CapNear { .. }))
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    assert_eq!(*cap, 100);
+    assert_eq!(month.len(), 7, "YYYY-MM: {month}");
+    // Said once.
+    assert!(fcp_api_core::v1::speech::sweep_caps(&app.state, now)
+        .await
+        .is_empty());
+    // A reaches it.
+    app.storage
+        .add_speech_usage(&[spoke(a, "elevenlabs", 20)])
+        .await
+        .unwrap();
+    let raised = fcp_api_core::v1::speech::sweep_caps(&app.state, now).await;
+    assert_eq!(kinds(&raised), [(a.to_string(), "reached", 105)]);
+    assert!(fcp_api_core::v1::speech::sweep_caps(&app.state, now)
+        .await
+        .is_empty());
+    assert!(fcp_events::PlatformEvent::EVENT_TYPES.contains(&"speech.cap_reached"));
+
+    // Prices: the platform's on its provider, the tenant's on its account.
+    let priced = app
+        .admin(
+            Method::PUT,
+            "/api/v1/system/speech",
+            Some(json!({ "held_back": [], "prices": { "elevenlabs": 30.0 } })),
+        )
+        .await;
+    assert_eq!(priced.status, StatusCode::OK, "{}", priced.text);
+    for bad in [json!({ "elevenlabs": -1.0 }), json!({ "account:x": 1.0 })] {
+        let r = app
+            .admin(
+                Method::PUT,
+                "/api/v1/system/speech",
+                Some(json!({ "held_back": [], "prices": bad })),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.text);
+    }
+    let made = app
+        .admin(
+            Method::POST,
+            "/api/v1/speech/accounts",
+            Some(json!({ "name": "Priced", "kind": "openai", "secret": "sk",
+                         "price_per_million": 15.0 })),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    assert_eq!(made.json["price_per_million"], 15.0);
+    let account = made.json["provider"].as_str().unwrap().to_string();
+    app.storage
+        .add_speech_usage(&[spoke(a, &account, 2_000_000), spoke(a, "piper", 9)])
+        .await
+        .unwrap();
+    let usage = app.admin(Method::GET, "/api/v1/speech/usage", None).await;
+    assert_eq!(usage.status, StatusCode::OK, "{}", usage.text);
+    let cost = |p: &str| {
+        usage
+            .json
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["provider"] == p)
+            .map(|r| r["estimated_cost"].clone())
+            .unwrap()
+    };
+    assert_eq!(cost("elevenlabs"), json!(0.0032), "{}", usage.text);
+    assert_eq!(cost(&account), json!(30.0), "{}", usage.text);
+    assert_eq!(cost("piper"), Value::Null, "{}", usage.text);
+    app.finish().await;
+}

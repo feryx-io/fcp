@@ -787,6 +787,10 @@ async fn main() -> Result<()> {
         format!("fcp-admin:{}", config.service.node_id),
     );
 
+    // Tenants' speech against their caps: 80 % and 100 % said once per cap
+    // and month (docs/SPEECH_CAPS.md C2), every minute.
+    fcp_api_core::v1::speech::spawn_cap_sweep(api_state.clone());
+
     // App devices nobody signs in as any more removed, once an hour
     // (docs/APP_SIGN_IN.md).
     fcp_api_core::v1::app_auth::spawn_device_sweep(api_state.clone());

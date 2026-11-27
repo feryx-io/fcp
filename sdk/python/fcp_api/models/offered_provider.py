@@ -8,6 +8,8 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..types import UNSET, Unset
+from typing import cast
 
 
 
@@ -26,11 +28,14 @@ class OfferedProvider:
             name (str):
             is_default (bool):
             offered (bool): Whether tenants may choose it.
+            price_per_million (float | None | Unset): What the platform charges tenants per million characters, for an
+                estimated cost beside their usage (`docs/SPEECH_CAPS.md`).
      """
 
     name: str
     is_default: bool
     offered: bool
+    price_per_million: float | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -44,6 +49,12 @@ class OfferedProvider:
 
         offered = self.offered
 
+        price_per_million: float | None | Unset
+        if isinstance(self.price_per_million, Unset):
+            price_per_million = UNSET
+        else:
+            price_per_million = self.price_per_million
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -52,6 +63,8 @@ class OfferedProvider:
             "is_default": is_default,
             "offered": offered,
         })
+        if price_per_million is not UNSET:
+            field_dict["price_per_million"] = price_per_million
 
         return field_dict
 
@@ -66,10 +79,21 @@ class OfferedProvider:
 
         offered = d.pop("offered")
 
+        def _parse_price_per_million(data: object) -> float | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(float | None | Unset, data)
+
+        price_per_million = _parse_price_per_million(d.pop("price_per_million", UNSET))
+
+
         offered_provider = cls(
             name=name,
             is_default=is_default,
             offered=offered,
+            price_per_million=price_per_million,
         )
 
 
