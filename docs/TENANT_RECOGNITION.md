@@ -209,6 +209,13 @@ offer lists recognizers with their default caps and prices.
 - **R4 — sites.** The new fields and kind synced (already journaled
   tables), usage shipped, caps carried with their unit; proved by
   `fcp-link/tests`.
+  **Done (v0.25.668):** nothing new was needed: the recognizer, its
+  language and Deepgram accounts ride the synced settings and accounts,
+  `recognized_ms` rides the shipped usage rows, and a minute cap the
+  carried caps (R3). Proved by `fcp-link/tests/records.rs` (an hour heard
+  at a site reaching the cloud, shipped again as it fills) and `apply.rs`
+  (a recognizer's minute cap at the site counting what was heard
+  elsewhere, never the site's own). All four phases done.
 
 ## 6. Questions
 

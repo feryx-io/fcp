@@ -373,7 +373,8 @@ async fn what_a_site_writes_reaches_the_cloud_and_its_files_are_reached_through_
             requests: 1,
             characters,
             synthesized_characters: characters,
-            recognized_ms: 0,
+            // And what was heard (docs/TENANT_RECOGNITION.md R4).
+            recognized_ms: characters * 1000,
             site_id: None,
         };
         async fn cloud_has(
@@ -388,7 +389,11 @@ async fn what_a_site_writes_reaches_the_cloud_and_its_files_are_reached_through_
                 .await
                 .unwrap()
                 .iter()
-                .any(|u| u.site_id.as_deref() == Some(site) && u.characters == want)
+                .any(|u| {
+                    u.site_id.as_deref() == Some(site)
+                        && u.characters == want
+                        && u.recognized_ms == want * 1000
+                })
         }
         let site_name = cloud.site_id.clone();
         site.add_speech_usage(&[usage(50)]).await.unwrap();
