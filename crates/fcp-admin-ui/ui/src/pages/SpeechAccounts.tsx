@@ -268,3 +268,50 @@ export function PlatformOffer() {
     </Card>
   )
 }
+
+/** The tenant's speech by month and provider (docs/TENANT_SPEECH.md S4). */
+export function SpeechUsageCard() {
+  const usage = useQuery({ queryKey: ['speech', 'usage'], queryFn: speech.usage })
+  const rows = [...(usage.data ?? [])].sort((a, b) => b.period.localeCompare(a.period) || a.label.localeCompare(b.label))
+  const n = (v: number) => v.toLocaleString()
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Usage</CardTitle>
+        <CardDescription>
+          Characters spoken for you by month (UTC). A provider bills for what it spoke; the rest came from the cache.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {rows.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Nothing spoken in the last twelve months.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Month</TableHead>
+                  <TableHead>Provider</TableHead>
+                  <TableHead className="text-right">Requests</TableHead>
+                  <TableHead className="text-right">Characters</TableHead>
+                  <TableHead className="text-right">Spoken by the provider</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((r) => (
+                  <TableRow key={`${r.period}-${r.provider}`}>
+                    <TableCell>{r.period}</TableCell>
+                    <TableCell>{r.label}</TableCell>
+                    <TableCell className="text-right tabular-nums">{n(r.requests)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{n(r.characters)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{n(r.synthesized_characters)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}

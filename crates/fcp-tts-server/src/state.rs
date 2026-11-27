@@ -29,6 +29,9 @@ pub struct AppState {
     pub account_services: AccountServices,
     /// The platform's providers held back from tenants, as last read.
     pub held_back: HeldBack,
+    /// Each tenant's speech counted (`docs/TENANT_SPEECH.md` S4), where
+    /// there is a database.
+    pub usage: Option<Arc<crate::usage::UsageCounter>>,
 }
 
 /// When the held-back list was read, and what it said.
@@ -311,6 +314,7 @@ mod tests {
             accounts: None,
             account_services: Default::default(),
             held_back: Default::default(),
+            usage: None,
         };
 
         assert!(state.service(None).is_some());

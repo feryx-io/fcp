@@ -172,7 +172,20 @@ sealed again with the site's key; usage comes up with the site's records.
   server, against `StandInTts`), `a_tenants_speech_account_is_made_chosen_and_deleted`
   and `the_platform_holds_a_provider_back_from_tenants` (`api_postgres`),
   `e2e/speech.spec.ts`.
-- **S4 — usage,** counted at the server, shown on the page.
+- **S4 done (v0.25.655) — usage.** The TTS server counts each tenant's
+  requests and characters per provider (the one that spoke: an account as
+  `account:<uuid>`, the default where it stepped in) and hour, telling
+  what the provider spoke (`TtsService::synthesize_counted`) from what the
+  cache served, in memory, added to `speech_usage` (migration 155) every
+  15 s and kept through a failed write (`fcp-tts-server/src/usage.rs`).
+  `GET /speech/usage?from=&to=&by=month|day` (`prompt_read`; twelve months
+  by default, at most 800 days) sums the hours by UTC period and provider,
+  an account named by its name. The Speech page's Usage card shows the
+  last twelve months. A default stepping in for an account that cannot
+  speak no longer sends it the account's voice. Proved by
+  `counts_are_summed_per_tenant_and_provider_and_kept_through_a_failure`
+  and `speech_usage_is_read_by_month_or_day_and_provider`. Caps are for
+  later (§7 question 4).
 - **S5 — sites.**
 
 STT (`docs/SPEECH.md` §1–7) follows the same model afterwards: a

@@ -504,6 +504,7 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     (PUT, "/speech/accounts/:id", Needs(PromptManage)),
     (DELETE, "/speech/accounts/:id", Needs(PromptManage)),
     (POST, "/speech/accounts/:id/test", Needs(PromptManage)),
+    (GET, "/speech/usage", Needs(PromptRead)),
     (GET, "/speech/providers", Needs(PromptRead)),
     (GET, "/speech/voices", Needs(PromptRead)),
     (POST, "/speech/preview", Needs(PromptRead)),

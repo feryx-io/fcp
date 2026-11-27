@@ -392,6 +392,8 @@ from .page_speech_account_view import PageSpeechAccountView
 from .page_speech_account_view_data_item import PageSpeechAccountViewDataItem
 from .page_speech_provider import PageSpeechProvider
 from .page_speech_provider_data_item import PageSpeechProviderDataItem
+from .page_speech_usage_period import PageSpeechUsagePeriod
+from .page_speech_usage_period_data_item import PageSpeechUsagePeriodDataItem
 from .page_speech_voice import PageSpeechVoice
 from .page_speech_voice_data_item import PageSpeechVoiceDataItem
 from .page_subject_request_response import PageSubjectRequestResponse
@@ -541,6 +543,7 @@ from .speech_settings_request import SpeechSettingsRequest
 from .speech_settings_request_voices import SpeechSettingsRequestVoices
 from .speech_settings_response import SpeechSettingsResponse
 from .speech_settings_response_voices import SpeechSettingsResponseVoices
+from .speech_usage_period import SpeechUsagePeriod
 from .speech_voice import SpeechVoice
 from .sso_exchange_request import SsoExchangeRequest
 from .start_recording_request import StartRecordingRequest
@@ -1041,6 +1044,8 @@ __all__ = (
     "PageSpeechAccountViewDataItem",
     "PageSpeechProvider",
     "PageSpeechProviderDataItem",
+    "PageSpeechUsagePeriod",
+    "PageSpeechUsagePeriodDataItem",
     "PageSpeechVoice",
     "PageSpeechVoiceDataItem",
     "PageSubjectRequestResponse",
@@ -1190,6 +1195,7 @@ __all__ = (
     "SpeechSettingsRequestVoices",
     "SpeechSettingsResponse",
     "SpeechSettingsResponseVoices",
+    "SpeechUsagePeriod",
     "SpeechVoice",
     "SsoExchangeRequest",
     "StartRecordingRequest",

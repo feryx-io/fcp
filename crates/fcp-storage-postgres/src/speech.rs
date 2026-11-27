@@ -3,7 +3,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use fcp_core::speech::{
-    SpeechAccount, SpeechAccountKind, SpeechAccountStore, SpeechSettingsStore, TenantSpeech,
+    SpeechAccount, SpeechAccountKind, SpeechAccountStore, SpeechSettingsStore, SpeechUsage,
+    SpeechUsageStore, TenantSpeech,
 };
 use fcp_core::TenantId;
 use sqlx::Row;
@@ -189,5 +190,69 @@ impl SpeechAccountStore for PostgresStorage {
             .execute(self.writes())
             .await?;
         Ok(done.rows_affected() > 0)
+    }
+}
+
+#[async_trait]
+impl SpeechUsageStore for PostgresStorage {
+    async fn add_speech_usage(&self, usage: &[SpeechUsage]) -> anyhow::Result<()> {
+        if usage.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.writes().begin().await?;
+        for u in usage {
+            sqlx::query(
+                "INSERT INTO speech_usage
+                     (tenant_id, provider, hour, requests, characters, synthesized_characters)
+                 VALUES ($1, $2, $3, $4, $5, $6)
+                 ON CONFLICT (tenant_id, hour, provider) DO UPDATE SET
+                     requests = speech_usage.requests + EXCLUDED.requests,
+                     characters = speech_usage.characters + EXCLUDED.characters,
+                     synthesized_characters =
+                         speech_usage.synthesized_characters + EXCLUDED.synthesized_characters",
+            )
+            .bind(u.tenant_id.to_string())
+            .bind(&u.provider)
+            .bind(system_time_to_datetime(u.hour))
+            .bind(u.requests as i64)
+            .bind(u.characters as i64)
+            .bind(u.synthesized_characters as i64)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn speech_usage(
+        &self,
+        tenant_id: &TenantId,
+        from: std::time::SystemTime,
+        to: std::time::SystemTime,
+    ) -> anyhow::Result<Vec<SpeechUsage>> {
+        let rows = sqlx::query(
+            "SELECT provider, hour, requests, characters, synthesized_characters
+               FROM speech_usage
+              WHERE tenant_id = $1 AND hour >= $2 AND hour < $3
+              ORDER BY hour, provider",
+        )
+        .bind(tenant_id.to_string())
+        .bind(system_time_to_datetime(from))
+        .bind(system_time_to_datetime(to))
+        .fetch_all(self.reads())
+        .await?;
+        rows.iter()
+            .map(|r| {
+                Ok(SpeechUsage {
+                    tenant_id: *tenant_id,
+                    provider: r.try_get("provider")?,
+                    hour: datetime_to_system_time(r.try_get::<DateTime<Utc>, _>("hour")?),
+                    requests: r.try_get::<i64, _>("requests")?.max(0) as u64,
+                    characters: r.try_get::<i64, _>("characters")?.max(0) as u64,
+                    synthesized_characters: r.try_get::<i64, _>("synthesized_characters")?.max(0)
+                        as u64,
+                })
+            })
+            .collect()
     }
 }

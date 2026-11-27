@@ -17,6 +17,9 @@ test("a tenant's speech settings are saved, kept and taken back", async ({ page,
   await settled(page)
   await expect(page.getByRole('heading', { name: 'Speech', exact: true })).toBeVisible()
   await expect(page.getByText('No TTS service answers this admin')).toBeVisible()
+  // Usage (S4): nothing spoken for this tenant yet.
+  await expect(page.getByRole('heading', { name: 'Usage' })).toBeVisible()
+  await expect(page.getByText('Nothing spoken in the last twelve months.')).toBeVisible()
 
   await page.getByLabel('Language', { exact: true }).first().fill('en-GB')
   await page.getByRole('button', { name: 'Add', exact: true }).click()

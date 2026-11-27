@@ -17259,6 +17259,66 @@
         }
       }
     },
+    "/api/v1/speech/usage": {
+      "get": {
+        "tags": [
+          "speech"
+        ],
+        "summary": "GET /speech/usage — the tenant's speech by month or day and provider.",
+        "operationId": "speech_usage",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "RFC 3339 or `YYYY-MM-DD`; twelve months back, from the month's\nstart, unless given.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "RFC 3339 or `YYYY-MM-DD`, exclusive; now unless given.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "by",
+            "in": "query",
+            "description": "`month` (the default) or `day`, in UTC.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_SpeechUsagePeriod"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/system/speech": {
       "get": {
         "tags": [
@@ -40791,6 +40851,76 @@
           }
         }
       },
+      "Page_SpeechUsagePeriod": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "What the tenant's speech cost in one period with one provider.",
+              "required": [
+                "period",
+                "provider",
+                "label",
+                "requests",
+                "characters",
+                "synthesized_characters"
+              ],
+              "properties": {
+                "period": {
+                  "type": "string",
+                  "description": "`YYYY-MM` or `YYYY-MM-DD` (UTC)."
+                },
+                "provider": {
+                  "type": "string",
+                  "description": "A platform provider's name, or `account:<uuid>`."
+                },
+                "label": {
+                  "type": "string",
+                  "description": "What to show: the provider, or the account's name."
+                },
+                "requests": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "characters": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "synthesized_characters": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "What the provider spoke, and bills for; the rest came from the cache.",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
       "Page_SpeechVoice": {
         "type": "object",
         "description": "A page of a list.",
@@ -46965,6 +47095,48 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "SpeechUsagePeriod": {
+        "type": "object",
+        "description": "What the tenant's speech cost in one period with one provider.",
+        "required": [
+          "period",
+          "provider",
+          "label",
+          "requests",
+          "characters",
+          "synthesized_characters"
+        ],
+        "properties": {
+          "period": {
+            "type": "string",
+            "description": "`YYYY-MM` or `YYYY-MM-DD` (UTC)."
+          },
+          "provider": {
+            "type": "string",
+            "description": "A platform provider's name, or `account:<uuid>`."
+          },
+          "label": {
+            "type": "string",
+            "description": "What to show: the provider, or the account's name."
+          },
+          "requests": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "characters": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "synthesized_characters": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What the provider spoke, and bills for; the rest came from the cache.",
+            "minimum": 0
           }
         }
       },

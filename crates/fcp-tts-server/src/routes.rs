@@ -73,6 +73,10 @@ pub async fn synthesize(
     // tenant that has it. One the tenant chose that cannot speak falls back
     // to the server's default, so a call is never silent; one a request
     // names (a preview) says why.
+    // Who speaks, as usage counts it; and whether the default stepped in
+    // for an account that could not, whose voice is then not its own.
+    let mut spoken_by = provider_name.unwrap_or(&state.default_provider).to_string();
+    let mut fell_back = false;
     let service: Arc<fcp_media::tts::TtsService> = match provider_name
         .and_then(fcp_core::speech::account_of)
     {
@@ -87,6 +91,8 @@ pub async fn synthesize(
                 (Err(why), true, _) => return refuse(why),
                 (Err(why), false, Some(default)) => {
                     warn!(account = %id, why = %why, "A tenant's account cannot speak; the default speaks");
+                    spoken_by = state.default_provider.clone();
+                    fell_back = true;
                     Arc::clone(default)
                 }
                 (Err(why), false, None) => return refuse(why),
@@ -106,6 +112,7 @@ pub async fn synthesize(
     // did not name another.
     let tenant_voice = tenant
         .as_ref()
+        .filter(|_| !fell_back)
         .filter(|_| req.provider.is_none() || req.provider.as_deref() == tenant_provider)
         .and_then(|t| t.voice_for(&language));
     let voice = req
@@ -114,9 +121,15 @@ pub async fn synthesize(
         .or(tenant_voice)
         .or(state.config.tts.default_voice.as_deref());
 
-    match service.synthesize(&req.text, Some(&language), voice).await {
-        Ok(path) => {
+    match service
+        .synthesize_counted(&req.text, Some(&language), voice, None)
+        .await
+    {
+        Ok((path, synthesized)) => {
             let chars = req.text.len();
+            if let (Some(usage), Some(tenant)) = (&state.usage, req.tenant_id.as_deref()) {
+                usage.count(tenant, &spoken_by, req.text.chars().count(), synthesized);
+            }
             info!(
                 text_len = chars,
                 language = %language,
@@ -387,6 +400,7 @@ mod tests {
             accounts: None,
             account_services: Default::default(),
             held_back: Default::default(),
+            usage: None,
         })
     }
 
@@ -523,6 +537,7 @@ mod tests {
             accounts: None,
             account_services: Default::default(),
             held_back: Default::default(),
+            usage: None,
             config: base.config.clone(),
             default_provider: base.default_provider.clone(),
             stt: Default::default(),
@@ -698,6 +713,7 @@ mod tests {
             accounts: Some(Arc::new(Accounts(vec![account.clone()]))),
             account_services: Default::default(),
             held_back: Default::default(),
+            usage: None,
             config: base.config.clone(),
             default_provider: base.default_provider.clone(),
             stt: Default::default(),
@@ -767,6 +783,7 @@ mod tests {
                 std::time::Instant::now(),
                 vec!["costly".to_string()],
             )))),
+            usage: None,
             config: base.config.clone(),
             default_provider: base.default_provider.clone(),
             stt: Default::default(),
