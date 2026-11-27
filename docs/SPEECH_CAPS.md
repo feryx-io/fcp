@@ -191,6 +191,23 @@ by the cloud's sweep only, once.
   and `e2e/speech.spec.ts`'s caps test.
 - **C3 — sites.** Caps journaled and synced, `speech_cap_totals` down,
   the site's server enforcing on both, proved by `fcp-link/tests`.
+  **Done (v0.25.662):** the journal needs a tenant on every row, and the
+  platform's default caps have none, so the caps themselves are not
+  synced. Instead the cloud's minute sweep keeps `site_speech_caps`
+  (migration 159, journaled, in `SYNC_TABLES`; one row per tenant with a
+  site and capped provider, never the default): the cap that applies and
+  the month's synthesized characters by source (`''` the cloud, else a
+  site's id), written only when it changed and removed with its cap
+  (`fcp_core::speech::SiteSpeechCap`). The link keeps each as
+  `speech_cap_carried` — the cap, and what was spoken everywhere but this
+  site, whose own it counts itself — and the site's TTS server reads it
+  with its own caps (as the platform's on the tenant) and usage, so
+  `/speech/caps` at the site shows the same. A site's admin refuses
+  `speech/caps` and `system/speech/caps`, and raises no warnings (the
+  cloud's sweep alone does). Proved by
+  `speech_caps_are_carried_to_a_tenant_s_sites` and `fcp-link/tests/apply.rs`
+  (a cap reaching the site with its own share left out, refused there,
+  gone when the cloud's goes). All three phases done.
 
 ## 7. Questions
 

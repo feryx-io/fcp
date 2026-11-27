@@ -2117,3 +2117,121 @@ async fn speech_caps_warn_once_and_usage_is_priced() {
     assert_eq!(cost("piper"), Value::Null, "{}", usage.text);
     app.finish().await;
 }
+
+/// `docs/SPEECH_CAPS.md` C3: for a tenant with a site, the sweep keeps each
+/// capped provider's cap and the month's speech by where it was spoken, for
+/// the journal to carry down; written only when it changes, gone with the
+/// cap. A tenant without a site gets none.
+#[tokio::test]
+async fn speech_caps_are_carried_to_a_tenant_s_sites() {
+    use fcp_core::speech::{SpeechCap, SpeechCapKind, SpeechUsage, SpeechUsageStore};
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let site = app
+        .admin(
+            Method::POST,
+            "/api/v1/sites",
+            Some(json!({ "name": "capped-site" })),
+        )
+        .await;
+    assert!(site.status.is_success(), "{}", site.text);
+    let site_id = site.json["id"].as_str().unwrap().to_string();
+    let hour = SystemTime::UNIX_EPOCH
+        + std::time::Duration::from_secs(
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                / 3600
+                * 3600,
+        );
+    let spoke = |tenant, n| SpeechUsage {
+        tenant_id: tenant,
+        provider: "elevenlabs".into(),
+        hour,
+        requests: 1,
+        characters: n,
+        synthesized_characters: n,
+        site_id: None,
+    };
+    let a = app.tenant_a;
+    let b = app.tenant_b;
+    app.storage
+        .put_speech_cap(&SpeechCap {
+            tenant_id: None,
+            provider: "elevenlabs".into(),
+            kind: SpeechCapKind::Platform,
+            monthly_characters: Some(1000),
+        })
+        .await
+        .unwrap();
+    app.storage
+        .add_speech_usage(&[spoke(a, 30), spoke(b, 40)])
+        .await
+        .unwrap();
+    app.storage
+        .put_site_speech_usage(&site_id, &[spoke(a, 70)])
+        .await
+        .unwrap();
+    let journaled = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sync_journal WHERE table_name = 'site_speech_caps'",
+        )
+        .fetch_one(app.storage.pool())
+        .await
+        .unwrap()
+    };
+
+    fcp_api_core::v1::speech::sweep_caps(&app.state, SystemTime::now()).await;
+    let rows = app.storage.site_speech_caps(&a).await.unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].cap, 1000);
+    assert_eq!(rows[0].used.get(""), Some(&30));
+    assert_eq!(rows[0].used.get(&site_id), Some(&70));
+    assert_eq!(rows[0].used_elsewhere(&site_id), 30);
+    assert!(
+        app.storage.site_speech_caps(&b).await.unwrap().is_empty(),
+        "tenant B has no site"
+    );
+    // Unchanged: nothing more journaled.
+    let once = journaled().await;
+    fcp_api_core::v1::speech::sweep_caps(&app.state, SystemTime::now()).await;
+    assert_eq!(
+        journaled().await,
+        once,
+        "an unchanged cap is not written again"
+    );
+
+    // The cap gone: so is the site's row.
+    app.storage
+        .delete_speech_cap(None, "elevenlabs", SpeechCapKind::Platform)
+        .await
+        .unwrap();
+    fcp_api_core::v1::speech::sweep_caps(&app.state, SystemTime::now()).await;
+    assert!(app.storage.site_speech_caps(&a).await.unwrap().is_empty());
+
+    // At a site, what the link carried is read as the platform's cap on the
+    // tenant, and what was spoken elsewhere counts toward it.
+    let (month, _) = fcp_core::speech::month_of(SystemTime::now());
+    app.storage
+        .put_carried_speech_cap(&b, "openai-cloud", month, 500, 120)
+        .await
+        .unwrap();
+    let caps = app.storage.all_speech_caps().await.unwrap();
+    assert_eq!(
+        fcp_core::speech::effective_cap(&caps, &b, "openai-cloud"),
+        Some(500)
+    );
+    let used = app.storage.synthesized_since(month).await.unwrap();
+    assert!(
+        used.contains(&(b, "openai-cloud".to_string(), 120)),
+        "{used:?}"
+    );
+    app.storage
+        .delete_carried_speech_cap(&b, "openai-cloud")
+        .await
+        .unwrap();
+    assert!(app.storage.all_speech_caps().await.unwrap().is_empty());
+    app.finish().await;
+}
