@@ -360,11 +360,11 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> 
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use axum::body::to_bytes;
 
-    async fn test_state() -> Arc<AppState> {
+    pub(crate) async fn test_state() -> Arc<AppState> {
         let cache_dir =
             std::env::temp_dir().join(format!("fcp-tts-routes-test-{}", uuid::Uuid::new_v4()));
         let service = Arc::new(
@@ -480,7 +480,9 @@ mod tests {
     }
 
     /// A tenant's speech settings in memory.
-    struct Settings(std::collections::HashMap<fcp_core::TenantId, fcp_core::speech::TenantSpeech>);
+    pub(crate) struct Settings(
+        pub(crate) std::collections::HashMap<fcp_core::TenantId, fcp_core::speech::TenantSpeech>,
+    );
 
     #[async_trait::async_trait]
     impl fcp_core::speech::SpeechSettingsStore for Settings {

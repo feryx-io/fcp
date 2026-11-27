@@ -180,7 +180,14 @@ format = "compact"
     let asked = scripted.requests();
     assert_eq!(asked.len(), 1, "one recording, recognised once");
     assert_eq!(asked[0].kind, "file");
-    assert_eq!(asked[0].query["language"], "en-GB");
+    // The mailbox's tenant named, its language left to the shared server
+    // (docs/TENANT_RECOGNITION.md R1).
+    assert_eq!(asked[0].query["tenant_id"], seed.tenant_id.to_string());
+    assert!(
+        !asked[0].query.contains_key("language"),
+        "{:?}",
+        asked[0].query
+    );
     assert!(asked[0].seconds >= 2.5, "{} s", asked[0].seconds);
 
     // A mailbox that does not ask is not sent to the recognizer.

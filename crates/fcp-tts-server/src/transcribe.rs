@@ -35,6 +35,9 @@ pub struct TranscribeQuery {
     pub interim_results: bool,
     #[serde(default)]
     pub speech_timeout_ms: Option<u32>,
+    /// Whose speech it is (`docs/TENANT_RECOGNITION.md` R1).
+    #[serde(default)]
+    pub tenant_id: Option<String>,
 }
 
 impl TranscribeQuery {
@@ -52,7 +55,26 @@ impl TranscribeQuery {
                 .collect(),
             interim_results: self.interim_results,
             speech_timeout_ms: self.speech_timeout_ms,
+            tenant_id: self.tenant_id.clone(),
         }
+    }
+
+    /// The options, with what the request left unset taken from its
+    /// tenant: the language its words are spoken in, until a recognition
+    /// language of its own (R2); else the provider's default.
+    async fn resolved(&self, state: &AppState, service: &SttService) -> SttOptions {
+        let mut options = self.options();
+        if options.language.is_none() {
+            options.language = state
+                .tenant_speech(self.tenant_id.as_deref())
+                .await
+                .and_then(|t| t.language)
+                .filter(|l| !l.trim().is_empty())
+                // Here the choosing ends: a provider behind this one is
+                // told a language, never left to pick.
+                .or_else(|| Some(service.language().to_string()));
+        }
+        options
     }
 }
 
@@ -102,7 +124,8 @@ pub async fn transcribe(
         Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     };
     let seconds = pcm.len() as f32 / stt::STT_SAMPLE_RATE as f32;
-    match service.transcribe_pcm(&pcm, &query.options()).await {
+    let options = query.resolved(&state, &service).await;
+    match service.transcribe_pcm(&pcm, &options).await {
         Ok(transcript) => {
             info!(
                 provider = %service.provider_name(),
@@ -131,7 +154,7 @@ pub async fn transcribe_stream(
         Ok(s) => s,
         Err((status, message)) => return error(status, message),
     };
-    let options = query.options();
+    let options = query.resolved(&state, &service).await;
     upgrade.on_upgrade(move |socket| stream_session(socket, service, options))
 }
 
@@ -182,5 +205,86 @@ async fn stream_session(socket: WebSocket, service: Arc<SttService>, options: St
                 }
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::routes::tests::{test_state, Settings};
+    use fcp_media::stt::{wav_bytes, SttConfig, SttProviderConfig};
+    use fcp_testkit::stt::ScriptedStt;
+    use std::time::Duration;
+
+    /// `docs/TENANT_RECOGNITION.md` R1: a request naming its tenant and no
+    /// language is heard in the tenant's language; one naming a language,
+    /// or no tenant, as before.
+    #[tokio::test]
+    async fn a_tenant_is_heard_in_its_own_language() {
+        let scripted = ScriptedStt::start("up", &[(700, "oui")]).await;
+        let service = Arc::new(
+            SttService::new(SttConfig {
+                provider: SttProviderConfig::Remote {
+                    url: scripted.url().into(),
+                    auth_token: "up".into(),
+                    provider: None,
+                },
+                language: "en-US".into(),
+            })
+            .await
+            .unwrap(),
+        );
+        let a = fcp_core::TenantId::new();
+        let mut speech = fcp_core::speech::TenantSpeech::defaults(a);
+        speech.language = Some("fr-CA".into());
+        let base = test_state().await;
+        let state = Arc::new(AppState {
+            services: base.services.clone(),
+            speech: Some(Arc::new(Settings([(a, speech)].into_iter().collect()))),
+            speech_cache: Default::default(),
+            accounts: None,
+            account_services: Default::default(),
+            held_back: Default::default(),
+            usage: None,
+            config: base.config.clone(),
+            default_provider: base.default_provider.clone(),
+            stt: [("scripted".to_string(), service)].into_iter().collect(),
+            stt_default: Some("scripted".into()),
+        });
+        let tone: Vec<i16> = (0..16 * 400)
+            .map(|i| {
+                (9000.0 * (2.0 * std::f64::consts::PI * 700.0 * i as f64 / 16_000.0).sin()) as i16
+            })
+            .collect();
+        let hear = |tenant: Option<String>, language: Option<&str>| {
+            let state = Arc::clone(&state);
+            let query = TranscribeQuery {
+                tenant_id: tenant,
+                language: language.map(String::from),
+                ..Default::default()
+            };
+            let body = Bytes::from(wav_bytes(&tone));
+            async move { transcribe(State(state), Query(query), body).await.status() }
+        };
+        assert_eq!(
+            hear(Some(a.as_uuid().to_string()), None).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            hear(Some(a.to_string()), Some("es-ES")).await,
+            StatusCode::OK
+        );
+        assert_eq!(hear(None, None).await, StatusCode::OK);
+        assert_eq!(
+            hear(Some(fcp_core::TenantId::new().to_string()), None).await,
+            StatusCode::OK
+        );
+        let languages: Vec<String> = scripted
+            .wait_for(4, Duration::from_secs(5))
+            .await
+            .iter()
+            .map(|r| r.query.get("language").cloned().unwrap_or_default())
+            .collect();
+        assert_eq!(languages, ["fr-CA", "es-ES", "en-US", "en-US"]);
     }
 }

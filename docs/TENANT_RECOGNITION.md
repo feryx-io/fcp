@@ -130,6 +130,17 @@ offer lists recognizers with their default caps and prices.
   tenant's recognition language (the speech language until R2's field).
   Proved by a flow and a voicemail heard in the tenant's language through
   the shared server.
+  **Done (v0.25.664):** `SttOptions.tenant_id`, set by a Gather by speech
+  and the Transcribe node (the call's tenant) and by voicemail
+  transcription (the mailbox's); the `remote` provider sends it as
+  `tenant_id` on `/v1/transcribe` and `/v1/transcribe/stream` and, for a
+  request naming a tenant, leaves the language for the shared server to
+  choose. The server hears a request naming no language in the tenant's
+  speech language, else its own default (always told to a provider behind
+  it); a flow naming a language still wins. A node with its own provider
+  ignores the tenant. Proved by `a_tenant_is_heard_in_its_own_language`
+  (the server), the test kit's remote-provider test, and the call
+  manager's `listen.rs` and `speech.rs` (the tenant on every request).
 - **R2 — choosing a recognizer.** `recognizer` and
   `recognition_language` (migration), `deepgram` accounts, `speaks`/
   `hears`, held-back recognizers, the server keeping a recognizer per

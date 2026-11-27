@@ -4306,6 +4306,13 @@ impl FlowCallHandler {
                     "Gather: listening"
                 );
 
+                // Whose speech it is, for the tenant's recognizer
+                // (docs/TENANT_RECOGNITION.md R1).
+                let gather_tenant = self
+                    .call_manager
+                    .as_ref()
+                    .and_then(|call_manager| call_manager.get_call(&call_id))
+                    .map(|call| call.tenant_id);
                 // Listen BEFORE the prompt plays, so input during it is heard.
                 let mut listening = crate::flow_listen::Listening::start(
                     &media_manager,
@@ -4324,7 +4331,7 @@ impl FlowCallHandler {
                 });
                 if barge_in {
                     listening
-                        .listen_for_speech(&media_manager, &gather_call_id, &speech)
+                        .listen_for_speech(&media_manager, &gather_call_id, &speech, gather_tenant)
                         .await;
                 }
 
@@ -4367,7 +4374,7 @@ impl FlowCallHandler {
                 };
                 if !barge_in {
                     listening
-                        .listen_for_speech(&media_manager, &gather_call_id, &speech)
+                        .listen_for_speech(&media_manager, &gather_call_id, &speech, gather_tenant)
                         .await;
                 }
 
