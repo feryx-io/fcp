@@ -1314,14 +1314,16 @@ pub async fn list_caps(
     }
     let now = std::time::SystemTime::now();
     let (month, next) = month_of(now);
-    let mut used: std::collections::HashMap<String, u64> = Default::default();
-    for h in store
-        .speech_usage(&tenant.0, month, next)
+    // The month's synthesized characters; at a site, with what the cloud
+    // says was spoken elsewhere.
+    let used: std::collections::HashMap<String, u64> = store
+        .synthesized_since(month)
         .await
         .map_err(err)?
-    {
-        *used.entry(h.provider).or_default() += h.synthesized_characters;
-    }
+        .into_iter()
+        .filter(|(t, _, _)| *t == tenant.0)
+        .map(|(_, p, n)| (p, n))
+        .collect();
     let names: std::collections::HashMap<String, String> = match accounts(&state) {
         Ok(a) => a
             .list_speech_accounts(&tenant.0)
@@ -1613,18 +1615,27 @@ pub async fn sweep_caps(
     now: std::time::SystemTime,
 ) -> Vec<fcp_events::SpeechEvent> {
     use fcp_core::speech::CapLevel;
+    // A site's caps and warnings are the cloud's (docs/SPEECH_CAPS.md §5).
+    if state.managed_by.is_some() {
+        return Vec::new();
+    }
     let Ok(store) = usage_store(state) else {
         return Vec::new();
     };
     let caps = match store.all_speech_caps().await {
-        Ok(caps) if !caps.is_empty() => caps,
-        Ok(_) => return Vec::new(),
+        Ok(caps) => caps,
         Err(e) => {
             tracing::warn!(error = %e, "Speech cap sweep: caps could not be read");
             return Vec::new();
         }
     };
     let (month, _) = month_of(now);
+    let default = default_provider(state).await;
+    // Sites are told even when nothing is capped, so a removed cap goes.
+    carry_to_sites(state, &caps, month, default.as_deref()).await;
+    if caps.is_empty() {
+        return Vec::new();
+    }
     let used = match store.synthesized_since(month).await {
         Ok(used) => used,
         Err(e) => {
@@ -1635,7 +1646,6 @@ pub async fn sweep_caps(
     let month_name = chrono::DateTime::<chrono::Utc>::from(month)
         .format("%Y-%m")
         .to_string();
-    let default = default_provider(state).await;
     let mut raised = Vec::new();
     for (tenant, provider, n) in used {
         if Some(&provider) == default.as_ref() {
@@ -1693,6 +1703,85 @@ pub async fn sweep_caps(
         raised.push(event);
     }
     raised
+}
+
+/// Tell each tenant's sites its caps: for every tenant with a site and every
+/// provider capped for it (never the default), the cap that applies and the
+/// month's synthesized characters by where they were spoken, kept in
+/// `site_speech_caps`, which the journal carries down (`docs/SPEECH_CAPS.md`
+/// §5). A cap gone is removed; a row is written only when it changed.
+async fn carry_to_sites(
+    state: &ApiState,
+    caps: &[SpeechCap],
+    month: std::time::SystemTime,
+    default: Option<&str>,
+) {
+    use fcp_core::site::SiteStore;
+    use fcp_core::speech::SiteSpeechCap;
+    let (Some(storage), Ok(store)) = (state.storage.as_ref(), usage_store(state)) else {
+        return;
+    };
+    let sites = match storage.list_all_sites().await {
+        Ok(sites) => sites,
+        Err(e) => {
+            tracing::warn!(error = %e, "Speech cap sweep: sites could not be listed");
+            return;
+        }
+    };
+    let mut tenants: Vec<fcp_core::TenantId> = sites.iter().map(|s| s.tenant_id).collect();
+    tenants.sort_by_key(|t| t.to_string());
+    tenants.dedup();
+    if tenants.is_empty() {
+        return;
+    }
+    let by_source = if caps.is_empty() {
+        Vec::new()
+    } else {
+        match store.synthesized_by_source(month).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(error = %e, "Speech cap sweep: usage by source could not be read");
+                return;
+            }
+        }
+    };
+    for tenant in tenants {
+        let mut providers: Vec<&str> = caps
+            .iter()
+            .filter(|c| c.tenant_id.is_none() || c.tenant_id == Some(tenant))
+            .map(|c| c.provider.as_str())
+            .filter(|p| Some(*p) != default)
+            .collect();
+        providers.sort_unstable();
+        providers.dedup();
+        let mut kept: Vec<String> = Vec::new();
+        for provider in providers {
+            let Some(cap) = effective_cap(caps, &tenant, provider) else {
+                continue;
+            };
+            let used = by_source
+                .iter()
+                .filter(|(t, p, _, _)| *t == tenant && p == provider)
+                .map(|(_, _, source, n)| (source.clone(), *n))
+                .collect();
+            let row = SiteSpeechCap {
+                tenant_id: tenant,
+                provider: provider.to_string(),
+                month,
+                cap,
+                used,
+            };
+            if let Err(e) = store.put_site_speech_cap(&row).await {
+                tracing::warn!(error = %e, "Speech cap sweep: a site's cap could not be kept");
+            }
+            kept.push(provider.to_string());
+        }
+        if let Ok(rows) = store.site_speech_caps(&tenant).await {
+            for row in rows.into_iter().filter(|r| !kept.contains(&r.provider)) {
+                let _ = store.delete_site_speech_cap(&tenant, &row.provider).await;
+            }
+        }
+    }
 }
 
 /// Sweep the caps every [`CAP_SWEEP_EVERY`], one admin at a time.
