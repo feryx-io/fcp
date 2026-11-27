@@ -63,7 +63,8 @@ cached as today, across tenants (the same words, voice and language are
 the same sound). A tenant account's is cached under that account alone.
 
 **Usage.** The server counts characters per tenant and provider by hour
-(the plan's `/v1/usage`, at last), shown on the page; a cap may follow.
+(the plan's `/v1/usage`, at last), shown on the page; caps are designed
+in `docs/SPEECH_CAPS.md`.
 
 ## 3. The API
 
