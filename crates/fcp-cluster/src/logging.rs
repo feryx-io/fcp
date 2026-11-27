@@ -21,6 +21,12 @@
 //!
 //! Losing Redis loses recent lines, never the process: stdout is
 //! unchanged, and the queue drops the oldest when full.
+//!
+//! The same records can also go to an operator's OpenTelemetry collector
+//! over OTLP/HTTP, named by the standard `OTEL_EXPORTER_OTLP_*` variables
+//! ([`otlp`], L6).
+
+mod otlp;
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -71,6 +77,7 @@ pub const LEVEL_SECS: u64 = 3600;
 struct Levels {
     configured: String,
     configured_ship: Option<Level>,
+    configured_otlp: Option<Level>,
     now: Mutex<Option<String>>,
     reload: Box<dyn Fn(EnvFilter) -> Result<(), String> + Send + Sync>,
 }
@@ -79,6 +86,9 @@ static LEVELS: OnceLock<Levels> = OnceLock::new();
 
 /// The ship layer's level, changed with the process's (0 = off).
 static SHIP_LEVEL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// The OTLP export's level, changed with the process's (0 = off).
+static OTLP_LEVEL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 fn level_rank(level: Option<Level>) -> u8 {
     match level {
@@ -110,16 +120,14 @@ pub fn set_level(level: Option<&str>) {
         },
     };
     if (levels.reload)(filter).is_ok() {
-        // Shipping never goes quieter than it was configured to.
-        let ship = ship.max(levels.configured_ship);
-        SHIP_LEVEL.store(
-            if levels.configured_ship.is_some() {
-                level_rank(ship)
-            } else {
-                0
-            },
-            Ordering::Relaxed,
-        );
+        // Shipping and export never go quieter than they were configured
+        // to; one configured off stays off.
+        let follow = |configured: Option<Level>| match configured {
+            Some(c) => level_rank(ship.max(Some(c))),
+            None => 0,
+        };
+        SHIP_LEVEL.store(follow(levels.configured_ship), Ordering::Relaxed);
+        OTLP_LEVEL.store(follow(levels.configured_otlp), Ordering::Relaxed);
         tracing::warn!(
             level = level.unwrap_or(levels.configured.as_str()),
             "Log level changed{}",
@@ -286,8 +294,9 @@ static SHIPPING: OnceLock<Shipping> = OnceLock::new();
 
 /// Install this process's logging: `level` unless `RUST_LOG` says
 /// otherwise, `format` (`json`, `compact`, else `pretty`), and the target
-/// shown or not. Shipping waits for the service beacon. Calling it twice
-/// leaves the first in place.
+/// shown or not. Shipping waits for the service beacon; an OTLP export
+/// the environment names starts now, and one it names wrongly is an
+/// error. Calling it twice leaves the first in place.
 pub fn init(level: &str, format: &str, with_target: bool) -> anyhow::Result<()> {
     let configured = std::env::var("RUST_LOG")
         .ok()
@@ -297,14 +306,21 @@ pub fn init(level: &str, format: &str, with_target: bool) -> anyhow::Result<()> 
         .map_err(|e| anyhow::anyhow!("log level {configured:?}: {e}"))?;
     let (filter, reload_handle) = reload::Layer::new(filter);
     let config = ShipConfig::from_env();
+    let otlp = otlp::OtlpConfig::from_env()?;
+    let otlp_level = otlp.as_ref().map(|o| o.level);
+    if let Some(otlp) = otlp {
+        otlp::start(otlp)?;
+    }
     SHIP_LEVEL.store(level_rank(config.level), Ordering::Relaxed);
+    OTLP_LEVEL.store(level_rank(otlp_level), Ordering::Relaxed);
     let _ = LEVELS.set(Levels {
         configured,
         configured_ship: config.level,
+        configured_otlp: otlp_level,
         now: Mutex::new(None),
         reload: Box::new(move |f| reload_handle.reload(f).map_err(|e| e.to_string())),
     });
-    let ship = config.level.map(|level| {
+    let ship_tx = config.level.map(|_| {
         let shipping = SHIPPING.get_or_init(|| {
             let (tx, rx) = mpsc::channel(QUEUE);
             Shipping {
@@ -314,10 +330,12 @@ pub fn init(level: &str, format: &str, with_target: bool) -> anyhow::Result<()> 
                 dropped: AtomicU64::new(0),
             }
         });
-        let _ = level;
-        ShipLayer {
-            tx: shipping.tx.clone(),
-        }
+        shipping.tx.clone()
+    });
+    let otlp_tx = otlp::exporter().map(|e| e.tx.clone());
+    let ship = (ship_tx.is_some() || otlp_tx.is_some()).then(|| ShipLayer {
+        tx: ship_tx,
+        otlp: otlp_tx,
     });
     let stdout = tracing_subscriber::fmt::layer()
         .with_target(with_target)
@@ -400,8 +418,10 @@ fn plain_tenant(t: String) -> String {
     }
 }
 
+/// Makes each line a record for Redis, for an OTLP collector, or both.
 struct ShipLayer {
-    tx: mpsc::Sender<LogRecord>,
+    tx: Option<mpsc::Sender<LogRecord>>,
+    otlp: Option<mpsc::Sender<LogRecord>>,
 }
 
 impl<S> Layer<S> for ShipLayer
@@ -438,21 +458,44 @@ where
     }
 
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
-        // Nowhere to put it (no beacon has started shipping, or Redis is
-        // behind): building the record would only throw it away.
-        if self.tx.capacity() == 0 {
-            if let Some(shipping) = SHIPPING.get() {
-                shipping.dropped.fetch_add(1, Ordering::Relaxed);
-            }
-            return;
-        }
         let meta = event.metadata();
-        if level_rank(Some(*meta.level())) > SHIP_LEVEL.load(Ordering::Relaxed) {
+        let rank = level_rank(Some(*meta.level()));
+        let target = meta.target();
+        // Neither sends its own lines, nor its own client's.
+        if target.starts_with("fcp_cluster::logging") {
             return;
         }
-        // Shipping must not ship its own client's lines.
-        let target = meta.target();
-        if target.starts_with("redis") || target.starts_with("fcp_cluster::logging") {
+        let to_redis = match &self.tx {
+            Some(tx)
+                if rank <= SHIP_LEVEL.load(Ordering::Relaxed) && !target.starts_with("redis") =>
+            {
+                // Nowhere to put it (no beacon has started shipping, or
+                // Redis is behind): counted, not built.
+                if tx.capacity() == 0 {
+                    if let Some(shipping) = SHIPPING.get() {
+                        shipping.dropped.fetch_add(1, Ordering::Relaxed);
+                    }
+                    None
+                } else {
+                    Some(tx)
+                }
+            }
+            _ => None,
+        };
+        let to_otlp = match &self.otlp {
+            Some(tx) if rank <= OTLP_LEVEL.load(Ordering::Relaxed) && !otlp::on_exporter() => {
+                if tx.capacity() == 0 {
+                    if let Some(e) = otlp::exporter() {
+                        e.dropped.fetch_add(1, Ordering::Relaxed);
+                    }
+                    None
+                } else {
+                    Some(tx)
+                }
+            }
+            _ => None,
+        };
+        if to_redis.is_none() && to_otlp.is_none() {
             return;
         }
         let mut seen = Fields::default();
@@ -484,9 +527,25 @@ where
             tenant_id: seen.tags.tenant_id.map(plain_tenant),
             call_id: seen.tags.call_id,
         };
-        if self.tx.try_send(record).is_err() {
-            if let Some(shipping) = SHIPPING.get() {
-                shipping.dropped.fetch_add(1, Ordering::Relaxed);
+        let mut record = Some(record);
+        if let Some(tx) = to_otlp {
+            // Copied only when Redis wants it too.
+            let r = if to_redis.is_some() {
+                record.clone()
+            } else {
+                record.take()
+            };
+            if r.is_some_and(|r| tx.try_send(r).is_err()) {
+                if let Some(e) = otlp::exporter() {
+                    e.dropped.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        if let (Some(tx), Some(record)) = (to_redis, record) {
+            if tx.try_send(record).is_err() {
+                if let Some(shipping) = SHIPPING.get() {
+                    shipping.dropped.fetch_add(1, Ordering::Relaxed);
+                }
             }
         }
     }
@@ -499,10 +558,21 @@ fn unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Drain the queue to `service_id`'s stream in the Redis `config` names.
-/// Called once by the service beacon; later calls and a process that does
-/// not ship do nothing.
-pub(crate) fn start_shipping(service_id: &str, config: fcp_storage_redis::RedisConfig) {
+/// Drain the queue to the service's stream in the Redis `config` names,
+/// and tell an OTLP export who this process is. Called once by the
+/// service beacon; later calls and a process that does not ship do
+/// nothing.
+pub(crate) fn start_shipping(
+    identity: &crate::ServiceIdentity,
+    config: fcp_storage_redis::RedisConfig,
+) {
+    otlp::set_identity(otlp::Identity {
+        id: identity.id.clone(),
+        kind: identity.kind.clone(),
+        version: identity.version.clone(),
+        region: identity.region.clone(),
+    });
+    let service_id = identity.id.as_str();
     let Some(shipping) = SHIPPING.get() else {
         return;
     };

@@ -35,6 +35,17 @@
 # fetches what the Images workflow pushed to ghcr.io instead, and
 # `up -d --no-build` runs that (docs/NIGHTLY_STACK.md phase 2).
 
+# An OpenTelemetry collector for every service's log lines
+# (docs/LOG_VIEWER.md, L6): set OTEL_EXPORTER_OTLP_ENDPOINT in .env (the
+# collector's OTLP/HTTP address, e.g. http://otel-collector:4318); unset,
+# nothing is exported.
+x-otlp: &otlp
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}
+  OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
+  OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
+  FCP_LOG_OTLP_LEVEL: ${FCP_LOG_OTLP_LEVEL:-info}
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -107,6 +118,7 @@ services:
       # server and the call manager.
       - voicemail-data:/var/lib/fcp/voicemail
     environment:
+      <<: *otlp
       RUST_LOG: info
       FCP_ADMIN_LOG_FORMAT: pretty
       HOST_IP: ${HOST_IP}
@@ -148,6 +160,7 @@ services:
     volumes:
       - ./configs/fcp-api-gateway.toml:/app/fcp-api-gateway.toml:ro
     environment:
+      <<: *otlp
       RUST_LOG: info
       FCP_GATEWAY_LOG_FORMAT: pretty
     depends_on:
@@ -176,6 +189,7 @@ services:
       - ./configs/fcp-events-server.toml:/app/fcp-events-server.toml:ro
       - fcp-certs:/var/lib/fcp/certs:ro
     environment:
+      <<: *otlp
       RUST_LOG: info
       FCP_EVENTS_LOG_FORMAT: pretty
       FCP_EVENTS_AUTH_TOKEN: ${FCP_EVENTS_AUTH_TOKEN}
@@ -219,6 +233,7 @@ services:
       # The voicemail server's messages, which *98 here plays and deletes.
       - voicemail-data:/var/lib/fcp/voicemail
     environment:
+      <<: *otlp
       RUST_LOG: info
       FCP_CALL_MANAGER_LOG_FORMAT: pretty
       FCP_CALL_MANAGER_PUBLIC_IP: ${HOST_IP}
@@ -261,6 +276,7 @@ services:
       - conference-cdr-spool:/var/lib/fcp/cdr-spool
       - ./configs/announcements:/var/fcp/conference/announcements:ro
     environment:
+      <<: *otlp
       RUST_LOG: info
       FCP_CONFERENCE_LOG_FORMAT: pretty
       FCP_CONFERENCE_PUBLIC_IP: ${HOST_IP}
@@ -300,6 +316,7 @@ services:
       - ./configs/fcp-webrtc-gw.toml:/app/fcp-webrtc-gw.toml:ro
       - fcp-certs:/var/lib/fcp/certs:ro
     environment:
+      <<: *otlp
       RUST_LOG: info
       FCP_WEBRTC_GW_LOG_FORMAT: pretty
       FCP_WEBRTC_GW_PUBLIC_IP: ${HOST_IP}
@@ -332,6 +349,7 @@ services:
       - media-recordings:/var/lib/fcp/media/recordings
       - media-prompts:/var/lib/fcp/media/prompts
     environment:
+      <<: *otlp
       RUST_LOG: info
       FCP_MEDIA_LOG_FORMAT: pretty
       FCP_MEDIA_PUBLIC_IP: ${HOST_IP}
@@ -360,6 +378,7 @@ services:
       - ./configs/fcp-jobs.toml:/app/fcp-jobs.toml:ro
       - fcp-certs:/var/lib/fcp/certs:ro
     environment:
+      <<: *otlp
       RUST_LOG: info
       FCP_JOBS_LOG_FORMAT: pretty
       FCP_JOBS_WORKERS: 4
@@ -393,6 +412,7 @@ services:
       - ./configs/fcp-ivr.toml:/app/fcp-ivr.toml:ro
       - fcp-certs:/var/lib/fcp/certs:ro
     environment:
+      <<: *otlp
       RUST_LOG: info
       FCP_IVR_LOG_FORMAT: pretty
       FCP_IVR_PUBLIC_IP: ${HOST_IP}
@@ -430,6 +450,7 @@ services:
       - fcp-certs:/var/lib/fcp/certs:ro
       - voicemail-data:/var/lib/fcp/voicemail
     environment:
+      <<: *otlp
       RUST_LOG: info
       FCP_VOICEMAIL_LOG_FORMAT: pretty
       FCP_VOICEMAIL_PUBLIC_IP: ${HOST_IP}
@@ -465,6 +486,7 @@ services:
       - ./configs/fcp-presence-server.toml:/app/fcp-presence-server.toml:ro
       - fcp-certs:/var/lib/fcp/certs:ro
     environment:
+      <<: *otlp
       RUST_LOG: info
       FCP_PRESENCE_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@127.0.0.1:5432/fcp
       FCP_ENCRYPTION_PROVIDER: local
@@ -497,6 +519,7 @@ services:
       - ./configs/fcp-sbc.toml:/app/fcp-sbc.toml:ro
       - fcp-certs:/var/lib/fcp/certs:ro
     environment:
+      <<: *otlp
       RUST_LOG: info
       FCP_SBC_LOG_FORMAT: pretty
       FCP_SBC_BIND: 0.0.0.0:5078
@@ -539,6 +562,7 @@ services:
       # The master key, to open tenants' own vendor keys.
       - fcp-certs:/var/lib/fcp/certs:ro
     environment:
+      <<: *otlp
       RUST_LOG: info
       FCP_TTS_LOG_FORMAT: pretty
       FCP_TTS_AUTH_TOKENS: ${FCP_TTS_AUTH_TOKENS}
@@ -613,6 +637,7 @@ services:
       - ./configs/fcp-registrar.toml:/app/fcp-registrar.toml:ro
       - fcp-certs:/var/lib/fcp/certs:ro
     environment:
+      <<: *otlp
       RUST_LOG: info
       FCP_REGISTRAR_LOG_FORMAT: pretty
       FCP_REGISTRAR_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@127.0.0.1:5432/fcp
