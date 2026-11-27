@@ -30,6 +30,8 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry"] }
 regex = "1"
+# OTLP log export, gzip (L6)
+flate2 = "1"
 
 # Error handling
 anyhow = { workspace = true }
@@ -51,3 +53,8 @@ openapi = ["dep:utoipa", "fcp-core/openapi"]
 uuid = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+# OTLP export checked against OpenTelemetry's own types (L6)
+opentelemetry-proto = { version = "0.33", default-features = false, features = ["gen-tonic-messages", "logs", "with-serde"] }
+prost = "0.14"
+axum = "0.7"
+flate2 = "1"
