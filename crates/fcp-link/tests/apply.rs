@@ -497,6 +497,46 @@ format = "compact"
         );
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+    // A recognizer's minute cap (docs/TENANT_RECOGNITION.md R4): the same,
+    // in milliseconds heard, its row id ending `@minutes`.
+    let heard = serde_json::json!({"": 600_000, cloud.site_id.clone(): 300_000});
+    sqlx::query(
+        "INSERT INTO site_speech_caps (id, tenant_id, provider, unit, month, cap, used)
+         VALUES ($1, $2, 'whisper-cloud', 'minutes',
+                 date_trunc('month', now() AT TIME ZONE 'UTC')::date, 60, $3)",
+    )
+    .bind(format!("{}/whisper-cloud@minutes", cloud.tenant_id))
+    .bind(&cloud.tenant_id)
+    .bind(&heard)
+    .execute(&cloud_pool)
+    .await
+    .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let caps = caps_at_site().await;
+        let row = caps["data"]
+            .as_array()
+            .and_then(|a| a.iter().find(|r| r["provider"] == "whisper-cloud").cloned());
+        if let Some(row) = row {
+            assert_eq!(row["unit"], "minutes", "{caps}");
+            assert_eq!(row["cap"], 60, "{caps}");
+            assert_eq!(
+                row["used"], 10,
+                "the cloud's ten minutes, not the site's five: {caps}"
+            );
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the cloud's minute cap never reached the site: {caps}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    sqlx::query("DELETE FROM site_speech_caps WHERE id = $1")
+        .bind(format!("{}/whisper-cloud@minutes", cloud.tenant_id))
+        .execute(&cloud_pool)
+        .await
+        .unwrap();
     let (code, text) = http_request(
         "PUT",
         &loopback(site_admin_http, "/api/v1/speech/caps/openai-cloud"),
