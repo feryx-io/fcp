@@ -25,6 +25,17 @@
 
 name: site
 
+# An OpenTelemetry collector for every service's log lines
+# (docs/LOG_VIEWER.md, L6): set OTEL_EXPORTER_OTLP_ENDPOINT in .env (the
+# collector's OTLP/HTTP address, e.g. http://otel-collector:4318); unset,
+# nothing is exported.
+x-otlp: &otlp
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}
+  OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
+  OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
+  FCP_LOG_OTLP_LEVEL: ${FCP_LOG_OTLP_LEVEL:-info}
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -95,6 +106,7 @@ services:
       # phones (docs/PROVISIONING.md §11).
       - site-firmware:/var/lib/fcp/firmware:ro
     environment:
+      <<: *otlp
       RUST_LOG: info
       FCP_ADMIN_LOG_FORMAT: pretty
       FCP_CLOUD_ADMIN_URL: ${FCP_CLOUD_ADMIN_URL}
@@ -135,6 +147,7 @@ services:
       - fcp-certs:/var/lib/fcp/certs:ro
       - call-manager-data:/app/data
     environment:
+      <<: *otlp
       RUST_LOG: info
       FCP_CALL_MANAGER_LOG_FORMAT: pretty
       FCP_CALL_MANAGER_PUBLIC_IP: ${HOST_IP}
@@ -183,6 +196,7 @@ services:
       - call-manager-data:/var/lib/fcp/call-manager:ro
       - site-firmware:/var/lib/fcp/firmware
     environment:
+      <<: *otlp
       RUST_LOG: info
       FCP_LINK_LOG_FORMAT: pretty
       FCP_LINK_CLOUD_URL: ${FCP_LINK_CLOUD_URL}

@@ -197,6 +197,32 @@ the platform sees a site's trouble without reaching into it.
   `fcp-link/tests/logs.rs`.
 - **L6 — OTLP export** (optional): the same layer sending to an
   operator's collector.
+  **Done (v0.25.658):** `fcp_cluster::logging::otlp`. Every binary sends
+  the same records the page reads (redacted, tenant and call lifted) as
+  OTLP log records over HTTP when the standard variables name a
+  collector: `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` (the full URL) or
+  `OTEL_EXPORTER_OTLP_ENDPOINT` (`/v1/logs` added); `…_PROTOCOL`
+  `http/protobuf` (default) or `http/json` — `grpc` is refused at
+  startup, as is any variable that does not parse; `…_HEADERS`,
+  `…_TIMEOUT`, `…_COMPRESSION` (`gzip`), `…_CERTIFICATE`,
+  `…_CLIENT_CERTIFICATE`/`…_CLIENT_KEY`, each also as `…_LOGS_…`;
+  `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, `OTEL_SDK_DISABLED`.
+  `FCP_LOG_OTLP_LEVEL` is the least severe level sent (`info`, or
+  `off`); a level raised from the page raises it for the hour too. The
+  resource is `service.name` = `fcp-<kind>`, `service.instance.id` = the
+  beacon's id, `service.version`, `service.namespace` = `fcp`,
+  `host.name`, then the operator's attributes over them; each target is
+  an instrumentation scope; a line's fields, `tenant_id` and `call_id`
+  are attributes. It runs on a thread of its own (a process without
+  Redis still exports, and the exporter's HTTP client is never
+  exported), batches 512 lines or a second, retries a batch three times
+  on 429, 502–504 or a failed connection (`Retry-After` honoured), and
+  counts what it drops in a line of the next batch. Redis shipping is
+  untouched; either can be on without the other. Both compose projects
+  pass the variables from `.env` (`x-otlp`). Proved by
+  `fcp-cluster/tests/otlp.rs` against a stand-in collector and by
+  decoding both encodings with `opentelemetry-proto`. — all six phases
+  done.
 
 ## 7. Questions
 
