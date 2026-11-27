@@ -83,7 +83,11 @@ use.
 
 Both behind the server's bearer token.
 
-- `POST /v1/transcribe?language=&hints=a,b&provider=` — a WAV in the
+A request may name its tenant (`tenant_id`, `docs/TENANT_RECOGNITION.md`):
+one naming no language is then heard in the tenant's speech language.
+Nodes using the `remote` provider send the call's or the mailbox's tenant.
+
+- `POST /v1/transcribe?language=&hints=a,b&provider=&tenant_id=` — a WAV in the
   body (up to 64 MB), one transcript out:
   `{"text": "…", "confidence": 0.93, "is_final": true}`. 400 for a body
   that is not a WAV or an unknown provider, 503 with no `[stt.providers]`,

@@ -223,7 +223,12 @@ impl VoicemailService {
         let transcript = stt
             .transcribe_wav(
                 std::path::Path::new(&message.recording_path),
-                &fcp_media::SttOptions::default(),
+                // The mailbox's tenant's recognizer and language
+                // (docs/TENANT_RECOGNITION.md R1).
+                &fcp_media::SttOptions {
+                    tenant_id: Some(mailbox.tenant_id.to_string()),
+                    ..Default::default()
+                },
             )
             .await
             .context("transcribing the message")?;

@@ -44,6 +44,9 @@ impl RemoteStt {
         if let Some(language) = &options.language {
             query.push(("language", language.clone()));
         }
+        if let Some(tenant) = &options.tenant_id {
+            query.push(("tenant_id", tenant.clone()));
+        }
         if !options.hints.is_empty() {
             query.push(("hints", options.hints.join(",")));
         }

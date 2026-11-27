@@ -54,6 +54,11 @@ pub struct SttOptions {
     /// Streaming only: the silence, in milliseconds, that ends an utterance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speech_timeout_ms: Option<u32>,
+    /// Whose speech this is (`docs/TENANT_RECOGNITION.md` R1): the shared
+    /// server (`remote`) hears it with the tenant's recognizer and in its
+    /// language; any other provider ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
 }
 
 impl SttOptions {
@@ -301,7 +306,9 @@ impl SttService {
 
     fn with_language(&self, options: &SttOptions) -> SttOptions {
         let mut options = options.clone();
-        if options.language.is_none() {
+        // The shared server picks a tenant's language itself.
+        let resolved_there = options.tenant_id.is_some() && self.provider.name() == "remote";
+        if options.language.is_none() && !resolved_there {
             options.language = Some(self.language.clone());
         }
         options

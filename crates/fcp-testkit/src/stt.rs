@@ -290,6 +290,25 @@ mod tests {
         assert_eq!(requests[1].kind, "stream");
         assert_eq!(requests[1].query["speech_timeout_ms"], "300");
 
+        // A tenant's speech (docs/TENANT_RECOGNITION.md R1): named, with
+        // the language left for the shared server to choose.
+        stt.transcribe_pcm(
+            &tone(700.0, 300),
+            &SttOptions {
+                tenant_id: Some("tenant-7".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let requests = scripted.wait_for(3, Duration::from_secs(5)).await;
+        assert_eq!(requests[2].query["tenant_id"], "tenant-7");
+        assert!(
+            !requests[2].query.contains_key("language"),
+            "{:?}",
+            requests[2].query
+        );
+
         let wrong = service(scripted.url(), "nope").await;
         assert!(wrong
             .transcribe_pcm(&tone(700.0, 300), &SttOptions::default())

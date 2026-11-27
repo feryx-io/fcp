@@ -108,6 +108,7 @@ impl Listening {
         media: &MediaManager,
         session: &fcp_core::CallId,
         speech: &SpeechGather,
+        tenant: Option<fcp_core::TenantId>,
     ) {
         if !speech.input.speech() || self.speech.is_some() {
             return;
@@ -118,6 +119,7 @@ impl Listening {
             // Partials tell a streaming recognizer's caller has begun.
             interim_results: true,
             speech_timeout_ms: speech.speech_timeout_ms,
+            tenant_id: tenant.map(|t| t.to_string()),
         };
         match media.recognize(session, MediaLeg::A, &options).await {
             Ok(stream) => self.speech = Some(stream),
@@ -368,6 +370,7 @@ pub(crate) async fn start_transcript(
         hints: request.hints.clone(),
         interim_results: request.interim_results,
         speech_timeout_ms: None,
+        tenant_id: Some(tenant_id.to_string()),
     };
     let mut streams = Vec::with_capacity(legs.len());
     for (leg, name) in legs {

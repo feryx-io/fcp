@@ -138,6 +138,9 @@ async fn a_menu_hears_words_digits_and_silence_and_a_call_is_transcribed() {
     let gather = asked.iter().find(|r| r.answered.iter().any(|a| a == SALES));
     let gather = gather.unwrap_or_else(|| panic!("the menu was not recognised: {asked:?}"));
     assert_eq!(gather.kind, "stream");
+    // The call's tenant named (docs/TENANT_RECOGNITION.md R1); the menu
+    // names its own language, which wins over the tenant's.
+    assert_eq!(gather.query["tenant_id"], seed.tenant_id.to_string());
     assert_eq!(gather.query["language"], "en-US");
     assert!(
         gather.query["hints"].contains("sales"),
