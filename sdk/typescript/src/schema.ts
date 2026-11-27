@@ -8132,6 +8132,13 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        /**
+         * @description What a cap counts (`docs/TENANT_RECOGNITION.md` R3): characters a
+         *     provider synthesized, or minutes a recognizer heard (counted in
+         *     milliseconds).
+         * @enum {string}
+         */
+        CapUnit: "characters" | "minutes";
         /** @description Allow a user (every app they sign in to) or one device to capture. */
         CaptureAllowRequest: {
             /** @description The user; or name `device_id`. */
@@ -10704,6 +10711,11 @@ export interface components {
              *     estimated cost beside their usage (`docs/SPEECH_CAPS.md`).
              */
             price_per_million?: number | null;
+            /**
+             * Format: double
+             * @description Per minute heard, for a recognizer (`docs/TENANT_RECOGNITION.md` R3).
+             */
+            price_per_minute?: number | null;
         };
         /** @description A user's own statuses in a new order: every id, once. */
         OrderStatusesRequest: {
@@ -12347,8 +12359,13 @@ export interface components {
         Page_PlatformSpeechCap: {
             data: {
                 provider: string;
-                /** Format: int64 */
-                monthly_characters: number;
+                /** @description `characters` or `minutes`. */
+                unit: components["schemas"]["CapUnit"];
+                /**
+                 * Format: int64
+                 * @description How many of `unit` a month.
+                 */
+                monthly: number;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -12987,6 +13004,11 @@ export interface components {
                  *     cost (`docs/SPEECH_CAPS.md`).
                  */
                 price_per_million?: number | null;
+                /**
+                 * Format: double
+                 * @description Per minute heard, for a recognizer (`docs/TENANT_RECOGNITION.md` R3).
+                 */
+                price_per_minute?: number | null;
                 created_at: string;
                 updated_at: string;
             }[];
@@ -13005,6 +13027,11 @@ export interface components {
                 provider: string;
                 /** @description The provider, or the account's name. */
                 label: string;
+                /**
+                 * @description `characters` (synthesized by a voice) or `minutes` (heard by a
+                 *     recognizer); every number here is in it.
+                 */
+                unit: components["schemas"]["CapUnit"];
                 /**
                  * Format: int64
                  * @description What the platform holds the tenant to on this provider (its cap
@@ -13028,7 +13055,8 @@ export interface components {
                 cap?: number | null;
                 /**
                  * Format: int64
-                 * @description Synthesized characters this month (UTC), the cloud's and sites'.
+                 * @description Used this month (UTC), the cloud's and sites': characters, or
+                 *     whole minutes heard.
                  */
                 used: number;
                 /** @description `ok`, `near` (80 % or more) or `reached`. */
@@ -13092,9 +13120,15 @@ export interface components {
                  */
                 synthesized_characters: number;
                 /**
+                 * Format: int64
+                 * @description What a recognizer heard, in seconds (`docs/TENANT_RECOGNITION.md` R3).
+                 */
+                recognized_seconds: number;
+                /**
                  * Format: double
-                 * @description The synthesized characters at the provider's price per million
-                 *     (the platform's, or the account's own), where one is set.
+                 * @description The synthesized characters at the provider's price per million and
+                 *     the minutes heard at its price per minute (the platform's, or the
+                 *     account's own), where a price is set.
                  */
                 estimated_cost?: number | null;
             }[];
@@ -13828,12 +13862,21 @@ export interface components {
         /** @description A platform provider's default cap for every tenant. */
         PlatformSpeechCap: {
             provider: string;
-            /** Format: int64 */
-            monthly_characters: number;
+            /** @description `characters` or `minutes`. */
+            unit: components["schemas"]["CapUnit"];
+            /**
+             * Format: int64
+             * @description How many of `unit` a month.
+             */
+            monthly: number;
         };
         PlatformSpeechCapRequest: {
-            /** Format: int64 */
-            monthly_characters: number;
+            /**
+             * Format: int64
+             * @description How many of `unit` a month (`monthly_characters` is read too).
+             */
+            monthly: number;
+            unit?: components["schemas"]["CapUnit"] | null;
         };
         PlatformSpeechRequest: {
             held_back: string[];
@@ -13842,6 +13885,10 @@ export interface components {
              *     provider left out has none.
              */
             prices?: {
+                [key: string]: number;
+            } | null;
+            /** @description Prices per minute heard by recognizer; absent keeps them. */
+            minute_prices?: {
                 [key: string]: number;
             } | null;
         };
@@ -15259,6 +15306,11 @@ export interface components {
              * @description What the vendor charges per million characters; null for none.
              */
             price_per_million?: number | null;
+            /**
+             * Format: double
+             * @description What the vendor charges per minute heard; null for none.
+             */
+            price_per_minute?: number | null;
         };
         /** @description A tenant's account with a TTS vendor, its key never shown. */
         SpeechAccountView: {
@@ -15280,28 +15332,42 @@ export interface components {
              *     cost (`docs/SPEECH_CAPS.md`).
              */
             price_per_million?: number | null;
+            /**
+             * Format: double
+             * @description Per minute heard, for a recognizer (`docs/TENANT_RECOGNITION.md` R3).
+             */
+            price_per_minute?: number | null;
             created_at: string;
             updated_at: string;
         };
         /**
-         * @description A cap to keep. `monthly_characters` null is allowed only on a tenant's
-         *     platform cap: none for this tenant, whatever the default says.
+         * @description A cap to keep. `monthly` null is allowed only on a tenant's platform
+         *     cap: none for this tenant, whatever the default says.
          */
         SpeechCapRequest: {
-            /** Format: int64 */
-            monthly_characters?: number | null;
+            /**
+             * Format: int64
+             * @description How many of `unit` a month (`monthly_characters` is read too).
+             */
+            monthly?: number | null;
+            unit?: components["schemas"]["CapUnit"] | null;
             /**
              * @description `tenant` (the default: the tenant's own) or `platform` (a platform
              *     administrator's cap on this tenant).
              */
             kind?: string | null;
         };
-        /** @description One provider's cap on the tenant this month. */
+        /** @description One provider's cap of one unit on the tenant this month. */
         SpeechCapView: {
             /** @description A platform provider's name, or `account:<uuid>`. */
             provider: string;
             /** @description The provider, or the account's name. */
             label: string;
+            /**
+             * @description `characters` (synthesized by a voice) or `minutes` (heard by a
+             *     recognizer); every number here is in it.
+             */
+            unit: components["schemas"]["CapUnit"];
             /**
              * Format: int64
              * @description What the platform holds the tenant to on this provider (its cap
@@ -15325,7 +15391,8 @@ export interface components {
             cap?: number | null;
             /**
              * Format: int64
-             * @description Synthesized characters this month (UTC), the cloud's and sites'.
+             * @description Used this month (UTC), the cloud's and sites': characters, or
+             *     whole minutes heard.
              */
             used: number;
             /** @description `ok`, `near` (80 % or more) or `reached`. */
@@ -15421,9 +15488,15 @@ export interface components {
              */
             synthesized_characters: number;
             /**
+             * Format: int64
+             * @description What a recognizer heard, in seconds (`docs/TENANT_RECOGNITION.md` R3).
+             */
+            recognized_seconds: number;
+            /**
              * Format: double
-             * @description The synthesized characters at the provider's price per million
-             *     (the platform's, or the account's own), where one is set.
+             * @description The synthesized characters at the provider's price per million and
+             *     the minutes heard at its price per minute (the platform's, or the
+             *     account's own), where a price is set.
              */
             estimated_cost?: number | null;
         };
@@ -29932,6 +30005,8 @@ export interface operations {
             query?: {
                 /** @description `tenant` (the default) or `platform`. */
                 kind?: string;
+                /** @description `characters` (the default) or `minutes`. */
+                unit?: components["schemas"]["CapUnit"];
             };
             header?: never;
             path: {
@@ -30025,7 +30100,10 @@ export interface operations {
     };
     system_delete_speech_cap: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description `characters` (the default) or `minutes`. */
+                unit?: components["schemas"]["CapUnit"];
+            };
             header?: never;
             path: {
                 /** @description A platform provider */

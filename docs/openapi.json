@@ -17708,6 +17708,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "unit",
+            "in": "query",
+            "description": "`characters` (the default) or `minutes`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/CapUnit"
+            }
           }
         ],
         "responses": {
@@ -17816,6 +17825,15 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "unit",
+            "in": "query",
+            "description": "`characters` (the default) or `minutes`.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/CapUnit"
             }
           }
         ],
@@ -26211,6 +26229,14 @@
           }
         }
       },
+      "CapUnit": {
+        "type": "string",
+        "description": "What a cap counts (`docs/TENANT_RECOGNITION.md` R3): characters a\nprovider synthesized, or minutes a recognizer heard (counted in\nmilliseconds).",
+        "enum": [
+          "characters",
+          "minutes"
+        ]
+      },
       "CaptureAllowRequest": {
         "type": "object",
         "description": "Allow a user (every app they sign in to) or one device to capture.",
@@ -34016,6 +34042,14 @@
             ],
             "format": "double",
             "description": "What the platform charges tenants per million characters, for an\nestimated cost beside their usage (`docs/SPEECH_CAPS.md`)."
+          },
+          "price_per_minute": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Per minute heard, for a recognizer (`docs/TENANT_RECOGNITION.md` R3)."
           }
         }
       },
@@ -39192,15 +39226,21 @@
               "description": "A platform provider's default cap for every tenant.",
               "required": [
                 "provider",
-                "monthly_characters"
+                "unit",
+                "monthly"
               ],
               "properties": {
                 "provider": {
                   "type": "string"
                 },
-                "monthly_characters": {
+                "unit": {
+                  "$ref": "#/components/schemas/CapUnit",
+                  "description": "`characters` or `minutes`."
+                },
+                "monthly": {
                   "type": "integer",
                   "format": "int64",
+                  "description": "How many of `unit` a month.",
                   "minimum": 0
                 }
               }
@@ -41198,6 +41238,14 @@
                   "format": "double",
                   "description": "What the vendor charges per million characters, for an estimated\ncost (`docs/SPEECH_CAPS.md`)."
                 },
+                "price_per_minute": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "format": "double",
+                  "description": "Per minute heard, for a recognizer (`docs/TENANT_RECOGNITION.md` R3)."
+                },
                 "created_at": {
                   "type": "string"
                 },
@@ -41236,10 +41284,11 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "One provider's cap on the tenant this month.",
+              "description": "One provider's cap of one unit on the tenant this month.",
               "required": [
                 "provider",
                 "label",
+                "unit",
                 "platform_override",
                 "used",
                 "state",
@@ -41253,6 +41302,10 @@
                 "label": {
                   "type": "string",
                   "description": "The provider, or the account's name."
+                },
+                "unit": {
+                  "$ref": "#/components/schemas/CapUnit",
+                  "description": "`characters` (synthesized by a voice) or `minutes` (heard by a\nrecognizer); every number here is in it."
                 },
                 "platform_cap": {
                   "type": [
@@ -41288,7 +41341,7 @@
                 "used": {
                   "type": "integer",
                   "format": "int64",
-                  "description": "Synthesized characters this month (UTC), the cloud's and sites'.",
+                  "description": "Used this month (UTC), the cloud's and sites': characters, or\nwhole minutes heard.",
                   "minimum": 0
                 },
                 "state": {
@@ -41409,7 +41462,8 @@
                 "label",
                 "requests",
                 "characters",
-                "synthesized_characters"
+                "synthesized_characters",
+                "recognized_seconds"
               ],
               "properties": {
                 "period": {
@@ -41440,13 +41494,19 @@
                   "description": "What the provider spoke, and bills for; the rest came from the cache.",
                   "minimum": 0
                 },
+                "recognized_seconds": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "What a recognizer heard, in seconds (`docs/TENANT_RECOGNITION.md` R3).",
+                  "minimum": 0
+                },
                 "estimated_cost": {
                   "type": [
                     "number",
                     "null"
                   ],
                   "format": "double",
-                  "description": "The synthesized characters at the provider's price per million\n(the platform's, or the account's own), where one is set."
+                  "description": "The synthesized characters at the provider's price per million and\nthe minutes heard at its price per minute (the platform's, or the\naccount's own), where a price is set."
                 }
               }
             }
@@ -43757,15 +43817,21 @@
         "description": "A platform provider's default cap for every tenant.",
         "required": [
           "provider",
-          "monthly_characters"
+          "unit",
+          "monthly"
         ],
         "properties": {
           "provider": {
             "type": "string"
           },
-          "monthly_characters": {
+          "unit": {
+            "$ref": "#/components/schemas/CapUnit",
+            "description": "`characters` or `minutes`."
+          },
+          "monthly": {
             "type": "integer",
             "format": "int64",
+            "description": "How many of `unit` a month.",
             "minimum": 0
           }
         }
@@ -43773,13 +43839,25 @@
       "PlatformSpeechCapRequest": {
         "type": "object",
         "required": [
-          "monthly_characters"
+          "monthly"
         ],
         "properties": {
-          "monthly_characters": {
+          "monthly": {
             "type": "integer",
             "format": "int64",
+            "description": "How many of `unit` a month (`monthly_characters` is read too).",
             "minimum": 0
+          },
+          "unit": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CapUnit",
+                "description": "`characters` (the default) or `minutes`."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false
@@ -43802,6 +43880,20 @@
               "null"
             ],
             "description": "Prices per million characters by provider; absent keeps them, and a\nprovider left out has none.",
+            "additionalProperties": {
+              "type": "number",
+              "format": "double"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "minute_prices": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Prices per minute heard by recognizer; absent keeps them.",
             "additionalProperties": {
               "type": "number",
               "format": "double"
@@ -47489,6 +47581,14 @@
             ],
             "format": "double",
             "description": "What the vendor charges per million characters; null for none."
+          },
+          "price_per_minute": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "What the vendor charges per minute heard; null for none."
           }
         },
         "additionalProperties": false
@@ -47556,6 +47656,14 @@
             "format": "double",
             "description": "What the vendor charges per million characters, for an estimated\ncost (`docs/SPEECH_CAPS.md`)."
           },
+          "price_per_minute": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Per minute heard, for a recognizer (`docs/TENANT_RECOGNITION.md` R3)."
+          },
           "created_at": {
             "type": "string"
           },
@@ -47566,15 +47674,27 @@
       },
       "SpeechCapRequest": {
         "type": "object",
-        "description": "A cap to keep. `monthly_characters` null is allowed only on a tenant's\nplatform cap: none for this tenant, whatever the default says.",
+        "description": "A cap to keep. `monthly` null is allowed only on a tenant's platform\ncap: none for this tenant, whatever the default says.",
         "properties": {
-          "monthly_characters": {
+          "monthly": {
             "type": [
               "integer",
               "null"
             ],
             "format": "int64",
+            "description": "How many of `unit` a month (`monthly_characters` is read too).",
             "minimum": 0
+          },
+          "unit": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CapUnit",
+                "description": "`characters` (the default) or `minutes`."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "kind": {
             "type": [
@@ -47588,10 +47708,11 @@
       },
       "SpeechCapView": {
         "type": "object",
-        "description": "One provider's cap on the tenant this month.",
+        "description": "One provider's cap of one unit on the tenant this month.",
         "required": [
           "provider",
           "label",
+          "unit",
           "platform_override",
           "used",
           "state",
@@ -47605,6 +47726,10 @@
           "label": {
             "type": "string",
             "description": "The provider, or the account's name."
+          },
+          "unit": {
+            "$ref": "#/components/schemas/CapUnit",
+            "description": "`characters` (synthesized by a voice) or `minutes` (heard by a\nrecognizer); every number here is in it."
           },
           "platform_cap": {
             "type": [
@@ -47640,7 +47765,7 @@
           "used": {
             "type": "integer",
             "format": "int64",
-            "description": "Synthesized characters this month (UTC), the cloud's and sites'.",
+            "description": "Used this month (UTC), the cloud's and sites': characters, or\nwhole minutes heard.",
             "minimum": 0
           },
           "state": {
@@ -47848,7 +47973,8 @@
           "label",
           "requests",
           "characters",
-          "synthesized_characters"
+          "synthesized_characters",
+          "recognized_seconds"
         ],
         "properties": {
           "period": {
@@ -47879,13 +48005,19 @@
             "description": "What the provider spoke, and bills for; the rest came from the cache.",
             "minimum": 0
           },
+          "recognized_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What a recognizer heard, in seconds (`docs/TENANT_RECOGNITION.md` R3).",
+            "minimum": 0
+          },
           "estimated_cost": {
             "type": [
               "number",
               "null"
             ],
             "format": "double",
-            "description": "The synthesized characters at the provider's price per million\n(the platform's, or the account's own), where one is set."
+            "description": "The synthesized characters at the provider's price per million and\nthe minutes heard at its price per minute (the platform's, or the\naccount's own), where a price is set."
           }
         }
       },

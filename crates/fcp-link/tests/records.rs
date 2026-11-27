@@ -373,6 +373,7 @@ async fn what_a_site_writes_reaches_the_cloud_and_its_files_are_reached_through_
             requests: 1,
             characters,
             synthesized_characters: characters,
+            recognized_ms: 0,
             site_id: None,
         };
         async fn cloud_has(

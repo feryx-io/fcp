@@ -8,6 +8,7 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
+from ...models.cap_unit import CapUnit
 from ...models.error_response import ErrorResponse
 from ...types import UNSET, Unset
 from typing import cast
@@ -18,6 +19,7 @@ def _get_kwargs(
     provider: str,
     *,
     kind: str | Unset = UNSET,
+    unit: CapUnit | Unset = UNSET,
 
 ) -> dict[str, Any]:
     
@@ -27,6 +29,12 @@ def _get_kwargs(
     params: dict[str, Any] = {}
 
     params["kind"] = kind
+
+    json_unit: str | Unset = UNSET
+    if not isinstance(unit, Unset):
+        json_unit = unit.value
+
+    params["unit"] = json_unit
 
 
     params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
@@ -70,6 +78,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     kind: str | Unset = UNSET,
+    unit: CapUnit | Unset = UNSET,
 
 ) -> Response[Any | ErrorResponse]:
     """ DELETE /speech/caps/{provider}
@@ -77,6 +86,9 @@ def sync_detailed(
     Args:
         provider (str):
         kind (str | Unset):
+        unit (CapUnit | Unset): What a cap counts (`docs/TENANT_RECOGNITION.md` R3): characters a
+            provider synthesized, or minutes a recognizer heard (counted in
+            milliseconds).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -90,6 +102,7 @@ def sync_detailed(
     kwargs = _get_kwargs(
         provider=provider,
 kind=kind,
+unit=unit,
 
     )
 
@@ -104,6 +117,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     kind: str | Unset = UNSET,
+    unit: CapUnit | Unset = UNSET,
 
 ) -> Any | ErrorResponse | None:
     """ DELETE /speech/caps/{provider}
@@ -111,6 +125,9 @@ def sync(
     Args:
         provider (str):
         kind (str | Unset):
+        unit (CapUnit | Unset): What a cap counts (`docs/TENANT_RECOGNITION.md` R3): characters a
+            provider synthesized, or minutes a recognizer heard (counted in
+            milliseconds).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -125,6 +142,7 @@ def sync(
         provider=provider,
 client=client,
 kind=kind,
+unit=unit,
 
     ).parsed
 
@@ -133,6 +151,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     kind: str | Unset = UNSET,
+    unit: CapUnit | Unset = UNSET,
 
 ) -> Response[Any | ErrorResponse]:
     """ DELETE /speech/caps/{provider}
@@ -140,6 +159,9 @@ async def asyncio_detailed(
     Args:
         provider (str):
         kind (str | Unset):
+        unit (CapUnit | Unset): What a cap counts (`docs/TENANT_RECOGNITION.md` R3): characters a
+            provider synthesized, or minutes a recognizer heard (counted in
+            milliseconds).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -153,6 +175,7 @@ async def asyncio_detailed(
     kwargs = _get_kwargs(
         provider=provider,
 kind=kind,
+unit=unit,
 
     )
 
@@ -167,6 +190,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     kind: str | Unset = UNSET,
+    unit: CapUnit | Unset = UNSET,
 
 ) -> Any | ErrorResponse | None:
     """ DELETE /speech/caps/{provider}
@@ -174,6 +198,9 @@ async def asyncio(
     Args:
         provider (str):
         kind (str | Unset):
+        unit (CapUnit | Unset): What a cap counts (`docs/TENANT_RECOGNITION.md` R3): characters a
+            provider synthesized, or minutes a recognizer heard (counted in
+            milliseconds).
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -188,5 +215,6 @@ async def asyncio(
         provider=provider,
 client=client,
 kind=kind,
+unit=unit,
 
     )).parsed

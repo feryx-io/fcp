@@ -8,6 +8,9 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..models.cap_unit import CapUnit
+from ..types import UNSET, Unset
+from typing import cast
 
 
 
@@ -22,24 +25,36 @@ T = TypeVar("T", bound="PlatformSpeechCapRequest")
 class PlatformSpeechCapRequest:
     """ 
         Attributes:
-            monthly_characters (int):
+            monthly (int): How many of `unit` a month (`monthly_characters` is read too).
+            unit (CapUnit | None | Unset):
      """
 
-    monthly_characters: int
+    monthly: int
+    unit: CapUnit | None | Unset = UNSET
 
 
 
 
 
     def to_dict(self) -> dict[str, Any]:
-        monthly_characters = self.monthly_characters
+        monthly = self.monthly
+
+        unit: None | str | Unset
+        if isinstance(self.unit, Unset):
+            unit = UNSET
+        elif isinstance(self.unit, CapUnit):
+            unit = self.unit.value
+        else:
+            unit = self.unit
 
 
         field_dict: dict[str, Any] = {}
 
         field_dict.update({
-            "monthly_characters": monthly_characters,
+            "monthly": monthly,
         })
+        if unit is not UNSET:
+            field_dict["unit"] = unit
 
         return field_dict
 
@@ -48,10 +63,31 @@ class PlatformSpeechCapRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        monthly_characters = d.pop("monthly_characters")
+        monthly = d.pop("monthly")
+
+        def _parse_unit(data: object) -> CapUnit | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                unit_type_0 = CapUnit(data)
+
+
+
+                return unit_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(CapUnit | None | Unset, data)
+
+        unit = _parse_unit(d.pop("unit", UNSET))
+
 
         platform_speech_cap_request = cls(
-            monthly_characters=monthly_characters,
+            monthly=monthly,
+            unit=unit,
         )
 
         return platform_speech_cap_request

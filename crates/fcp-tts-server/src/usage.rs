@@ -19,6 +19,7 @@ struct Counts {
     requests: u64,
     characters: u64,
     synthesized: u64,
+    recognized_ms: u64,
 }
 
 pub struct UsageCounter {
@@ -63,9 +64,44 @@ impl UsageCounter {
         }
         drop(pending);
         if synthesized {
-            self.caps
-                .add(&tenant.to_string(), provider, characters as u64);
+            self.caps.add(
+                &tenant.to_string(),
+                provider,
+                fcp_core::speech::CapUnit::Characters,
+                characters as u64,
+            );
         }
+    }
+
+    /// One recognition of `ms` of audio for `tenant` by `provider`
+    /// (`docs/TENANT_RECOGNITION.md` R3).
+    pub fn count_heard(&self, tenant: &str, provider: &str, ms: u64) {
+        let Ok(tenant) = tenant
+            .parse::<TenantId>()
+            .or_else(|_| format!("tenant-{tenant}").parse())
+        else {
+            return;
+        };
+        let hour = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            / 3600
+            * 3600;
+        {
+            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+            let c = pending
+                .entry((tenant, provider.to_string(), hour))
+                .or_default();
+            c.requests += 1;
+            c.recognized_ms += ms;
+        }
+        self.caps.add(
+            &tenant.to_string(),
+            provider,
+            fcp_core::speech::CapUnit::Minutes,
+            ms,
+        );
     }
 
     /// Write what was counted; on a failure it is kept for the next try.
@@ -86,6 +122,7 @@ impl UsageCounter {
                 requests: c.requests,
                 characters: c.characters,
                 synthesized_characters: c.synthesized,
+                recognized_ms: c.recognized_ms,
                 site_id: None,
             })
             .collect();
@@ -97,6 +134,7 @@ impl UsageCounter {
                 p.requests += c.requests;
                 p.characters += c.characters;
                 p.synthesized += c.synthesized;
+                p.recognized_ms += c.recognized_ms;
             }
         }
     }

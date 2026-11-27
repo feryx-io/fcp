@@ -84,7 +84,11 @@ pub async fn synthesize(
         (&state.usage, req.tenant_id.as_deref(), provider_name)
     {
         if p != state.default_provider {
-            if let Some(reached) = usage.caps.reached(tenant_id, p) {
+            if let Some(reached) =
+                usage
+                    .caps
+                    .reached(tenant_id, p, fcp_core::speech::CapUnit::Characters)
+            {
                 if req.provider.is_some() {
                     return (
                         StatusCode::TOO_MANY_REQUESTS,
@@ -749,6 +753,7 @@ pub(crate) mod tests {
             access_key_id: None,
             secret: Some("xi-their-key".into()),
             price_per_million: None,
+            price_per_minute: None,
             created_at: now,
             updated_at: now,
         };
@@ -910,12 +915,14 @@ pub(crate) mod tests {
                 tenant_id: None,
                 provider: "alt".into(),
                 kind: fcp_core::speech::SpeechCapKind::Platform,
+                unit: fcp_core::speech::CapUnit::Characters,
                 monthly_characters: Some(10),
             },
             fcp_core::speech::SpeechCap {
                 tenant_id: None,
                 provider: "primary".into(),
                 kind: fcp_core::speech::SpeechCapKind::Platform,
+                unit: fcp_core::speech::CapUnit::Characters,
                 monthly_characters: Some(0),
             },
         ]);

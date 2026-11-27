@@ -8,6 +8,7 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..models.cap_unit import CapUnit
 from ..types import UNSET, Unset
 from typing import cast
 
@@ -22,14 +23,18 @@ T = TypeVar("T", bound="PageSpeechCapViewDataItem")
 
 @_attrs_define
 class PageSpeechCapViewDataItem:
-    """ One provider's cap on the tenant this month.
+    """ One provider's cap of one unit on the tenant this month.
 
         Attributes:
             provider (str): A platform provider's name, or `account:<uuid>`.
             label (str): The provider, or the account's name.
+            unit (CapUnit): What a cap counts (`docs/TENANT_RECOGNITION.md` R3): characters a
+                provider synthesized, or minutes a recognizer heard (counted in
+                milliseconds).
             platform_override (bool): Whether the platform set a cap for this tenant itself, rather than
                 its default (null `platform_cap` then means none for this tenant).
-            used (int): Synthesized characters this month (UTC), the cloud's and sites'.
+            used (int): Used this month (UTC), the cloud's and sites': characters, or
+                whole minutes heard.
             state (str): `ok`, `near` (80 % or more) or `reached`.
             resets_at (str): When the month's count starts again (RFC 3339).
             platform_cap (int | None | Unset): What the platform holds the tenant to on this provider (its cap
@@ -40,6 +45,7 @@ class PageSpeechCapViewDataItem:
 
     provider: str
     label: str
+    unit: CapUnit
     platform_override: bool
     used: int
     state: str
@@ -57,6 +63,8 @@ class PageSpeechCapViewDataItem:
         provider = self.provider
 
         label = self.label
+
+        unit = self.unit.value
 
         platform_override = self.platform_override
 
@@ -90,6 +98,7 @@ class PageSpeechCapViewDataItem:
         field_dict.update({
             "provider": provider,
             "label": label,
+            "unit": unit,
             "platform_override": platform_override,
             "used": used,
             "state": state,
@@ -112,6 +121,11 @@ class PageSpeechCapViewDataItem:
         provider = d.pop("provider")
 
         label = d.pop("label")
+
+        unit = CapUnit(d.pop("unit"))
+
+
+
 
         platform_override = d.pop("platform_override")
 
@@ -154,6 +168,7 @@ class PageSpeechCapViewDataItem:
         page_speech_cap_view_data_item = cls(
             provider=provider,
             label=label,
+            unit=unit,
             platform_override=platform_override,
             used=used,
             state=state,

@@ -66,6 +66,10 @@ pub enum PlatformEvent {
     Speech(SpeechEvent),
 }
 
+fn characters() -> String {
+    "characters".to_string()
+}
+
 /// A tenant's speech against its caps, said once per cap and month by the
 /// admin's sweep (`docs/SPEECH_CAPS.md`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +80,10 @@ pub enum SpeechEvent {
         tenant_id: TenantId,
         /// A platform provider's name, or `account:<uuid>`.
         provider: String,
+        /// `characters` or `minutes` (`docs/TENANT_RECOGNITION.md` R3);
+        /// `cap` and `used` are in it.
+        #[serde(default = "characters")]
+        unit: String,
         /// Synthesized characters the month allows.
         cap: u64,
         /// Synthesized so far this month.
@@ -90,6 +98,10 @@ pub enum SpeechEvent {
     CapReached {
         tenant_id: TenantId,
         provider: String,
+        /// `characters` or `minutes` (`docs/TENANT_RECOGNITION.md` R3);
+        /// `cap` and `used` are in it.
+        #[serde(default = "characters")]
+        unit: String,
         cap: u64,
         used: u64,
         month: String,

@@ -181,6 +181,31 @@ offer lists recognizers with their default caps and prices.
   `e2e/speech.spec.ts`'s recognition test.
 - **R3 — usage and caps in minutes.** `recognized_ms`, the cap's unit,
   `price_per_minute`, the server counting and enforcing, the page.
+  **Done (v0.25.667):** migration 160 — `speech_usage.recognized_ms`, a
+  `unit` (`characters` or `minutes`) joining the key of `speech_caps`,
+  `speech_cap_notices`, `site_speech_caps` (a minute row's id ends
+  `@minutes`) and `speech_cap_carried`, and `platform_speech.minute_prices`.
+  `fcp_core::speech::CapUnit` (a minute cap compared with milliseconds
+  heard, `CapUnit::base`), `effective_cap(…, unit)`, `used_since` and
+  `used_by_source` in either unit, an account's `price_per_minute`. The
+  server counts each recognition's milliseconds under the recognizer that
+  heard it (`UsageCounter::count_heard`, a file's length or a stream's
+  samples however it ends), judges a recognizer's minute cap when a
+  request starts — the default hears at the cap, a named one is 429
+  `speech_cap_reached` — and never caps the default recognizer. The API:
+  caps take `unit` and `monthly` (`monthly_characters` still read; the
+  platform's list answers `monthly` and `unit`), a minute cap only on what
+  hears and a character cap only on what speaks, `DELETE …?unit=`;
+  `/speech/usage` rows gain `recognized_seconds` and price the minutes;
+  `/system/speech` takes `minute_prices` and lists `price_per_minute`; the
+  sweep warns and carries to sites per unit (`speech.cap_*` gain `unit`).
+  The page: caps of either unit, minutes heard on the usage table, the
+  platform's minute caps and prices, an account's price per minute.
+  Proved by `recognition_is_counted_capped_in_minutes_and_priced`,
+  `a_recognizer_at_its_minute_cap_gives_way_to_the_default`, fcp-core's
+  `a_cap_counts_its_own_unit`, and `e2e/speech.spec.ts`. An admin of the
+  release before writing a cap mid-upgrade no longer finds its conflict
+  index (noted in the migration).
 - **R4 — sites.** The new fields and kind synced (already journaled
   tables), usage shipped, caps carried with their unit; proved by
   `fcp-link/tests`.

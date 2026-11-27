@@ -134,8 +134,16 @@ test("a tenant's recognition is chosen, kept and tried", async ({ page, api }) =
   await expect(page.getByRole('heading', { name: 'Recognition' })).toBeVisible()
   await expect(page.getByRole('row', { name: /Our ears/ })).toContainText('Hears')
 
+  // A recognizer is capped in minutes (docs/TENANT_RECOGNITION.md R3).
+  const ears = (await made.json()).provider as string
+  await page.getByRole('button', { name: 'Add a cap' }).click()
+  await page.getByLabel('Minutes a month').fill('30')
+  await page.getByRole('button', { name: 'Save cap' }).click()
+  await settled(page)
+  await expect(page.getByTestId(`cap-${ears}-minutes`)).toContainText('0 of 30 minutes heard this month')
+
   await page.getByLabel('Recognition language').fill('fr-CA')
-  await page.getByRole('button', { name: 'Save' }).click()
+  await page.getByRole('button', { name: 'Save', exact: true }).click()
   await settled(page)
   await expect(page.getByRole('button', { name: 'Saved' })).toBeVisible()
   const kept = await (await api.get('/api/v1/speech/settings')).json()

@@ -31,8 +31,10 @@ class PageSpeechUsagePeriodDataItem:
             requests (int):
             characters (int):
             synthesized_characters (int): What the provider spoke, and bills for; the rest came from the cache.
-            estimated_cost (float | None | Unset): The synthesized characters at the provider's price per million
-                (the platform's, or the account's own), where one is set.
+            recognized_seconds (int): What a recognizer heard, in seconds (`docs/TENANT_RECOGNITION.md` R3).
+            estimated_cost (float | None | Unset): The synthesized characters at the provider's price per million and
+                the minutes heard at its price per minute (the platform's, or the
+                account's own), where a price is set.
      """
 
     period: str
@@ -41,6 +43,7 @@ class PageSpeechUsagePeriodDataItem:
     requests: int
     characters: int
     synthesized_characters: int
+    recognized_seconds: int
     estimated_cost: float | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -61,6 +64,8 @@ class PageSpeechUsagePeriodDataItem:
 
         synthesized_characters = self.synthesized_characters
 
+        recognized_seconds = self.recognized_seconds
+
         estimated_cost: float | None | Unset
         if isinstance(self.estimated_cost, Unset):
             estimated_cost = UNSET
@@ -77,6 +82,7 @@ class PageSpeechUsagePeriodDataItem:
             "requests": requests,
             "characters": characters,
             "synthesized_characters": synthesized_characters,
+            "recognized_seconds": recognized_seconds,
         })
         if estimated_cost is not UNSET:
             field_dict["estimated_cost"] = estimated_cost
@@ -100,6 +106,8 @@ class PageSpeechUsagePeriodDataItem:
 
         synthesized_characters = d.pop("synthesized_characters")
 
+        recognized_seconds = d.pop("recognized_seconds")
+
         def _parse_estimated_cost(data: object) -> float | None | Unset:
             if data is None:
                 return data
@@ -117,6 +125,7 @@ class PageSpeechUsagePeriodDataItem:
             requests=requests,
             characters=characters,
             synthesized_characters=synthesized_characters,
+            recognized_seconds=recognized_seconds,
             estimated_cost=estimated_cost,
         )
 

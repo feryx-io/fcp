@@ -39,6 +39,7 @@ class PageSpeechAccountViewDataItem:
             access_key_id (None | str | Unset):
             price_per_million (float | None | Unset): What the vendor charges per million characters, for an estimated
                 cost (`docs/SPEECH_CAPS.md`).
+            price_per_minute (float | None | Unset): Per minute heard, for a recognizer (`docs/TENANT_RECOGNITION.md` R3).
      """
 
     id: str
@@ -53,6 +54,7 @@ class PageSpeechAccountViewDataItem:
     endpoint: None | str | Unset = UNSET
     access_key_id: None | str | Unset = UNSET
     price_per_million: float | None | Unset = UNSET
+    price_per_minute: float | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
 
@@ -104,6 +106,12 @@ class PageSpeechAccountViewDataItem:
         else:
             price_per_million = self.price_per_million
 
+        price_per_minute: float | None | Unset
+        if isinstance(self.price_per_minute, Unset):
+            price_per_minute = UNSET
+        else:
+            price_per_minute = self.price_per_minute
+
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -126,6 +134,8 @@ class PageSpeechAccountViewDataItem:
             field_dict["access_key_id"] = access_key_id
         if price_per_million is not UNSET:
             field_dict["price_per_million"] = price_per_million
+        if price_per_minute is not UNSET:
+            field_dict["price_per_minute"] = price_per_minute
 
         return field_dict
 
@@ -201,6 +211,16 @@ class PageSpeechAccountViewDataItem:
         price_per_million = _parse_price_per_million(d.pop("price_per_million", UNSET))
 
 
+        def _parse_price_per_minute(data: object) -> float | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(float | None | Unset, data)
+
+        price_per_minute = _parse_price_per_minute(d.pop("price_per_minute", UNSET))
+
+
         page_speech_account_view_data_item = cls(
             id=id,
             name=name,
@@ -214,6 +234,7 @@ class PageSpeechAccountViewDataItem:
             endpoint=endpoint,
             access_key_id=access_key_id,
             price_per_million=price_per_million,
+            price_per_minute=price_per_minute,
         )
 
 

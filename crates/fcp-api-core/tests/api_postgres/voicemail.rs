@@ -1561,6 +1561,7 @@ async fn speech_usage_is_read_by_month_or_day_and_provider() {
         requests: 1,
         characters: chars,
         synthesized_characters: synthesized,
+        recognized_ms: 0,
         site_id: None,
     };
     let a = app.tenant_a;
@@ -1712,7 +1713,7 @@ async fn speech_caps_are_set_by_whoever_pays() {
     assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
     assert_eq!(
         listed.json,
-        json!([{ "provider": "elevenlabs", "monthly_characters": 500 }])
+        json!([{ "provider": "elevenlabs", "unit": "characters", "monthly": 500 }])
     );
     let not_theirs = app
         .send_as(&ta, Method::GET, "/api/v1/system/speech/caps", None)
@@ -1795,6 +1796,7 @@ async fn speech_caps_are_set_by_whoever_pays() {
             requests: 3,
             characters: 900,
             synthesized_characters: 450,
+            recognized_ms: 0,
             site_id: None,
         }])
         .await
@@ -2011,6 +2013,7 @@ async fn speech_caps_warn_once_and_usage_is_priced() {
         requests: 1,
         characters: n,
         synthesized_characters: n,
+        recognized_ms: 0,
         site_id: None,
     };
     let a = app.tenant_a;
@@ -2020,6 +2023,7 @@ async fn speech_caps_warn_once_and_usage_is_priced() {
             tenant_id: None,
             provider: "elevenlabs".into(),
             kind: SpeechCapKind::Platform,
+            unit: fcp_core::speech::CapUnit::Characters,
             monthly_characters: Some(100),
         })
         .await
@@ -2168,6 +2172,7 @@ async fn speech_caps_are_carried_to_a_tenant_s_sites() {
         requests: 1,
         characters: n,
         synthesized_characters: n,
+        recognized_ms: 0,
         site_id: None,
     };
     let a = app.tenant_a;
@@ -2177,6 +2182,7 @@ async fn speech_caps_are_carried_to_a_tenant_s_sites() {
             tenant_id: None,
             provider: "elevenlabs".into(),
             kind: SpeechCapKind::Platform,
+            unit: fcp_core::speech::CapUnit::Characters,
             monthly_characters: Some(1000),
         })
         .await
@@ -2220,7 +2226,12 @@ async fn speech_caps_are_carried_to_a_tenant_s_sites() {
 
     // The cap gone: so is the site's row.
     app.storage
-        .delete_speech_cap(None, "elevenlabs", SpeechCapKind::Platform)
+        .delete_speech_cap(
+            None,
+            "elevenlabs",
+            SpeechCapKind::Platform,
+            fcp_core::speech::CapUnit::Characters,
+        )
         .await
         .unwrap();
     fcp_api_core::v1::speech::sweep_caps(&app.state, SystemTime::now()).await;
@@ -2230,21 +2241,38 @@ async fn speech_caps_are_carried_to_a_tenant_s_sites() {
     // tenant, and what was spoken elsewhere counts toward it.
     let (month, _) = fcp_core::speech::month_of(SystemTime::now());
     app.storage
-        .put_carried_speech_cap(&b, "openai-cloud", month, 500, 120)
+        .put_carried_speech_cap(
+            &b,
+            "openai-cloud",
+            fcp_core::speech::CapUnit::Characters,
+            month,
+            500,
+            120,
+        )
         .await
         .unwrap();
     let caps = app.storage.all_speech_caps().await.unwrap();
     assert_eq!(
-        fcp_core::speech::effective_cap(&caps, &b, "openai-cloud"),
+        fcp_core::speech::effective_cap(
+            &caps,
+            &b,
+            "openai-cloud",
+            fcp_core::speech::CapUnit::Characters
+        ),
         Some(500)
     );
-    let used = app.storage.synthesized_since(month).await.unwrap();
+    let used = app.storage.used_since(month).await.unwrap();
     assert!(
-        used.contains(&(b, "openai-cloud".to_string(), 120)),
+        used.contains(&(
+            b,
+            "openai-cloud".to_string(),
+            fcp_core::speech::CapUnit::Characters,
+            120
+        )),
         "{used:?}"
     );
     app.storage
-        .delete_carried_speech_cap(&b, "openai-cloud")
+        .delete_carried_speech_cap(&b, "openai-cloud", fcp_core::speech::CapUnit::Characters)
         .await
         .unwrap();
     assert!(app.storage.all_speech_caps().await.unwrap().is_empty());
@@ -2504,5 +2532,195 @@ async fn a_tenant_hears_a_preview_and_tests_an_account_that_hears() {
     assert_eq!(tested.status, StatusCode::OK, "{}", tested.text);
     assert_eq!(tested.json["spoken"], "This is Our ears.");
     assert_eq!(tested.json["heard"], format!("{ears}|{tenant}"));
+    app.finish().await;
+}
+
+/// `docs/TENANT_RECOGNITION.md` R3: what is heard is counted in seconds and
+/// capped in minutes — on a recognizer, never the default one, and on an
+/// account that both speaks and hears beside its characters — priced by the
+/// minute, and warned of as speech is.
+#[tokio::test]
+async fn recognition_is_counted_capped_in_minutes_and_priced() {
+    use axum::routing::get;
+    use fcp_core::speech::{SpeechUsage, SpeechUsageStore};
+    let router = Router::new().route(
+        "/v1/providers",
+        get(|| async {
+            axum::Json(json!([
+                { "name": "piper", "is_default": true, "speaks": true, "hears": false },
+                { "name": "deepgram", "speaks": false, "hears": true, "is_default_recognizer": true },
+                { "name": "whisper", "speaks": false, "hears": true },
+            ]))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let app = app.with_tts(&url).await;
+    let put = |path: &str, body: Value| {
+        let path = path.to_string();
+        let app = &app;
+        async move { app.admin(Method::PUT, &path, Some(body)).await }
+    };
+    // What a minute cap may go on, and a character cap.
+    for (path, body, want) in [
+        (
+            "/api/v1/system/speech/caps/whisper",
+            json!({ "monthly": 60, "unit": "minutes" }),
+            StatusCode::NO_CONTENT,
+        ),
+        (
+            "/api/v1/system/speech/caps/piper",
+            json!({ "monthly": 60, "unit": "minutes" }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "/api/v1/system/speech/caps/deepgram",
+            json!({ "monthly": 60, "unit": "minutes" }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "/api/v1/system/speech/caps/whisper",
+            json!({ "monthly": 60 }),
+            StatusCode::BAD_REQUEST,
+        ),
+    ] {
+        let r = put(path, body.clone()).await;
+        assert_eq!(r.status, want, "{path} {body}: {}", r.text);
+    }
+
+    // An OpenAI account: capped in both units at once.
+    let made = app
+        .admin(
+            Method::POST,
+            "/api/v1/speech/accounts",
+            Some(
+                json!({ "name": "Both ways", "kind": "openai", "secret": "sk",
+                         "price_per_minute": 0.25 }),
+            ),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    assert_eq!(made.json["price_per_minute"], 0.25);
+    let account = made.json["provider"].as_str().unwrap().to_string();
+    for body in [
+        json!({ "monthly": 10, "unit": "minutes" }),
+        json!({ "monthly": 1000 }),
+    ] {
+        let r = put(&format!("/api/v1/speech/caps/{account}"), body).await;
+        assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.text);
+    }
+
+    // 50 minutes heard by whisper, 3 by the account, this month.
+    let hour = SystemTime::UNIX_EPOCH
+        + std::time::Duration::from_secs(
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                / 3600
+                * 3600,
+        );
+    let heard = |provider: &str, ms| SpeechUsage {
+        tenant_id: app.tenant_a,
+        provider: provider.into(),
+        hour,
+        requests: 1,
+        characters: 0,
+        synthesized_characters: 0,
+        recognized_ms: ms,
+        site_id: None,
+    };
+    app.storage
+        .add_speech_usage(&[heard("whisper", 3_000_000), heard(&account, 180_000)])
+        .await
+        .unwrap();
+    let caps = app.admin(Method::GET, "/api/v1/speech/caps", None).await;
+    assert_eq!(caps.status, StatusCode::OK, "{}", caps.text);
+    let row = |provider: &str, unit: &str| {
+        caps.json
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["provider"] == provider && r["unit"] == unit)
+            .cloned()
+            .unwrap_or_else(|| panic!("{provider} {unit}: {}", caps.text))
+    };
+    let whisper = row("whisper", "minutes");
+    assert_eq!(
+        (&whisper["cap"], &whisper["used"], &whisper["state"]),
+        (&json!(60), &json!(50), &json!("near"))
+    );
+    assert_eq!(row(&account, "minutes")["used"], 3);
+    assert_eq!(row(&account, "characters")["cap"], 1000);
+
+    // Priced by the minute: the platform's, and the account's own.
+    let priced = put(
+        "/api/v1/system/speech",
+        json!({ "held_back": [], "minute_prices": { "whisper": 0.5 } }),
+    )
+    .await;
+    assert_eq!(priced.status, StatusCode::OK, "{}", priced.text);
+    let usage = app.admin(Method::GET, "/api/v1/speech/usage", None).await;
+    let period = |p: &str| {
+        usage
+            .json
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["provider"] == p)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(
+        period("whisper")["recognized_seconds"],
+        3000,
+        "{}",
+        usage.text
+    );
+    assert_eq!(
+        period("whisper")["estimated_cost"],
+        json!(25.0),
+        "{}",
+        usage.text
+    );
+    assert_eq!(
+        period(&account)["estimated_cost"],
+        json!(0.75),
+        "{}",
+        usage.text
+    );
+
+    // Warned of in minutes.
+    let raised = fcp_api_core::v1::speech::sweep_caps(&app.state, SystemTime::now()).await;
+    assert!(
+        raised.iter().any(|e| matches!(e,
+            fcp_events::SpeechEvent::CapNear { provider, unit, used, .. }
+                if provider == "whisper" && unit == "minutes" && *used == 50)),
+        "{raised:?}"
+    );
+
+    // Taken off by unit.
+    let gone = app
+        .admin(
+            Method::DELETE,
+            "/api/v1/system/speech/caps/whisper?unit=minutes",
+            None,
+        )
+        .await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT, "{}", gone.text);
+    let gone = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/speech/caps/{account}?unit=minutes"),
+            None,
+        )
+        .await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT, "{}", gone.text);
     app.finish().await;
 }
