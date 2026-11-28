@@ -143,6 +143,35 @@ button runs it at once.
   put back beside what is there. The database is untouched. This is for
   "we deleted the wrong thing".
 
+**Restores are switched on by an override file** (agreed 2026-11-27,
+replacing the `FCP_BACKUP_RESTORE` variable):
+- Normally `fcp-backup` mounts every volume read-only and has no Docker
+  socket.
+- `docker compose -f docker-compose.yml -f docker-compose.restore.yml up -d
+  fcp-backup` turns restores on. The volumes become writable, for file
+  restores and a full restore, and the Docker socket is mounted, for a
+  full restore.
+- The service says which it has, and the page says when restores are off
+  and how to turn them on.
+
+**What a snapshot of the files holds.**
+- The certs volume is backed up as every other volume is, CAs included,
+  but without `master.key` unless the destination includes the key.
+- Paths are named by their compose volume, so a download can be put back
+  in `backup.sh`'s layout.
+
+**A download, in `backup.sh`'s layout** (agreed 2026-11-27): `fcp.dump`, a
+`<volume>.tar.gz` of each volume's root, a `manifest` with the release and
+the KEK id, and `SHA256SUMS`, so `restore.sh` restores it on any new host.
+- `fcp-certs.tar.gz` gets its `master.key` from the snapshot when the
+  snapshot holds it.
+- Otherwise it is the running system's own key, when its KEK is the one
+  the snapshot names.
+- Otherwise the page asks for the key file downloaded in B2, with its
+  passphrase.
+- `fcp-backup` builds the download in its work directory and streams it
+  to the admin, which streams it on.
+
 **Stopping and starting the services.** A full restore needs this, and it
 is the one dangerous power in the design.
 - **In compose:** the service needs the Docker socket. That is root on the
@@ -284,7 +313,14 @@ is the one dangerous power in the design.
   - **Proved by:** `the_master_key_is_downloaded_wrapped_in_a_passphrase`
     (the file opened with the passphrase gives the key back) and
     `e2e/backups.spec.ts`.
-- **B3: restoring from the admin.**
+- **B3: restoring from the admin,** in three parts:
+  - **B3a:** snapshots listed, and a download in `backup.sh`'s layout,
+    through `fcp-backup`'s own API.
+  - **B3b:** the override file, and file restores (a platform
+    administrator's and a tenant's own), never overwriting.
+  - **B3c:** the full restore.
+
+  What each part covers:
   - Download in `backup.sh` layout; partial restores, the tenant's own
     included.
   - Maintenance mode on every service; the full restore, through the
