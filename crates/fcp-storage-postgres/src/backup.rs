@@ -227,6 +227,51 @@ impl BackupStore for PostgresStorage {
         rows.iter().map(run_from).collect()
     }
 
+    async fn tenant_files(
+        &self,
+        tenant: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<fcp_core::backup::TenantFile>> {
+        // Each row naming a file the tenant owns, held here rather than at a
+        // site; a webinar's stream is a directory and is left out.
+        let rows: Vec<(String, String, String, Option<chrono::DateTime<chrono::Utc>>)> =
+            sqlx::query_as(
+                "SELECT * FROM (
+                   SELECT 'call_recording' AS class, id::text AS item, path, started_at AS at
+                     FROM call_recordings WHERE tenant_id = $1 AND site_id IS NULL AND path <> ''
+                   UNION ALL
+                   SELECT 'conference_recording', id, path, started_at
+                     FROM conference_recordings
+                    WHERE tenant_id = $1 AND site_id IS NULL AND kind <> 'stream' AND path <> ''
+                   UNION ALL
+                   SELECT 'voicemail', id, recording_path, created_at
+                     FROM voicemail_messages
+                    WHERE tenant_id = $1 AND site_id IS NULL AND recording_path <> ''
+                   UNION ALL
+                   SELECT 'voicemail_greeting', g.id::text, g.audio_path, g.created_at
+                     FROM voicemail_greetings g JOIN voicemail_mailboxes mb ON mb.id = g.mailbox_id
+                    WHERE mb.tenant_id = $1 AND g.audio_path <> ''
+                   UNION ALL
+                   SELECT 'prompt', id, audio_path, created_at
+                     FROM prompts
+                    WHERE tenant_id = $1 AND source_type = 'file' AND COALESCE(audio_path, '') <> ''
+                 ) f ORDER BY at DESC NULLS LAST LIMIT $2",
+            )
+            .bind(tenant)
+            .bind(limit as i64)
+            .fetch_all(self.reads())
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(class, item, path, at)| fcp_core::backup::TenantFile {
+                class,
+                item,
+                path,
+                created_at: at.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+            })
+            .collect())
+    }
+
     async fn active_kek_id(&self) -> anyhow::Result<Option<String>> {
         Ok(sqlx::query_scalar::<_, String>(
             "SELECT kek_id FROM data_encryption_keys WHERE active ORDER BY created_at DESC LIMIT 1",

@@ -240,6 +240,31 @@ pub struct BackupRun {
     pub node: Option<String>,
 }
 
+/// A file one of a tenant's rows names, as the service that wrote it sees
+/// the path: what a tenant may put back (`docs/SCHEDULED_BACKUPS.md` B3b).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct TenantFile {
+    /// `call_recording`, `conference_recording`, `voicemail`,
+    /// `voicemail_greeting` or `prompt`.
+    pub class: String,
+    /// The row's id.
+    pub item: String,
+    pub path: String,
+    /// When the row was made (or the recording began), RFC 3339.
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
+/// The classes of [`TenantFile`].
+pub const TENANT_FILE_CLASSES: [&str; 5] = [
+    "call_recording",
+    "conference_recording",
+    "voicemail",
+    "voicemail_greeting",
+    "prompt",
+];
+
 /// Where destinations and runs are kept.
 #[async_trait]
 pub trait BackupStore: Send + Sync {
@@ -272,6 +297,12 @@ pub trait BackupStore: Send + Sync {
         &self,
         destination: &uuid::Uuid,
     ) -> anyhow::Result<Option<BackupRun>>;
+
+    /// Every file `tenant`'s rows name and this deployment holds (a site's
+    /// are the site's), newest first, at most `limit`.
+    async fn tenant_files(&self, _tenant: &str, _limit: usize) -> anyhow::Result<Vec<TenantFile>> {
+        Ok(Vec::new())
+    }
 
     /// The key ring's active KEK id, which a snapshot is tagged with so a
     /// restore can check the key it is given (`docs/SCHEDULED_BACKUPS.md`).

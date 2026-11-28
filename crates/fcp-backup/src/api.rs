@@ -54,6 +54,10 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/downloads", post(start_download))
         .route("/v1/downloads/:id", get(download_state))
         .route("/v1/downloads/:id/file", get(download_file))
+        .route("/v1/capabilities", get(capabilities))
+        .route("/v1/files/check", post(check_files))
+        .route("/v1/files/find", post(find_files))
+        .route("/v1/restores/files", post(restore_files))
         .with_state(state)
 }
 
@@ -556,4 +560,153 @@ async fn put_key(
     }
     tokio::fs::write(at, format!("{key}\n")).await?;
     Ok(())
+}
+
+// ── File restores (B3b) ────────────────────────────────────────────────────
+
+async fn capabilities(State(state): State<ApiState>, headers: HeaderMap) -> Response {
+    if let Err(r) = authorized(&state, &headers) {
+        return r.into_response();
+    }
+    Json(crate::files::capabilities(&state.ctx.config.backup)).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct PathsRequest {
+    paths: Vec<String>,
+}
+
+/// Whether each path (as its service wrote it) is here.
+async fn check_files(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(req): Json<PathsRequest>,
+) -> Response {
+    if let Err(r) = authorized(&state, &headers) {
+        return r.into_response();
+    }
+    Json(crate::files::check(&state.ctx.config.backup, &req.paths)).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct FindRequest {
+    destination_id: String,
+    paths: Vec<String>,
+}
+
+/// The snapshots that hold each path, newest first.
+async fn find_files(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(req): Json<FindRequest>,
+) -> Response {
+    if let Err(r) = authorized(&state, &headers) {
+        return r.into_response();
+    }
+    let mut dest = match destination(&state, &req.destination_id).await {
+        Ok(d) => d,
+        Err(r) => return r.into_response(),
+    };
+    let repo = match runner::repo_for(&state.ctx, &mut dest, false).await {
+        Ok(r) => r,
+        Err(e) => return error(StatusCode::CONFLICT, format!("{e:#}")),
+    };
+    match crate::files::find(&repo, &state.ctx.config.backup, &req.paths).await {
+        Ok(found) => Json(found).into_response(),
+        Err(e) => error(StatusCode::BAD_GATEWAY, format!("{e:#}")),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RestoreFilesRequest {
+    destination_id: String,
+    /// restic's id of a files snapshot.
+    snapshot: String,
+    /// Paths as their services wrote them (a tenant's rows)…
+    #[serde(default)]
+    service_paths: Vec<String>,
+    /// …or a volume and paths in it (a platform administrator's); no
+    /// paths is the whole volume.
+    #[serde(default)]
+    volume: Option<String>,
+    #[serde(default)]
+    paths: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct Restored {
+    path: String,
+    /// Whether it is there now.
+    present: bool,
+}
+
+/// Put files back beside what is there: nothing present is overwritten.
+async fn restore_files(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(req): Json<RestoreFilesRequest>,
+) -> Response {
+    if let Err(r) = authorized(&state, &headers) {
+        return r.into_response();
+    }
+    let config = &state.ctx.config.backup;
+    let caps = crate::files::capabilities(config);
+    if !caps.file_restores {
+        return error(
+            StatusCode::CONFLICT,
+            "restores are off: start fcp-backup with docker-compose.restore.yml".into(),
+        );
+    }
+    // (what the caller named, where it is here)
+    let mut targets: Vec<(String, std::path::PathBuf)> = Vec::new();
+    for p in &req.service_paths {
+        match crate::files::map(config, p) {
+            Some(here) => targets.push((p.clone(), here)),
+            None => return error(StatusCode::BAD_REQUEST, format!("{p} is not held here")),
+        }
+    }
+    if let Some(volume) = &req.volume {
+        let rels = if req.paths.is_empty() {
+            vec![String::new()]
+        } else {
+            req.paths.clone()
+        };
+        for rel in rels {
+            match crate::files::in_volume(config, volume, &rel) {
+                Ok(here) => targets.push((format!("{volume}:{rel}"), here)),
+                Err(e) => return error(StatusCode::BAD_REQUEST, format!("{e:#}")),
+            }
+        }
+    }
+    if targets.is_empty() {
+        return error(StatusCode::BAD_REQUEST, "nothing to restore".into());
+    }
+    let mut dest = match destination(&state, &req.destination_id).await {
+        Ok(d) => d,
+        Err(r) => return r.into_response(),
+    };
+    let repo = match runner::repo_for(&state.ctx, &mut dest, false).await {
+        Ok(r) => r,
+        Err(e) => return error(StatusCode::CONFLICT, format!("{e:#}")),
+    };
+    let snapshot = req.snapshot.trim();
+    if snapshot.is_empty() || !snapshot.chars().all(|c| c.is_ascii_hexdigit()) {
+        return error(StatusCode::BAD_REQUEST, "no such snapshot".into());
+    }
+    let here: Vec<std::path::PathBuf> = targets.iter().map(|(_, h)| h.clone()).collect();
+    match crate::files::restore(&repo, snapshot, &here).await {
+        Ok(after) => {
+            info!(snapshot, count = targets.len(), "Backups: files put back");
+            let out: Vec<Restored> = targets
+                .iter()
+                .zip(after)
+                .map(|((named, _), (_, present))| Restored {
+                    path: named.clone(),
+                    present,
+                })
+                .collect();
+            Json(out).into_response()
+        }
+        Err(e) => error(StatusCode::BAD_GATEWAY, format!("{e:#}")),
+    }
 }

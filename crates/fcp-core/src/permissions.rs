@@ -240,6 +240,11 @@ pub enum Permission {
     /// The services' logs (`docs/LOG_VIEWER.md`): a tenant's lines only,
     /// unless the caller is the platform's.
     LogRead,
+    /// Backups (`docs/SCHEDULED_BACKUPS.md`): for a tenant, the schedule and
+    /// the last good backup, never the destinations.
+    BackupRead,
+    /// A tenant's own lost files put back from a backup, picked by its rows.
+    BackupRestoreOwn,
     /// The tenant's identity providers: who signs in through what, and
     /// the roles their groups give (docs/IDENTITY_AND_DEVICES.md phase 3).
     IdentityProviderManage,
@@ -330,6 +335,8 @@ impl FromStr for Permission {
             "extension_manage" => Ok(Self::ExtensionManage),
             "webhook_manage" => Ok(Self::WebhookManage),
             "log_read" => Ok(Self::LogRead),
+            "backup_read" => Ok(Self::BackupRead),
+            "backup_restore_own" => Ok(Self::BackupRestoreOwn),
             "identity_provider_manage" => Ok(Self::IdentityProviderManage),
             "branding_manage" => Ok(Self::BrandingManage),
             "group_read" => Ok(Self::GroupRead),
@@ -408,6 +415,8 @@ impl Permission {
         Self::ExtensionManage,
         Self::WebhookManage,
         Self::LogRead,
+        Self::BackupRead,
+        Self::BackupRestoreOwn,
         Self::IdentityProviderManage,
         Self::BrandingManage,
         Self::GroupRead,
@@ -464,6 +473,7 @@ impl Permission {
             Self::ExtensionRead | Self::ExtensionManage => "Extensions",
             Self::WebhookManage => "Webhooks",
             Self::LogRead => "Logs",
+            Self::BackupRead | Self::BackupRestoreOwn => "Backups",
             Self::IdentityProviderManage => "Single sign-on",
             Self::BrandingManage => "Branding",
             Self::GroupRead | Self::GroupManage => "Groups",
@@ -538,6 +548,8 @@ impl Permission {
             Self::ExtensionManage => "extension_manage",
             Self::WebhookManage => "webhook_manage",
             Self::LogRead => "log_read",
+            Self::BackupRead => "backup_read",
+            Self::BackupRestoreOwn => "backup_restore_own",
             Self::IdentityProviderManage => "identity_provider_manage",
             Self::BrandingManage => "branding_manage",
             Self::GroupRead => "group_read",
@@ -614,6 +626,8 @@ impl Permission {
             Self::ExtensionManage => "Manage Extensions",
             Self::WebhookManage => "Manage Webhooks",
             Self::LogRead => "View Logs",
+            Self::BackupRead => "See Backups",
+            Self::BackupRestoreOwn => "Restore Own Files",
             Self::IdentityProviderManage => "Manage Identity Providers",
             Self::BrandingManage => "Manage Branding",
             Self::GroupRead => "View Groups",
@@ -688,6 +702,10 @@ impl UserRole {
             // read-only monitors (`docs/LOG_VIEWER.md`).
             (TenantAdmin | ReadOnly, LogRead, _) => true,
             (_, LogRead, _) => false,
+            (TenantAdmin | ReadOnly, BackupRead, _) => true,
+            (_, BackupRead, _) => false,
+            (TenantAdmin, BackupRestoreOwn, _) => true,
+            (_, BackupRestoreOwn, _) => false,
 
             // Compliance belongs to whoever administers the tenant: the
             // policy decides what is deleted, holds stop deletion, and

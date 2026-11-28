@@ -103,6 +103,20 @@ pub struct BackupSection {
     /// asks (`include_key`).
     #[serde(default)]
     pub key_ring: Option<PathBuf>,
+    /// Where a path a service writes into a row is here: the service's
+    /// directory, as it names it, to where it is mounted on this service
+    /// (`/app/data/recordings` = `/data/call-manager/recordings`). A tenant's
+    /// lost files are found and put back through it (B3b).
+    #[serde(default)]
+    pub service_paths: BTreeMap<String, PathBuf>,
+    /// The Docker socket, present when restores are switched on by
+    /// `docker-compose.restore.yml` (for a full restore, B3c).
+    #[serde(default = "default_docker_socket")]
+    pub docker_socket: PathBuf,
+}
+
+fn default_docker_socket() -> PathBuf {
+    PathBuf::from("/var/run/docker.sock")
 }
 
 impl Default for BackupSection {
@@ -116,6 +130,8 @@ impl Default for BackupSection {
             poll_secs: default_poll(),
             paths: BTreeMap::new(),
             key_ring: None,
+            service_paths: BTreeMap::new(),
+            docker_socket: default_docker_socket(),
         }
     }
 }
