@@ -489,6 +489,14 @@ pub fn router() -> Router<ApiState> {
             post(backups::restore_volume_files),
         )
         .route("/system/backups/capabilities", get(backups::capabilities))
+        .route(
+            "/system/backups/destinations/:id/snapshots/:run/restore-system",
+            post(backups::restore_system),
+        )
+        .route(
+            "/system/backups/restores/current",
+            get(backups::current_restore),
+        )
         .route("/backups", get(backups::tenant_status))
         .route("/backups/missing", get(backups::tenant_missing))
         .route("/backups/restore-files", post(backups::tenant_restore))

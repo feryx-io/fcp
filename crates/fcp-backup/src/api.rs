@@ -31,6 +31,8 @@ pub struct ApiState {
     pub ctx: Arc<Ctx>,
     pub token: String,
     pub downloads: Arc<Mutex<HashMap<uuid::Uuid, Download>>>,
+    /// The restore of the whole system under way or last run (B3c).
+    pub restore: Arc<Mutex<Option<crate::restore_system::Tracker>>>,
 }
 
 pub struct Download {
@@ -58,6 +60,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/files/check", post(check_files))
         .route("/v1/files/find", post(find_files))
         .route("/v1/restores/files", post(restore_files))
+        .route("/v1/restores/system", post(restore_system))
+        .route("/v1/restores/system/current", get(restore_state))
         .with_state(state)
 }
 
@@ -568,7 +572,10 @@ async fn capabilities(State(state): State<ApiState>, headers: HeaderMap) -> Resp
     if let Err(r) = authorized(&state, &headers) {
         return r.into_response();
     }
-    Json(crate::files::capabilities(&state.ctx.config.backup)).into_response()
+    let mut caps = crate::files::capabilities(&state.ctx.config.backup);
+    caps.full_restore =
+        caps.file_restores && crate::restore_system::Services::of(&state.ctx.config).is_some();
+    Json(caps).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -708,5 +715,157 @@ async fn restore_files(
             Json(out).into_response()
         }
         Err(e) => error(StatusCode::BAD_GATEWAY, format!("{e:#}")),
+    }
+}
+
+// ── The whole system (B3c) ─────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct SystemRestoreRequest {
+    destination_id: String,
+    run: String,
+    /// The point's time, typed back.
+    confirm: String,
+    /// The master key, when the snapshot holds none and this system's is
+    /// another.
+    #[serde(default)]
+    master_key: Option<String>,
+}
+
+/// Restore the whole system from a point: checked here, then run in the
+/// background; follow it at `/v1/restores/system/current`.
+async fn restore_system(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(req): Json<SystemRestoreRequest>,
+) -> Response {
+    if let Err(r) = authorized(&state, &headers) {
+        return r.into_response();
+    }
+    let config = state.ctx.config.clone();
+    let caps = crate::files::capabilities(&config.backup);
+    let Some(services) = crate::restore_system::Services::of(&config) else {
+        return error(
+            StatusCode::CONFLICT,
+            "restores of the whole system are off: start fcp-backup with docker-compose.restore.yml".into(),
+        );
+    };
+    if !caps.file_restores {
+        return error(
+            StatusCode::CONFLICT,
+            format!(
+                "the volumes are read-only here ({})",
+                caps.read_only.join(", ")
+            ),
+        );
+    }
+    if let Some(t) = state
+        .restore
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+    {
+        if t.job.lock().unwrap_or_else(|e| e.into_inner()).state == "running" {
+            return error(StatusCode::CONFLICT, "a restore is under way".into());
+        }
+    }
+    let mut dest = match destination(&state, &req.destination_id).await {
+        Ok(d) => d,
+        Err(r) => return r.into_response(),
+    };
+    let repo = match runner::repo_for(&state.ctx, &mut dest, false).await {
+        Ok(r) => r,
+        Err(e) => return error(StatusCode::CONFLICT, format!("{e:#}")),
+    };
+    let all = match repo.snapshots().await {
+        Ok(a) => a,
+        Err(e) => return error(StatusCode::BAD_GATEWAY, format!("{e:#}")),
+    };
+    let run_id = req.run.trim_start_matches("bkr-");
+    let Some(point) = points(&all).into_iter().find(|p| p.run == run_id) else {
+        return error(StatusCode::NOT_FOUND, "no such snapshot".into());
+    };
+    if req.confirm.trim() != point.time {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "type the snapshot's time back exactly to confirm".into(),
+        );
+    }
+    let Some(database_snapshot) = point.database.clone() else {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "the snapshot holds no database".into(),
+        );
+    };
+    let files = all
+        .iter()
+        .find(|s| Some(&s.id) == point.files.as_ref())
+        .cloned();
+    // The key: the snapshot's own, else the one given, else this system's
+    // when it is the snapshot's.
+    let holds_key = match (&files, &config.backup.key_ring) {
+        (Some(f), Some(k)) => repo
+            .run(&["ls", &f.id, &k.display().to_string()])
+            .await
+            .map(|out| out.lines().any(|l| l.trim() == k.display().to_string()))
+            .unwrap_or(false),
+        _ => false,
+    };
+    let own = fcp_crypto::EncryptionSettings::from_env()
+        .ok()
+        .and_then(|s| s.exportable_master_key());
+    let master_key = if holds_key {
+        None
+    } else if let Some(k) = req.master_key.filter(|k| !k.trim().is_empty()) {
+        Some(k)
+    } else {
+        match (&own, point.kek_id.as_deref()) {
+            (Some((_, id)), Some(kek)) if id == kek => None,
+            (Some(_), None) => None,
+            _ => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "needs the master key: the snapshot does not hold it and this system's key is another (KEK {})",
+                        point.kek_id.as_deref().unwrap_or("unknown")
+                    ),
+                )
+            }
+        }
+    };
+    let job = crate::restore_system::Job::new(&format!("bkr-{}", point.run), &point.time);
+    let tracker = crate::restore_system::Tracker::new(job.clone(), &config.backup.work_dir);
+    *state.restore.lock().unwrap_or_else(|e| e.into_inner()) = Some(tracker.clone());
+    warn!(run = %point.run, "Backups: the whole system is being restored");
+    tokio::spawn(crate::restore_system::run(
+        config,
+        repo,
+        crate::restore_system::Plan {
+            database_snapshot,
+            files,
+            master_key,
+        },
+        services,
+        tracker,
+    ));
+    (StatusCode::ACCEPTED, Json(job)).into_response()
+}
+
+/// The restore under way, or the last one (kept in `work_dir`).
+async fn restore_state(State(state): State<ApiState>, headers: HeaderMap) -> Response {
+    if let Err(r) = authorized(&state, &headers) {
+        return r.into_response();
+    }
+    if let Some(t) = state
+        .restore
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+    {
+        return Json(t.job.lock().unwrap_or_else(|e| e.into_inner()).clone()).into_response();
+    }
+    match crate::restore_system::load_last(&state.ctx.config.backup.work_dir) {
+        Some(j) => Json(j).into_response(),
+        None => error(StatusCode::NOT_FOUND, "no restore has run".into()),
     }
 }

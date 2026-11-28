@@ -169,7 +169,7 @@ import type {
   PlatformSpeech,
   SpeechUsagePeriod, SpeechCap, PlatformSpeechCap, CapUnit,
   BackupDestination, BackupDestinationRequest, BackupRun, BackupKeyStatus, BackupSnapshot, BackupDownload,
-  RestoreCapabilities, TenantBackups, LostFile, VolumeRestoreOutcome, TenantRestoreOutcome,
+  RestoreCapabilities, TenantBackups, LostFile, VolumeRestoreOutcome, TenantRestoreOutcome, SystemRestore,
   LogLine,
   LogLevel,
 } from '@/types'
@@ -1601,6 +1601,11 @@ export const backups = {
     apiClient.post<VolumeRestoreOutcome>(
       `/system/backups/destinations/${encodeURIComponent(id)}/snapshots/${encodeURIComponent(run)}/restore-files`,
       { volume }),
+  /** The whole system from a point (B3c): the time typed back. */
+  restoreSystem: (id: string, run: string, body: { confirm: string; key_file?: string; passphrase?: string }) =>
+    apiClient.post<SystemRestore>(
+      `/system/backups/destinations/${encodeURIComponent(id)}/snapshots/${encodeURIComponent(run)}/restore-system`, body),
+  currentRestore: () => apiClient.get<SystemRestore>('/system/backups/restores/current'),
   // A tenant's own (Q9).
   tenantStatus: () => apiClient.get<TenantBackups>('/backups'),
   tenantMissing: () => apiClient.getAll<LostFile>('/backups/missing'),

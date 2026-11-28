@@ -1013,6 +1013,33 @@ async fn lost_files_are_put_back_and_a_tenant_reaches_only_its_own() {
                     axum::Json(Value::Array(named))
                 }
             }),
+        )
+        .route(
+            "/v1/restores/system",
+            post(|axum::Json(b): axum::Json<Value>| async move {
+                if b["confirm"] != "2026-11-27T02:00:00Z" {
+                    return (StatusCode::BAD_REQUEST, axum::Json(json!({ "error": "type the snapshot's time back exactly to confirm" })));
+                }
+                (StatusCode::ACCEPTED, axum::Json(json!({
+                    "id": "0f6a4e1c-5a8b-4d2e-9f00-0000000000bb", "state": "running",
+                    "run": format!("bkr-{}", b["run"].as_str().unwrap()), "point_time": b["confirm"],
+                    "started_at": "2026-11-27T03:00:00Z", "finished_at": null, "error": null,
+                    "previous_database": null,
+                    "steps": [{ "name": "check", "state": "done" }, { "name": "stop", "state": "running" }],
+                })))
+            }),
+        )
+        .route(
+            "/v1/restores/system/current",
+            get(|| async {
+                axum::Json(json!({
+                    "id": "0f6a4e1c-5a8b-4d2e-9f00-0000000000bb", "state": "succeeded",
+                    "run": "bkr-6c2a7f0e-1d2b-4c3a-9f00-000000000001", "point_time": "2026-11-27T02:00:00Z",
+                    "started_at": "2026-11-27T03:00:00Z", "finished_at": "2026-11-27T03:04:00Z",
+                    "error": null, "previous_database": "fcp_before_20261127030000",
+                    "steps": [{ "name": "check", "state": "done", "detail": null }],
+                }))
+            }),
         );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -1148,5 +1175,39 @@ async fn lost_files_are_put_back_and_a_tenant_reaches_only_its_own() {
         )
         .await;
     assert_eq!(tried.status, StatusCode::FORBIDDEN, "{}", tried.text);
+    // B3c: the whole system, the time typed back; a tenant may not.
+    let path = format!(
+        "/api/v1/system/backups/destinations/{dest}/snapshots/bkr-6c2a7f0e-1d2b-4c3a-9f00-000000000001/restore-system"
+    );
+    let wrong = app
+        .admin(Method::POST, &path, Some(json!({ "confirm": "yesterday" })))
+        .await;
+    assert_eq!(wrong.status, StatusCode::BAD_REQUEST, "{}", wrong.text);
+    let by_tenant = app
+        .send_as(
+            &ta,
+            Method::POST,
+            &path,
+            Some(json!({ "confirm": "2026-11-27T02:00:00Z" })),
+        )
+        .await;
+    assert_eq!(by_tenant.status, StatusCode::FORBIDDEN);
+    let started = app
+        .admin(
+            Method::POST,
+            &path,
+            Some(json!({ "confirm": "2026-11-27T02:00:00Z" })),
+        )
+        .await;
+    assert_eq!(started.status, StatusCode::ACCEPTED, "{}", started.text);
+    assert_eq!(started.json["steps"][1]["name"], "stop");
+    let current = app
+        .admin(Method::GET, "/api/v1/system/backups/restores/current", None)
+        .await;
+    assert_eq!(current.status, StatusCode::OK, "{}", current.text);
+    assert_eq!(
+        current.json["previous_database"],
+        "fcp_before_20261127030000"
+    );
     app.finish().await;
 }

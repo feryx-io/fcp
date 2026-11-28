@@ -242,6 +242,12 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
         Needs(SystemConfig),
     ),
     (GET, "/system/backups/capabilities", Needs(SystemConfig)),
+    (
+        POST,
+        "/system/backups/destinations/:id/snapshots/:run/restore-system",
+        Needs(SystemConfig),
+    ),
+    (GET, "/system/backups/restores/current", Needs(SystemConfig)),
     (GET, "/backups", Needs(BackupRead)),
     (GET, "/backups/missing", Needs(BackupRead)),
     (POST, "/backups/restore-files", Needs(BackupRestoreOwn)),

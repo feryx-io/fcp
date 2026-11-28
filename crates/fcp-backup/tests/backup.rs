@@ -211,6 +211,11 @@ fcp-certs = "{certs}"
 [backup.service_paths]
 "/srv/recordings" = "{files}"
 
+[restore]
+pg_restore = "{pg_restore}"
+stop_commands = ["echo stopped >> {work}/services.log"]
+start_commands = ["echo started >> {work}/services.log"]
+
 [logging]
 level = "info"
 format = "compact"
@@ -218,6 +223,7 @@ format = "compact"
         db = db.url(),
         restic = restic.display(),
         pg_dump = pg_dump().display(),
+        pg_restore = pg_dump().with_file_name("pg_restore").display(),
         work = work.display(),
         files = files.display(),
         certs = certs.display(),
@@ -637,6 +643,131 @@ async fn the_database_and_the_files_go_to_an_sftp_server() {
     assert_eq!(status, 200, "{restored}");
     assert!(lost.exists());
     assert_eq!(std::fs::read(&changed).unwrap(), b"newer");
+
+    // B3c: the whole system back as the point holds it. What came after
+    // the backup goes: a table, a new file, a change.
+    {
+        let mut conn = <sqlx::PgConnection as sqlx::Connection>::connect(db.url())
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE after_the_backup (x INT)")
+            .execute(&mut conn)
+            .await
+            .unwrap();
+    }
+    std::fs::write(files.path().join("tenant-a/after.wav"), b"later").unwrap();
+    std::fs::write(&lost, b"changed since").unwrap();
+    let restore_body = |confirm: &str, key: Option<&str>| {
+        serde_json::json!({
+            "destination_id": format!("bkd-{}", dest.id),
+            "run": format!("bkr-{}", run.id),
+            "confirm": confirm,
+            "master_key": key,
+        })
+    };
+    let (status, said) = post(
+        "/v1/restores/system",
+        restore_body("not the time", Some("a2V5")),
+    )
+    .await;
+    assert_eq!(status, 400, "{said}");
+    let point_time = points[0]["time"].as_str().unwrap().to_string();
+    // No key to give the restored key ring: refused before anything stops.
+    let (status, said) = post("/v1/restores/system", restore_body(&point_time, None)).await;
+    assert_eq!(status, 400, "{said}");
+    assert!(
+        said["error"]
+            .as_str()
+            .unwrap()
+            .contains("needs the master key"),
+        "{said}"
+    );
+    assert!(!work.path().join("services.log").exists());
+    let (status, job) = post(
+        "/v1/restores/system",
+        restore_body(&point_time, Some("dGhlLWtleS1naXZlbg==")),
+    )
+    .await;
+    assert_eq!(status, 202, "{job}");
+    let mut job = job;
+    for _ in 0..240 {
+        job = client
+            .get(api("/v1/restores/system/current"))
+            .bearer_auth("backup-api-token")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if job["state"] != "running" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert_eq!(job["state"], "succeeded", "{job}");
+    assert!(
+        job["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["state"] == "done"),
+        "{job}"
+    );
+    let previous = job["previous_database"].as_str().unwrap().to_string();
+    assert_eq!(
+        std::fs::read_to_string(work.path().join("services.log")).unwrap(),
+        "stopped\nstarted\n"
+    );
+    {
+        let mut conn = <sqlx::PgConnection as sqlx::Connection>::connect(db.url())
+            .await
+            .unwrap();
+        let gone: Option<String> =
+            sqlx::query_scalar("SELECT to_regclass('after_the_backup')::text")
+                .fetch_one(&mut conn)
+                .await
+                .unwrap();
+        assert_eq!(gone, None, "the restored database is the point's");
+        let runs: i64 = sqlx::query_scalar("SELECT count(*) FROM backup_runs")
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+        assert!(runs >= 2, "the point's own rows are there");
+    }
+    assert!(
+        !files.path().join("tenant-a/after.wav").exists(),
+        "a file made after is gone"
+    );
+    assert_eq!(std::fs::read(&lost).unwrap(), kept_before);
+    assert!(certs.path().join("ca.pem").exists());
+    assert_eq!(
+        std::fs::read_to_string(certs.path().join("master.key"))
+            .unwrap()
+            .trim(),
+        "dGhlLWtleS1naXZlbg=="
+    );
+    // The service goes on against the restored database.
+    let after = request(dest.id, BackupRunKind::Test);
+    store.request_backup_run(&after).await.unwrap();
+    let after = wait_for(&store, &after.id).await;
+    assert_eq!(after.state, BackupRunState::Succeeded, "{after:?}");
+    {
+        let (_, admin) = ((), {
+            let mut u = url::Url::parse(db.url()).unwrap();
+            u.set_path("/postgres");
+            u.to_string()
+        });
+        let mut conn = <sqlx::PgConnection as sqlx::Connection>::connect(&admin)
+            .await
+            .unwrap();
+        sqlx::query(&format!(
+            "DROP DATABASE IF EXISTS \"{previous}\" WITH (FORCE)"
+        ))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    }
 
     svc.kill().await;
     drop(sftp);

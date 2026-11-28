@@ -219,6 +219,9 @@ is the one dangerous power in the design.
   paths?, key_file?}`. It answers a restore id, and `GET
   /api/v1/system/backups/restores/{id}` reports its steps.
 - `GET /api/v1/system/backups/capabilities`: whether restores are on.
+- `POST …/snapshots/{run}/restore-system`: `{confirm, key_file?,
+  passphrase?}`, the whole system, followed at `GET
+  /api/v1/system/backups/restores/current`.
 - `POST …/snapshots/{run}/restore-files`: `{volume, paths?}`, put back
   beside what is there.
 - `GET /api/v1/system/backups/key`: the master key, wrapped in a
@@ -436,6 +439,80 @@ is the one dangerous power in the design.
       holds, so those files are neither backed up nor restorable. Left for
       a fix of its own.
   - **B3c:** the full restore.
+
+    **Done (v0.25.674):**
+    - **Maintenance is the drain.** Each service is stopped with SIGTERM,
+      which drains every routing binary: new calls refused, `/ready`
+      failing, calls up let finish for up to `[restore] drain_secs`
+      (default 60). No mode needs adding to every binary.
+    - **`fcp-backup`'s `POST /v1/restores/system`:**
+      `{destination_id, run, confirm, master_key?}`, with the point's time
+      typed back as `confirm`. Everything is checked before anything
+      stops:
+      - restores are on (writable volumes, and the Docker socket or
+        `[restore] stop_commands`);
+      - no other restore is running;
+      - the key: the snapshot's own `master.key` if it holds one (`restic
+        ls`), else the key given, else this system's own when its KEK is
+        the point's. Otherwise it is refused with "needs the master key".
+    - **The job,** in the background (`restore_system.rs`), followed at
+      `GET /v1/restores/system/current` and kept in
+      `work_dir/restore.json`, so it can be read after the admin is back:
+      1. **check.**
+      2. **stop.** Through the Docker socket, the compose project's
+         containers (this one's own by its labels, or
+         `[restore] compose_project`) other than `keep_running`
+         (`postgres`, `redis`, `fcp-backup`, `certs`), stopped all at once
+         with `t=drain_secs`. Otherwise the operator's `stop_commands`.
+      3. **database.** `restic dump | pg_restore --no-owner
+         --no-privileges --exit-on-error` into `<db>_restore_<stamp>`.
+         Then the swap: the old database closed to new connections, its
+         backends ended, renamed `<db>_before_<stamp>`, and the restored
+         one renamed in. A failure up to this point drops the new
+         database, starts the services and reports that nothing was
+         changed.
+      4. **files.** Each volume as the point holds it: `restic restore
+         --overwrite always --delete`. The certs volume is restored
+         without `--delete`, so a key the snapshot left out stays, and a
+         key given is written to the key ring.
+      5. **start.** The containers stopped in step 2, or the
+         `start_commands`. They migrate forward.
+      - The old database is kept, for going back by hand.
+    - **The admin:**
+      - `POST /system/backups/destinations/{id}/snapshots/{run}/restore-system`
+        takes `{confirm, key_file?, passphrase?}`; the key file is opened
+        here.
+      - `GET /system/backups/restores/current` follows the job. Ids are
+        `bks-`.
+      - The Snapshots dialog's "Restore the whole system" says what it
+        replaces and needs the time typed back.
+      - The page's restore card follows the steps, and says the admin is
+        restarting while it is away.
+    - **Compose:** `[restore]` in `configs/fcp-backup.toml`. The Docker
+      socket comes from `docker-compose.restore.yml`.
+    - **Proved by:**
+      - `fcp-backup/tests/backup.rs` (SFTP, real Postgres): after the
+        backup, a table is made, a file added and another changed. A wrong
+        time is refused, and so is a restore with no key to give. Then the
+        restore runs:
+        - the stop and start commands are each run once;
+        - the table is gone and the point's runs are there;
+        - the added file is gone and the changed one is as it was;
+        - the CAs are kept and the given key is written;
+        - the service goes on against the restored database.
+      - `the_compose_services_are_stopped_and_started_through_the_socket`
+        (`FCP_DOCKER_TESTS`, in CI): a compose project of two containers,
+        the kept one left running and the other stopped and started again
+        through the socket.
+      - The admin's routes in
+        `lost_files_are_put_back_and_a_tenant_reaches_only_its_own`, and
+        `e2e/backups.spec.ts`.
+    - **Not proved:** the stack restored end to end in containers (a
+      populated compose stack, a destination it can reach, a call placed
+      after). That belongs with the nightly stack test, which runs the
+      images.
+    - **Needs:** the database user may create, rename and drop databases
+      (compose's `fcp` is the superuser).
 
   What each part covers:
   - Download in `backup.sh` layout; partial restores, the tenant's own

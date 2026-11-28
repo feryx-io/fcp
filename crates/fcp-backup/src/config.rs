@@ -15,6 +15,8 @@ pub struct BackupConfig {
     #[serde(default)]
     pub backup: BackupSection,
     #[serde(default)]
+    pub restore: RestoreSection,
+    #[serde(default)]
     pub events: EventsSection,
     #[serde(default)]
     pub cluster: ClusterSection,
@@ -232,4 +234,58 @@ pub fn validate(config: &BackupConfig) -> anyhow::Result<()> {
         anyhow::bail!("[backup] poll_secs is at least 1");
     }
     Ok(())
+}
+
+/// `[restore]`: how the whole system is restored (`docs/SCHEDULED_BACKUPS.md`
+/// B3c). With the Docker socket, the services are the compose project's
+/// containers; without it, `stop_commands` and `start_commands` stop and
+/// start them (from source, on Kubernetes).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RestoreSection {
+    #[serde(default = "default_pg_restore")]
+    pub pg_restore: PathBuf,
+    /// How long a service is given to drain (calls let finish, new ones
+    /// refused) before it is stopped, seconds.
+    #[serde(default = "default_drain_secs")]
+    pub drain_secs: u64,
+    /// The compose services left running: the database the restore writes
+    /// to, Redis, and this one.
+    #[serde(default = "default_keep_running")]
+    pub keep_running: Vec<String>,
+    /// The compose project whose services are stopped; unset, this
+    /// container's own, from its labels.
+    #[serde(default)]
+    pub compose_project: Option<String>,
+    /// Shell commands run in order to stop the services, in place of
+    /// Docker; and to start them again.
+    #[serde(default)]
+    pub stop_commands: Vec<String>,
+    #[serde(default)]
+    pub start_commands: Vec<String>,
+}
+
+fn default_pg_restore() -> PathBuf {
+    PathBuf::from("/usr/lib/postgresql/16/bin/pg_restore")
+}
+
+fn default_drain_secs() -> u64 {
+    60
+}
+
+fn default_keep_running() -> Vec<String> {
+    vec!["postgres".into(), "redis".into(), "fcp-backup".into()]
+}
+
+impl Default for RestoreSection {
+    fn default() -> Self {
+        Self {
+            pg_restore: default_pg_restore(),
+            drain_secs: default_drain_secs(),
+            keep_running: default_keep_running(),
+            compose_project: None,
+            stop_commands: Vec::new(),
+            start_commands: Vec::new(),
+        }
+    }
 }

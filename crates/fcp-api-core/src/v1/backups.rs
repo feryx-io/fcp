@@ -1648,3 +1648,143 @@ pub async fn tenant_restore(
             .collect(),
     }))
 }
+
+// ── The whole system (B3c) ─────────────────────────────────────────────────
+
+/// A full restore asked for: the point's time typed back, and the key file
+/// when the snapshot holds no key and this system's is another.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SystemRestoreRequest {
+    /// The point's `time`, exactly.
+    pub confirm: String,
+    #[serde(default)]
+    pub key_file: Option<String>,
+    #[serde(default)]
+    pub passphrase: Option<String>,
+}
+
+/// One step of a full restore.
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct RestoreStep {
+    /// `check`, `stop`, `database`, `files` or `start`.
+    pub name: String,
+    /// `waiting`, `running`, `done` or `failed`.
+    pub state: String,
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+/// A full restore and where it is.
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct SystemRestore {
+    pub id: String,
+    /// `running`, `succeeded` or `failed`.
+    pub state: String,
+    pub run: String,
+    pub point_time: String,
+    pub started_at: String,
+    #[serde(default)]
+    pub finished_at: Option<String>,
+    pub steps: Vec<RestoreStep>,
+    #[serde(default)]
+    pub error: Option<String>,
+    /// The database as it was, renamed and kept, once the restored one is in.
+    #[serde(default)]
+    pub previous_database: Option<String>,
+}
+
+/// POST /system/backups/destinations/{id}/snapshots/{run}/restore-system —
+/// the whole system restored from a point, by the backup service: every
+/// other service drained and stopped, the database restored beside the old
+/// one and swapped in by rename, the volumes made as the point holds them,
+/// the services started. The admin itself is stopped part way; follow it at
+/// `/system/backups/restores/current` when it is back. Audited.
+#[utoipa::path(
+    post,
+    path = "/api/v1/system/backups/destinations/{id}/snapshots/{run}/restore-system",
+    tag = "backups",
+    operation_id = "backups_restore_system",
+    params(
+        ("id" = String, Path, description = "The destination"),
+        ("run" = String, Path, description = "The point's run"),
+    ),
+    request_body = SystemRestoreRequest,
+    responses(
+        (status = 202, description = "Under way", body = SystemRestore),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn restore_system(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    Path((id, run)): Path<(String, String)>,
+    Json(req): Json<SystemRestoreRequest>,
+) -> Result<(StatusCode, Json<SystemRestore>), ApiError> {
+    require_platform(&identity)?;
+    let id = parse_id(DESTINATION_PREFIX, &id)?;
+    let run = parse_id(RUN_PREFIX, &run)?;
+    let master_key = match (req.key_file.as_deref(), req.passphrase.as_deref()) {
+        (Some(f), Some(p)) if !f.trim().is_empty() => Some(open_key_file(f, p)?),
+        (Some(f), None) if !f.trim().is_empty() => {
+            return Err(ApiError::BadRequest(
+                "A key file needs its passphrase".into(),
+            ))
+        }
+        _ => None,
+    };
+    tracing::warn!(actor = %identity.actor(), run = %run, "A restore of the whole system was asked for");
+    let body = service_post(
+        &state,
+        "/v1/restores/system",
+        serde_json::json!({
+            "destination_id": format!("{DESTINATION_PREFIX}{id}"),
+            "run": run.to_string(),
+            "confirm": req.confirm,
+            "master_key": master_key,
+        }),
+    )
+    .await?;
+    Ok((StatusCode::ACCEPTED, Json(restore_view(body)?)))
+}
+
+/// GET /system/backups/restores/current — the restore under way, or the
+/// last one.
+#[utoipa::path(
+    get,
+    path = "/api/v1/system/backups/restores/current",
+    tag = "backups",
+    operation_id = "backups_current_restore",
+    responses(
+        (status = 200, description = "OK", body = SystemRestore),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn current_restore(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+) -> Result<Json<SystemRestore>, ApiError> {
+    require_platform(&identity)?;
+    let svc = service(&state)?;
+    let r = client()
+        .get(format!("{}/v1/restores/system/current", svc.url))
+        .bearer_auth(&svc.token)
+        .send()
+        .await
+        .map_err(|e| ApiError::ServiceUnavailable(format!("The backup service: {e}")))?;
+    let body = answer(r).await?;
+    Ok(Json(restore_view(body)?))
+}
+
+/// A restore as the backup service said, its id prefixed.
+fn restore_view(body: serde_json::Value) -> Result<SystemRestore, ApiError> {
+    let mut job: SystemRestore =
+        serde_json::from_value(body).map_err(|e| ApiError::Internal(e.to_string()))?;
+    if !job.id.starts_with(RESTORE_PREFIX) {
+        job.id = format!("{RESTORE_PREFIX}{}", job.id);
+    }
+    Ok(job)
+}
+
+/// A full restore's id.
+const RESTORE_PREFIX: &str = "bks-";

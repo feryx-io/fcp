@@ -517,6 +517,7 @@ from .require_totp import RequireTotp
 from .required_claim import RequiredClaim
 from .resource_counts import ResourceCounts
 from .restore_capabilities import RestoreCapabilities
+from .restore_step import RestoreStep
 from .restored_file import RestoredFile
 from .resync_response import ResyncResponse
 from .retention_run_response import RetentionRunResponse
@@ -603,6 +604,8 @@ from .subject_request_response import SubjectRequestResponse
 from .subscription_info import SubscriptionInfo
 from .supervise_request import SuperviseRequest
 from .synthesize_greeting_request import SynthesizeGreetingRequest
+from .system_restore import SystemRestore
+from .system_restore_request import SystemRestoreRequest
 from .target_request_type_0 import TargetRequestType0
 from .target_request_type_0_type import TargetRequestType0Type
 from .target_request_type_1 import TargetRequestType1
@@ -1222,6 +1225,7 @@ __all__ = (
     "ResourceCounts",
     "RestoreCapabilities",
     "RestoredFile",
+    "RestoreStep",
     "ResyncResponse",
     "RetentionRunResponse",
     "RetentionView",
@@ -1307,6 +1311,8 @@ __all__ = (
     "SubscriptionInfo",
     "SuperviseRequest",
     "SynthesizeGreetingRequest",
+    "SystemRestore",
+    "SystemRestoreRequest",
     "TargetRequestType0",
     "TargetRequestType0Type",
     "TargetRequestType1",

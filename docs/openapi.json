@@ -18160,6 +18160,98 @@
         }
       }
     },
+    "/api/v1/system/backups/destinations/{id}/snapshots/{run}/restore-system": {
+      "post": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "POST /system/backups/destinations/{id}/snapshots/{run}/restore-system —\nthe whole system restored from a point, by the backup service: every\nother service drained and stopped, the database restored beside the old\none and swapped in by rename, the volumes made as the point holds them,\nthe services started. The admin itself is stopped part way; follow it at\n`/system/backups/restores/current` when it is back. Audited.",
+        "operationId": "backups_restore_system",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The destination",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "run",
+            "in": "path",
+            "description": "The point's run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SystemRestoreRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Under way",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemRestore"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/backups/restores/current": {
+      "get": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "GET /system/backups/restores/current — the restore under way, or the\nlast one.",
+        "operationId": "backups_current_restore",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemRestore"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/backups": {
       "get": {
         "tags": [
@@ -47316,6 +47408,30 @@
           }
         }
       },
+      "RestoreStep": {
+        "type": "object",
+        "description": "One step of a full restore.",
+        "required": [
+          "name",
+          "state"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "`check`, `stop`, `database`, `files` or `start`."
+          },
+          "state": {
+            "type": "string",
+            "description": "`waiting`, `running`, `done` or `failed`."
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "RestoredFile": {
         "type": "object",
         "description": "A file put back, or not.",
@@ -50177,6 +50293,87 @@
             "minimum": 0
           }
         }
+      },
+      "SystemRestore": {
+        "type": "object",
+        "description": "A full restore and where it is.",
+        "required": [
+          "id",
+          "state",
+          "run",
+          "point_time",
+          "started_at",
+          "steps"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "description": "`running`, `succeeded` or `failed`."
+          },
+          "run": {
+            "type": "string"
+          },
+          "point_time": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RestoreStep"
+            }
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "previous_database": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The database as it was, renamed and kept, once the restored one is in."
+          }
+        }
+      },
+      "SystemRestoreRequest": {
+        "type": "object",
+        "description": "A full restore asked for: the point's time typed back, and the key file\nwhen the snapshot holds no key and this system's is another.",
+        "required": [
+          "confirm"
+        ],
+        "properties": {
+          "confirm": {
+            "type": "string",
+            "description": "The point's `time`, exactly."
+          },
+          "key_file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "passphrase": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
       },
       "TargetRequest": {
         "oneOf": [

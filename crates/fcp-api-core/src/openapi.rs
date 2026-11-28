@@ -425,6 +425,8 @@ use utoipa::{Modify, OpenApi};
         crate::v1::backups::download_state,
         crate::v1::backups::restore_volume_files,
         crate::v1::backups::capabilities,
+        crate::v1::backups::restore_system,
+        crate::v1::backups::current_restore,
         crate::v1::backups::tenant_status,
         crate::v1::backups::tenant_missing,
         crate::v1::backups::tenant_restore,

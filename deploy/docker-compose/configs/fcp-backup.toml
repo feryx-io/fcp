@@ -45,6 +45,15 @@ media-prompts = "/data/media-prompts"
 "/var/lib/fcp/media/recordings" = "/data/media-recordings"
 "/var/lib/fcp/media/prompts" = "/data/media-prompts"
 
+# The whole system restored from the admin (docs/SCHEDULED_BACKUPS.md B3c),
+# only with restores switched on (docker-compose.restore.yml: the Docker
+# socket). Every other service but these is drained for up to drain_secs
+# and stopped; the database is restored beside the old one and swapped in.
+[restore]
+pg_restore = "/usr/lib/postgresql/16/bin/pg_restore"
+drain_secs = 60
+keep_running = ["postgres", "redis", "fcp-backup", "certs"]
+
 [events]
 server_url = "http://fcp-events-server:8081"
 
