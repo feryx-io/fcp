@@ -11,6 +11,7 @@ mod api;
 mod config;
 mod files;
 mod restic;
+mod restore_system;
 mod runner;
 
 use anyhow::{Context, Result};
@@ -121,6 +122,7 @@ async fn main() -> Result<()> {
                 ctx: Arc::clone(&ctx),
                 token,
                 downloads: Default::default(),
+                restore: Default::default(),
             }));
         }
         None => {

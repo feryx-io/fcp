@@ -246,6 +246,9 @@ jobs:
           FCP_SIPP_TESTS: required
           FCP_BARESIP_TESTS: required
           FCP_BACKUP_TESTS: required
+          # The full restore's Docker path, against a compose project of two
+          # containers (crates/fcp-backup/src/restore_system.rs).
+          FCP_DOCKER_TESTS: "1"
           FCP_ROUTE_LOG: ${{ runner.temp }}/routes.log
         run: cargo test --all-targets --features fcp-conference-server/recording-webm,fcp-conference-server/recording-mp4,fcp-conference-server/rtmp,fcp-conference-server/video-openh264,fcp-api-core/saml
       # docs/DEEP_TESTING.md D1: every operation in the contract is called

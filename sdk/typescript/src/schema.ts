@@ -5602,6 +5602,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/backups/destinations/{id}/snapshots/{run}/restore-system": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /system/backups/destinations/{id}/snapshots/{run}/restore-system —
+         *     the whole system restored from a point, by the backup service: every
+         *     other service drained and stopped, the database restored beside the old
+         *     one and swapped in by rename, the volumes made as the point holds them,
+         *     the services started. The admin itself is stopped part way; follow it at
+         *     `/system/backups/restores/current` when it is back. Audited.
+         */
+        post: operations["backups_restore_system"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/backups/restores/current": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET /system/backups/restores/current — the restore under way, or the
+         *     last one.
+         */
+        get: operations["backups_current_restore"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/backups": {
         parameters: {
             query?: never;
@@ -15120,6 +15164,14 @@ export interface components {
             /** @description The volumes still read-only. */
             read_only: string[];
         };
+        /** @description One step of a full restore. */
+        RestoreStep: {
+            /** @description `check`, `stop`, `database`, `files` or `start`. */
+            name: string;
+            /** @description `waiting`, `running`, `done` or `failed`. */
+            state: string;
+            detail?: string | null;
+        };
         /** @description A file put back, or not. */
         RestoredFile: {
             path: string;
@@ -16219,6 +16271,30 @@ export interface components {
             voice?: string | null;
             /** Format: int64 */
             expires_in_hours?: number | null;
+        };
+        /** @description A full restore and where it is. */
+        SystemRestore: {
+            id: string;
+            /** @description `running`, `succeeded` or `failed`. */
+            state: string;
+            run: string;
+            point_time: string;
+            started_at: string;
+            finished_at?: string | null;
+            steps: components["schemas"]["RestoreStep"][];
+            error?: string | null;
+            /** @description The database as it was, renamed and kept, once the restored one is in. */
+            previous_database?: string | null;
+        };
+        /**
+         * @description A full restore asked for: the point's time typed back, and the key file
+         *     when the snapshot holds no key and this system's is another.
+         */
+        SystemRestoreRequest: {
+            /** @description The point's `time`, exactly. */
+            confirm: string;
+            key_file?: string | null;
+            passphrase?: string | null;
         };
         /**
          * @description A destination's target to keep; a secret left out on a change keeps the
@@ -30972,6 +31048,73 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RestoreCapabilities"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backups_restore_system: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The destination */
+                id: string;
+                /** @description The point's run */
+                run: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SystemRestoreRequest"];
+            };
+        };
+        responses: {
+            /** @description Under way */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemRestore"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backups_current_restore: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SystemRestore"];
                 };
             };
             /** @description An error */

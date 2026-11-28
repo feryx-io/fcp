@@ -88,6 +88,9 @@ test('a platform administrator sets up an off-site destination', async ({ page, 
   // B3b: a volume's files are put back only with restores on.
   await expect(snaps.getByRole('button', { name: 'Put back voicemail-data' })).toBeDisabled()
   await expect(snaps.getByText('Restores are off')).toBeVisible()
+  // B3c: the whole system, likewise.
+  await expect(snaps.getByText('Restores of the whole system are off')).toBeVisible()
+  await expect(snaps.getByRole('button', { name: 'Restore the system' })).toHaveCount(0)
   expect(asked).toEqual({})
   await snaps.getByRole('button', { name: 'Close' }).first().click()
   await expect(snaps).toBeHidden()

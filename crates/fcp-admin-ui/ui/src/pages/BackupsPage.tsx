@@ -5,7 +5,7 @@
 // administrators only; fcp-backup does the work.
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Archive, Download, History, KeyRound, Pencil, Play, Plus, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react'
+import { AlertTriangle, Archive, Download, History, KeyRound, Pencil, Play, Plus, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -72,7 +72,14 @@ function SnapshotsDialog({ destination, onClose }: { destination: BackupDestinat
     onError: (e) => setError((e as Error).message),
   })
   const chosen = (snaps.data ?? []).find((p) => p.run === run)
-  const close = () => { setRun(null); setBuilding(null); setKeyFile(''); setPassphrase(''); setError(null); setPutBack(null); onClose() }
+  const [typed, setTyped] = useState('')
+  const queryClient = useQueryClient()
+  const whole = useMutation({
+    mutationFn: () => backups.restoreSystem(destination!.id, run!, keyFile.trim() ? { confirm: typed, key_file: keyFile, passphrase } : { confirm: typed }),
+    onSuccess: (job) => { setError(null); queryClient.setQueryData(['backups', 'restore'], job); close() },
+    onError: (e) => setError((e as Error).message),
+  })
+  const close = () => { setRun(null); setBuilding(null); setKeyFile(''); setPassphrase(''); setError(null); setPutBack(null); setTyped(''); onClose() }
   return (
     <Dialog open={destination != null} onOpenChange={(o) => { if (!o) close() }}>
       <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
@@ -148,6 +155,27 @@ function SnapshotsDialog({ destination, onClose }: { destination: BackupDestinat
                   ))}
                 </div>
                 {putBack && <p className="text-sm">{putBack}</p>}
+              </div>
+            )}
+            {chosen && (
+              <div className="space-y-2 rounded border border-destructive/40 p-3">
+                <Label className="flex items-center gap-2 text-destructive"><AlertTriangle className="h-4 w-4" /> Restore the whole system to this point</Label>
+                <p className="text-xs text-muted-foreground">
+                  Every service is drained and stopped, this admin with them. The database is replaced by this point's,
+                  the old one kept beside it under another name, and every volume ({chosen.volumes.join(', ') || 'none'}) is
+                  made as the point holds it: what came after {formatDateTime(chosen.time)} is gone. The page comes back when the admin does.
+                </p>
+                {caps.data?.full_restore ? (
+                  <>
+                    <Label htmlFor="bk-confirm">Type the point's time to confirm: <code>{chosen.time}</code></Label>
+                    <Input id="bk-confirm" value={typed} onChange={(e) => setTyped(e.target.value)} />
+                    <Button variant="destructive" size="sm" disabled={typed !== chosen.time || whole.isPending} onClick={() => whole.mutate()}>
+                      Restore the system
+                    </Button>
+                  </>
+                ) : (
+                  <p className="text-xs">Restores of the whole system are off: start fcp-backup with docker-compose.restore.yml.</p>
+                )}
               </div>
             )}
             {error && <p className="text-sm text-destructive">{error}</p>}
@@ -471,6 +499,48 @@ function DestinationDialog({ draft, setDraft, onSaved }: {
   )
 }
 
+/** A restore of the whole system, followed through the admin going away
+ *  and coming back. */
+function RestoreProgress() {
+  const caps = useQuery({ queryKey: ['backups', 'capabilities'], queryFn: backups.capabilities })
+  const job = useQuery({
+    queryKey: ['backups', 'restore'],
+    queryFn: backups.currentRestore,
+    enabled: caps.data?.service === true,
+    retry: false,
+    refetchInterval: (q) => (q.state.data?.state === 'running' ? 3000 : false),
+    // Kept while the admin is down part way through.
+    refetchOnWindowFocus: false,
+  })
+  const j = job.data
+  if (!j) return null
+  const running = j.state === 'running'
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Restore of the whole system</CardTitle>
+        <CardDescription>
+          To the point of {formatDateTime(j.point_time)}, started {formatDateTime(j.started_at)}.{' '}
+          {running ? (job.isError ? 'The admin is restarting as part of the restore; this page reconnects when it is back.' : 'Under way.')
+            : j.state === 'succeeded' ? `Done ${j.finished_at ? formatDateTime(j.finished_at) : ''}.` : 'It failed.'}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2 text-sm">
+        <ol className="space-y-1">
+          {j.steps.map((s) => (
+            <li key={s.name} className="flex flex-wrap items-center gap-2">
+              <Badge variant={s.state === 'done' ? 'success' : s.state === 'failed' ? 'destructive' : s.state === 'running' ? 'warning' : 'outline'}>{s.name}</Badge>
+              {s.detail && <span className="text-muted-foreground">{s.detail}</span>}
+            </li>
+          ))}
+        </ol>
+        {j.error && <p className="text-destructive">{j.error}</p>}
+        {j.previous_database && <p className="text-xs text-muted-foreground">The database as it was is kept as <code>{j.previous_database}</code>.</p>}
+      </CardContent>
+    </Card>
+  )
+}
+
 /** Whether restores are on, and how to turn them on. */
 function RestoresCard() {
   const caps = useQuery({ queryKey: ['backups', 'capabilities'], queryFn: backups.capabilities })
@@ -645,6 +715,7 @@ function PlatformBackups() {
       {error && <p className="rounded border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
 
       <KeyCard />
+      <RestoreProgress />
       <RestoresCard />
 
       <Card>

@@ -30,7 +30,12 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive", "env"] }
 axum = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# The full restore swaps the database by rename (docs/SCHEDULED_BACKUPS.md B3c).
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres"] }
+url = "2"
 
 [dev-dependencies]
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres"] }
+url = "2"
 fcp-testkit = { path = "../fcp-testkit" }
 tempfile = "3"

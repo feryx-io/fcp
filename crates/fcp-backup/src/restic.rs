@@ -26,7 +26,7 @@ pub struct Summary {
 }
 
 impl Repo {
-    fn command(&self, args: &[&str]) -> Command {
+    pub(crate) fn command(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new(&self.bin);
         cmd.env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
