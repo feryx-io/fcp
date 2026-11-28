@@ -103,6 +103,11 @@ pub struct AdminConfig {
     #[serde(default)]
     pub tts: Option<TtsSection>,
 
+    /// The backup service, for its snapshots and downloads
+    /// (`docs/SCHEDULED_BACKUPS.md` B3a); unset, the page lists none.
+    #[serde(default)]
+    pub backup: Option<BackupServiceSection>,
+
     /// Emergency calling: how E911 addresses are validated
     /// (`docs/E911_BLOCK_2.md` §7).
     #[serde(default)]
@@ -1060,4 +1065,15 @@ mod tests {
         config.api.auth_token = Some("secret".to_string());
         assert!(validate_config(&config).is_ok());
     }
+}
+
+/// `[backup]`: where `fcp-backup`'s API is.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupServiceSection {
+    /// `http://fcp-backup:8096`.
+    pub url: String,
+    /// Its `[http] token`; `FCP_ADMIN_BACKUP_TOKEN` wins.
+    #[serde(default)]
+    pub token: Option<String>,
 }

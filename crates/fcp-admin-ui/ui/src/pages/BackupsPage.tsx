@@ -1,10 +1,11 @@
-// Backups from the admin (docs/SCHEDULED_BACKUPS.md B2): where snapshots go
-// (SFTP or an S3-compatible bucket), when, how many are kept, a test and
-// "Back up now", every run, and the master key downloaded once. Platform
+// Backups from the admin (docs/SCHEDULED_BACKUPS.md B2, B3a): where snapshots
+// go (SFTP or an S3-compatible bucket), when, how many are kept, a test and
+// "Back up now", every run, the master key downloaded once, and a snapshot
+// downloaded for restore.sh. Platform
 // administrators only; fcp-backup does the work.
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Archive, Download, KeyRound, Pencil, Play, Plus, ShieldCheck, Trash2 } from 'lucide-react'
+import { Archive, Download, History, KeyRound, Pencil, Play, Plus, ShieldCheck, Trash2 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -14,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { backups } from '@/api/endpoints'
-import type { BackupDestination, BackupDestinationRequest, BackupRun } from '@/types'
+import type { BackupDestination, BackupDestinationRequest, BackupDownload, BackupRun } from '@/types'
 import { formatDateTime } from '@/lib/utils'
 
 const bytes = (n: number) => {
@@ -33,6 +34,113 @@ const runBadge = (r?: BackupRun | null) => {
     case 'running': return <Badge variant="warning">Running</Badge>
     default: return <Badge variant="secondary">Waiting</Badge>
   }
+}
+
+/** A destination's snapshots, each downloadable in backup.sh's layout for
+ *  restore.sh on any host (B3a). A point that does not hold the master key,
+ *  restored where this system's key is another, needs the key file. */
+function SnapshotsDialog({ destination, onClose }: { destination: BackupDestination | null; onClose: () => void }) {
+  const snaps = useQuery({
+    queryKey: ['backups', 'snapshots', destination?.id],
+    queryFn: () => backups.snapshots(destination!.id),
+    enabled: destination != null,
+    retry: false,
+  })
+  const [run, setRun] = useState<string | null>(null)
+  const [keyFile, setKeyFile] = useState('')
+  const [passphrase, setPassphrase] = useState('')
+  const [building, setBuilding] = useState<BackupDownload | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const follow = useQuery({
+    queryKey: ['backups', 'download', building?.id],
+    queryFn: () => backups.downloadState(building!.id),
+    enabled: building != null,
+    refetchInterval: (q) => (q.state.data?.state ?? 'building') === 'building' ? 2000 : false,
+  })
+  const state = follow.data ?? building
+  const start = useMutation({
+    mutationFn: () => backups.download(destination!.id, run!, keyFile.trim() ? { key_file: keyFile, passphrase } : {}),
+    onSuccess: (d) => { setError(null); setBuilding(d) },
+    onError: (e) => setError((e as Error).message),
+  })
+  const close = () => { setRun(null); setBuilding(null); setKeyFile(''); setPassphrase(''); setError(null); onClose() }
+  return (
+    <Dialog open={destination != null} onOpenChange={(o) => { if (!o) close() }}>
+      <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Snapshots in {destination?.name}</DialogTitle>
+          <DialogDescription>
+            Download one to restore with <code>restore.sh</code> on any host: the database, every volume and the
+            key, checksummed, as <code>backup.sh</code> writes them.
+          </DialogDescription>
+        </DialogHeader>
+        {snaps.isLoading && <p className="text-sm text-muted-foreground">Asking the destination…</p>}
+        {snaps.error && <p className="text-sm text-destructive">{(snaps.error as Error).message}</p>}
+        {(snaps.data ?? []).length === 0 && snaps.isSuccess && <p className="text-sm text-muted-foreground">No snapshots yet.</p>}
+        {(snaps.data ?? []).length > 0 && (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Taken</TableHead>
+                <TableHead>Release</TableHead>
+                <TableHead>Holds</TableHead>
+                <TableHead className="text-right" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {(snaps.data ?? []).map((p) => (
+                <TableRow key={p.run} data-state={run === p.run ? 'selected' : undefined}>
+                  <TableCell>{formatDateTime(p.time)}</TableCell>
+                  <TableCell>{p.release ?? '—'}</TableCell>
+                  <TableCell className="text-xs">{['database', ...p.volumes].join(', ')}</TableCell>
+                  <TableCell className="text-right">
+                    <Button variant={run === p.run ? 'default' : 'outline'} size="sm" aria-label={`Choose the snapshot of ${p.time}`}
+                      onClick={() => { setRun(p.run); setBuilding(null) }}>
+                      Choose
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+        {run && (
+          <div className="space-y-3 rounded border p-3">
+            <div className="space-y-1">
+              <Label htmlFor="bk-keyfile">Key file (if this system's master key is not the snapshot's)</Label>
+              <textarea id="bk-keyfile" className="h-24 w-full rounded border bg-background p-2 font-mono text-xs"
+                placeholder="-----BEGIN AGE ENCRYPTED FILE-----" value={keyFile} onChange={(e) => setKeyFile(e.target.value)} />
+              <Input type="file" aria-label="Key file to read" onChange={async (e) => {
+                const f = e.target.files?.[0]
+                if (f) setKeyFile(await f.text())
+              }} />
+            </div>
+            {keyFile.trim() && (
+              <div className="space-y-1">
+                <Label htmlFor="bk-pass">Its passphrase</Label>
+                <Input id="bk-pass" type="password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} />
+              </div>
+            )}
+            {error && <p className="text-sm text-destructive">{error}</p>}
+            {state?.state === 'building' && <p className="text-sm text-muted-foreground">Putting the download together…</p>}
+            {state?.state === 'failed' && <p className="text-sm text-destructive">{state.error}</p>}
+            {state?.state === 'ready' && state.file_url && (
+              <p className="text-sm">
+                Ready{state.size != null && ` (${bytes(state.size)})`}:{' '}
+                <a className="font-medium underline" href={state.file_url} download>save it</a>. The link works once.
+              </p>
+            )}
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={close}>Close</Button>
+          <Button disabled={!run || start.isPending || state?.state === 'building'} onClick={() => start.mutate()}>
+            <Download className="mr-2 h-4 w-4" /> Make the download
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 /** The master key, downloaded once wrapped in a passphrase (Q4). */
@@ -345,6 +453,7 @@ export function BackupsPage() {
   })
   const [draft, setDraft] = useState<Draft | null>(null)
   const [password, setPassword] = useState<string | null>(null)
+  const [browsing, setBrowsing] = useState<BackupDestination | null>(null)
   const [error, setError] = useState<string | null>(null)
   const changed = () => queryClient.invalidateQueries({ queryKey: ['backups'] })
   const act = useMutation({
@@ -419,6 +528,9 @@ export function BackupsPage() {
                           <Button variant="outline" size="sm" aria-label={`Back up ${d.name} now`} onClick={() => act.mutate({ id: d.id, what: 'run' })}>
                             <Play className="mr-1 h-4 w-4" /> Back up now
                           </Button>
+                          <Button variant="outline" size="sm" aria-label={`Snapshots in ${d.name}`} onClick={() => setBrowsing(d)}>
+                            <History className="mr-1 h-4 w-4" /> Snapshots
+                          </Button>
                           <Button variant="ghost" size="icon" aria-label={`Edit ${d.name}`} onClick={() => setDraft(draftOf(d))}>
                             <Pencil className="h-4 w-4" />
                           </Button>
@@ -478,6 +590,7 @@ export function BackupsPage() {
         </CardContent>
       </Card>
 
+      <SnapshotsDialog destination={browsing} onClose={() => setBrowsing(null)} />
       <DestinationDialog draft={draft} setDraft={setDraft}
         onSaved={(made) => { changed(); if (made.password) setPassword(made.password) }} />
 

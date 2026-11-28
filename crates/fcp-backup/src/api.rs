@@ -57,7 +57,7 @@ pub fn router(state: ApiState) -> Router {
         .with_state(state)
 }
 
-fn authorized(state: &ApiState, headers: &HeaderMap) -> Result<(), Response> {
+fn authorized(state: &ApiState, headers: &HeaderMap) -> Result<(), Refused> {
     let given = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -66,7 +66,7 @@ fn authorized(state: &ApiState, headers: &HeaderMap) -> Result<(), Response> {
     if !state.token.is_empty() && constant_eq(given.as_bytes(), state.token.as_bytes()) {
         Ok(())
     } else {
-        Err(error(
+        Err(Refused(
             StatusCode::UNAUTHORIZED,
             "a bearer token is needed".into(),
         ))
@@ -79,6 +79,15 @@ fn constant_eq(a: &[u8], b: &[u8]) -> bool {
 
 fn error(status: StatusCode, message: String) -> Response {
     (status, Json(serde_json::json!({ "error": message }))).into_response()
+}
+
+/// A refusal, small enough to return (`Response` is not).
+struct Refused(StatusCode, String);
+
+impl IntoResponse for Refused {
+    fn into_response(self) -> Response {
+        error(self.0, self.1)
+    }
 }
 
 /// A run's two snapshots, as one restorable point.
@@ -135,15 +144,15 @@ fn points(snapshots: &[Snapshot]) -> Vec<Point> {
 async fn destination(
     state: &ApiState,
     id: &str,
-) -> Result<fcp_core::backup::BackupDestination, Response> {
+) -> Result<fcp_core::backup::BackupDestination, Refused> {
     let id: uuid::Uuid = id
         .trim_start_matches("bkd-")
         .parse()
-        .map_err(|_| error(StatusCode::NOT_FOUND, "no such destination".into()))?;
+        .map_err(|_| Refused(StatusCode::NOT_FOUND, "no such destination".into()))?;
     match state.ctx.store.get_backup_destination(&id).await {
         Ok(Some(d)) => Ok(d),
-        Ok(None) => Err(error(StatusCode::NOT_FOUND, "no such destination".into())),
-        Err(e) => Err(error(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))),
+        Ok(None) => Err(Refused(StatusCode::NOT_FOUND, "no such destination".into())),
+        Err(e) => Err(Refused(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))),
     }
 }
 
@@ -153,11 +162,11 @@ async fn snapshots(
     Path(id): Path<String>,
 ) -> Response {
     if let Err(r) = authorized(&state, &headers) {
-        return r;
+        return r.into_response();
     }
     let mut dest = match destination(&state, &id).await {
         Ok(d) => d,
-        Err(r) => return r,
+        Err(r) => return r.into_response(),
     };
     let repo = match runner::repo_for(&state.ctx, &mut dest, false).await {
         Ok(r) => r,
@@ -186,11 +195,11 @@ async fn start_download(
     Json(req): Json<DownloadRequest>,
 ) -> Response {
     if let Err(r) = authorized(&state, &headers) {
-        return r;
+        return r.into_response();
     }
     let dest = match destination(&state, &req.destination_id).await {
         Ok(d) => d,
-        Err(r) => return r,
+        Err(r) => return r.into_response(),
     };
     // Old downloads go.
     let expired: Vec<PathBuf> = {
@@ -283,7 +292,7 @@ async fn download_state(
     Path(id): Path<uuid::Uuid>,
 ) -> Response {
     if let Err(r) = authorized(&state, &headers) {
-        return r;
+        return r.into_response();
     }
     match state
         .downloads
@@ -309,7 +318,7 @@ async fn download_file(
     Query(q): Query<FileQuery>,
 ) -> Response {
     if let Err(r) = authorized(&state, &headers) {
-        return r;
+        return r.into_response();
     }
     let (file, dir) = {
         let mut map = state.downloads.lock().unwrap_or_else(|e| e.into_inner());

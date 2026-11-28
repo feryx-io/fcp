@@ -879,3 +879,293 @@ pub async fn export_key(
     )
         .into_response())
 }
+
+// ── Snapshots and downloads, through fcp-backup's API (B3a) ────────────────
+
+fn service(state: &ApiState) -> Result<&crate::BackupService, ApiError> {
+    state.backup_service.as_ref().ok_or_else(|| {
+        ApiError::ServiceUnavailable(
+            "The backup service is not set up here: [backup] url on the admin".into(),
+        )
+    })
+}
+
+fn client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .unwrap_or_default()
+}
+
+/// What the backup service answered, as an error of ours where it failed.
+async fn answer(r: reqwest::Response) -> Result<serde_json::Value, ApiError> {
+    let status = r.status();
+    let body: serde_json::Value = r.json().await.unwrap_or_default();
+    if status.is_success() {
+        return Ok(body);
+    }
+    let said = body["error"]
+        .as_str()
+        .unwrap_or("the backup service refused")
+        .to_string();
+    Err(match status.as_u16() {
+        404 => ApiError::NotFound(said),
+        409 => ApiError::Conflict(said),
+        400 => ApiError::BadRequest(said),
+        _ => ApiError::ServiceUnavailable(format!("The backup service: {said}")),
+    })
+}
+
+/// A run's snapshots, as one point a restore or a download takes.
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct SnapshotPoint {
+    /// The run that made it (`bkr-<uuid>`).
+    pub run: String,
+    pub time: String,
+    pub release: Option<String>,
+    pub kek_id: Option<String>,
+    pub host: String,
+    /// restic's ids of the database's snapshot and the files'.
+    pub database: Option<String>,
+    pub files: Option<String>,
+    /// The volumes the files hold.
+    pub volumes: Vec<String>,
+}
+
+/// GET /system/backups/destinations/{id}/snapshots
+#[utoipa::path(
+    get,
+    path = "/api/v1/system/backups/destinations/{id}/snapshots",
+    tag = "backups",
+    operation_id = "backups_list_snapshots",
+    params(("id" = String, Path, description = "The destination")),
+    responses(
+        (status = 200, description = "OK, newest first", body = crate::page::Page<SnapshotPoint>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn list_snapshots(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    Path(id): Path<String>,
+) -> Result<Json<crate::page::Page<SnapshotPoint>>, ApiError> {
+    require_platform(&identity)?;
+    let id = parse_id(DESTINATION_PREFIX, &id)?;
+    let svc = service(&state)?;
+    let r = client()
+        .get(format!(
+            "{}/v1/destinations/{DESTINATION_PREFIX}{id}/snapshots",
+            svc.url
+        ))
+        .bearer_auth(&svc.token)
+        .send()
+        .await
+        .map_err(|e| ApiError::ServiceUnavailable(format!("The backup service: {e}")))?;
+    let body = answer(r).await?;
+    let mut list: Vec<SnapshotPoint> =
+        serde_json::from_value(body).map_err(|e| ApiError::Internal(e.to_string()))?;
+    for p in &mut list {
+        p.run = format!("{RUN_PREFIX}{}", p.run.trim_start_matches(RUN_PREFIX));
+    }
+    let total = list.len() as u64;
+    Ok(Json(crate::page::Page::new(list, None, Some(total))))
+}
+
+/// What a download needs when the snapshot holds no master key and this
+/// system's is another: the key file downloaded from this page, and its
+/// passphrase.
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DownloadRequest {
+    #[serde(default)]
+    pub key_file: Option<String>,
+    #[serde(default)]
+    pub passphrase: Option<String>,
+}
+
+/// A download being made.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct DownloadView {
+    pub id: String,
+    /// `building`, `ready` or `failed`.
+    pub state: String,
+    pub size: Option<u64>,
+    pub error: Option<String>,
+    /// Where the browser fetches it, once, when ready: the link is its own
+    /// credential, good for an hour.
+    pub file_url: Option<String>,
+}
+
+/// Open a key file downloaded from this page with its passphrase: the
+/// master key, base64.
+fn open_key_file(file: &str, passphrase: &str) -> Result<String, ApiError> {
+    use std::io::Read;
+    let refused = || ApiError::BadRequest("The key file did not open with that passphrase".into());
+    let reader = age::armor::ArmoredReader::new(file.as_bytes());
+    let decryptor = age::Decryptor::new(reader).map_err(|_| refused())?;
+    let identity =
+        age::scrypt::Identity::new(age::secrecy::SecretString::from(passphrase.to_string()));
+    let mut plain = String::new();
+    decryptor
+        .decrypt(std::iter::once(&identity as &dyn age::Identity))
+        .map_err(|_| refused())?
+        .read_to_string(&mut plain)
+        .map_err(|_| refused())?;
+    let v: serde_json::Value = serde_json::from_str(&plain).map_err(|_| refused())?;
+    v["master_key"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(refused)
+}
+
+/// POST /system/backups/destinations/{id}/snapshots/{run}/download — the
+/// point made a `backup.sh`-layout tar by the backup service, for
+/// `restore.sh` on any host. Audited.
+#[utoipa::path(
+    post,
+    path = "/api/v1/system/backups/destinations/{id}/snapshots/{run}/download",
+    tag = "backups",
+    operation_id = "backups_start_download",
+    params(
+        ("id" = String, Path, description = "The destination"),
+        ("run" = String, Path, description = "The point's run"),
+    ),
+    request_body = DownloadRequest,
+    responses(
+        (status = 202, description = "Being made; follow it", body = DownloadView),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn start_download(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    Path((id, run)): Path<(String, String)>,
+    Json(req): Json<DownloadRequest>,
+) -> Result<(StatusCode, Json<DownloadView>), ApiError> {
+    require_platform(&identity)?;
+    let id = parse_id(DESTINATION_PREFIX, &id)?;
+    let run = parse_id(RUN_PREFIX, &run)?;
+    let master_key = match (req.key_file.as_deref(), req.passphrase.as_deref()) {
+        (Some(f), Some(p)) if !f.trim().is_empty() => Some(open_key_file(f, p)?),
+        (Some(f), None) if !f.trim().is_empty() => {
+            return Err(ApiError::BadRequest(
+                "A key file needs its passphrase".into(),
+            ))
+        }
+        _ => None,
+    };
+    let svc = service(&state)?;
+    let r = client()
+        .post(format!("{}/v1/downloads", svc.url))
+        .bearer_auth(&svc.token)
+        .json(&serde_json::json!({
+            "destination_id": format!("{DESTINATION_PREFIX}{id}"),
+            "run": run.to_string(),
+            "master_key": master_key,
+        }))
+        .send()
+        .await
+        .map_err(|e| ApiError::ServiceUnavailable(format!("The backup service: {e}")))?;
+    let body = answer(r).await?;
+    tracing::warn!(actor = %identity.actor(), run = %run, "A backup's download was asked for");
+    let did = body["id"].as_str().unwrap_or_default().to_string();
+    let token = body["token"].as_str().unwrap_or_default().to_string();
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(DownloadView {
+            id: format!("{did}.{token}"),
+            state: "building".into(),
+            size: None,
+            error: None,
+            file_url: None,
+        }),
+    ))
+}
+
+fn split_download(id: &str) -> Result<(String, String), ApiError> {
+    id.split_once('.')
+        .filter(|(i, t)| !i.is_empty() && !t.is_empty())
+        .map(|(i, t)| (i.to_string(), t.to_string()))
+        .ok_or_else(|| ApiError::NotFound("No such download".into()))
+}
+
+/// GET /system/backups/downloads/{id}
+#[utoipa::path(
+    get,
+    path = "/api/v1/system/backups/downloads/{id}",
+    tag = "backups",
+    operation_id = "backups_download_state",
+    params(("id" = String, Path, description = "The download")),
+    responses(
+        (status = 200, description = "OK", body = DownloadView),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn download_state(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    Path(id): Path<String>,
+) -> Result<Json<DownloadView>, ApiError> {
+    require_platform(&identity)?;
+    let (did, token) = split_download(&id)?;
+    let svc = service(&state)?;
+    let r = client()
+        .get(format!("{}/v1/downloads/{did}", svc.url))
+        .bearer_auth(&svc.token)
+        .send()
+        .await
+        .map_err(|e| ApiError::ServiceUnavailable(format!("The backup service: {e}")))?;
+    let body = answer(r).await?;
+    let st = body["state"].as_str().unwrap_or("failed").to_string();
+    Ok(Json(DownloadView {
+        file_url: (st == "ready").then(|| format!("/backups/downloads/{did}/{token}")),
+        size: body["size"].as_u64(),
+        error: body["error"].as_str().map(str::to_string),
+        state: st,
+        id,
+    }))
+}
+
+/// GET /backups/downloads/{id}/{token} — the tar, streamed once from the
+/// backup service; the link is the credential (a browser saving a file
+/// sends no bearer token).
+pub async fn serve_download(
+    State(state): State<ApiState>,
+    Path((id, token)): Path<(String, String)>,
+) -> Result<axum::response::Response, ApiError> {
+    use axum::response::IntoResponse;
+    let svc = service(&state)?;
+    let id: uuid::Uuid = id
+        .parse()
+        .map_err(|_| ApiError::NotFound("No such download".into()))?;
+    let r = reqwest::Client::new()
+        .get(format!("{}/v1/downloads/{id}/file", svc.url))
+        .query(&[("token", token.as_str())])
+        .bearer_auth(&svc.token)
+        .send()
+        .await
+        .map_err(|e| ApiError::ServiceUnavailable(format!("The backup service: {e}")))?;
+    if !r.status().is_success() {
+        return Err(ApiError::NotFound(
+            "No such download, or it was fetched".into(),
+        ));
+    }
+    let mut headers = axum::http::HeaderMap::new();
+    for h in [
+        axum::http::header::CONTENT_TYPE,
+        axum::http::header::CONTENT_LENGTH,
+        axum::http::header::CONTENT_DISPOSITION,
+    ] {
+        if let Some(v) = r.headers().get(h.as_str()) {
+            if let Ok(v) = axum::http::HeaderValue::from_bytes(v.as_bytes()) {
+                headers.insert(h, v);
+            }
+        }
+    }
+    headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    let body = axum::body::Body::from_stream(r.bytes_stream());
+    Ok((StatusCode::OK, headers, body).into_response())
+}

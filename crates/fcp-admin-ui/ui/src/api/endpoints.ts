@@ -168,7 +168,7 @@ import type {
   SpeechAccountRequest,
   PlatformSpeech,
   SpeechUsagePeriod, SpeechCap, PlatformSpeechCap, CapUnit,
-  BackupDestination, BackupDestinationRequest, BackupRun, BackupKeyStatus,
+  BackupDestination, BackupDestinationRequest, BackupRun, BackupKeyStatus, BackupSnapshot, BackupDownload,
   LogLine,
   LogLevel,
 } from '@/types'
@@ -1584,4 +1584,13 @@ export const backups = {
   keyStatus: () => apiClient.get<BackupKeyStatus>('/system/backups/key'),
   /** The master key wrapped in `passphrase`, as an object URL to save. */
   exportKey: (passphrase: string) => apiClient.postBlobUrl('/system/backups/key', { passphrase }),
+  /** What the destination holds, newest first (B3a). */
+  snapshots: (id: string) =>
+    apiClient.getAll<BackupSnapshot>(`/system/backups/destinations/${encodeURIComponent(id)}/snapshots`),
+  /** A point made a download in backup.sh's layout, for restore.sh. */
+  download: (id: string, run: string, body: { key_file?: string; passphrase?: string }) =>
+    apiClient.post<BackupDownload>(
+      `/system/backups/destinations/${encodeURIComponent(id)}/snapshots/${encodeURIComponent(run)}/download`, body),
+  downloadState: (id: string) =>
+    apiClient.get<BackupDownload>(`/system/backups/downloads/${encodeURIComponent(id)}`),
 }

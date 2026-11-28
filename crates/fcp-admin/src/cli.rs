@@ -155,4 +155,14 @@ pub struct Cli {
         hide_env_values = true
     )]
     pub tts_auth_token: Option<String>,
+
+    /// `[backup] token`, the backup service's bearer token, from the
+    /// environment (`docs/SCHEDULED_BACKUPS.md` B3a).
+    #[arg(
+        long = "backup-token",
+        value_name = "TOKEN",
+        env = "FCP_ADMIN_BACKUP_TOKEN",
+        hide_env_values = true
+    )]
+    pub backup_token: Option<String>,
 }

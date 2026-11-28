@@ -134,6 +134,8 @@ from .directory_entry import DirectoryEntry
 from .discover_request import DiscoverRequest
 from .discover_response import DiscoverResponse
 from .discovered_provider import DiscoveredProvider
+from .download_request import DownloadRequest
+from .download_view import DownloadView
 from .e911_address_response import E911AddressResponse
 from .emergency_call_response import EmergencyCallResponse
 from .emergency_config_response import EmergencyConfigResponse
@@ -403,6 +405,8 @@ from .page_site_response_data_item import PageSiteResponseDataItem
 from .page_site_response_data_item_versions import PageSiteResponseDataItemVersions
 from .page_sitting_response import PageSittingResponse
 from .page_sitting_response_data_item import PageSittingResponseDataItem
+from .page_snapshot_point import PageSnapshotPoint
+from .page_snapshot_point_data_item import PageSnapshotPointDataItem
 from .page_speech_account_view import PageSpeechAccountView
 from .page_speech_account_view_data_item import PageSpeechAccountViewDataItem
 from .page_speech_cap_view import PageSpeechCapView
@@ -549,6 +553,7 @@ from .site_response_versions import SiteResponseVersions
 from .site_status import SiteStatus
 from .site_with_token_response import SiteWithTokenResponse
 from .sitting_response import SittingResponse
+from .snapshot_point import SnapshotPoint
 from .softphone_account import SoftphoneAccount
 from .softphone_capture import SoftphoneCapture
 from .softphone_config import SoftphoneConfig
@@ -820,6 +825,8 @@ __all__ = (
     "DiscoveredProvider",
     "DiscoverRequest",
     "DiscoverResponse",
+    "DownloadRequest",
+    "DownloadView",
     "E911AddressResponse",
     "EmergencyCallResponse",
     "EmergencyConfigResponse",
@@ -1089,6 +1096,8 @@ __all__ = (
     "PageSiteResponseDataItemVersions",
     "PageSittingResponse",
     "PageSittingResponseDataItem",
+    "PageSnapshotPoint",
+    "PageSnapshotPointDataItem",
     "PageSpeechAccountView",
     "PageSpeechAccountViewDataItem",
     "PageSpeechCapView",
@@ -1235,6 +1244,7 @@ __all__ = (
     "SiteStatus",
     "SiteWithTokenResponse",
     "SittingResponse",
+    "SnapshotPoint",
     "SoftphoneAccount",
     "SoftphoneCapture",
     "SoftphoneConfig",
