@@ -30,13 +30,12 @@ WantedBy=multi-user.target
 UNIT
 systemctl enable fcp-d8-loopback.service >/dev/null 2>&1
 
-# Secrets: every `change-me` in the stack's .env made random, once.
-if [ ! -f $D8/secrets.env ]; then
-    umask 077
-    grep -E '^[A-Z_]+=.*change-me' .env | while IFS='=' read -r key _; do
-        echo "$key=$(openssl rand -hex 24)"
-    done > $D8/secrets.env
-fi
+# Secrets: every `change-me` in the stack's .env made random, once each —
+# a key a later release adds is made on the upgrade that brings it.
+(umask 077; touch $D8/secrets.env)
+grep -E '^[A-Z_]+=.*change-me' .env | while IFS='=' read -r key _; do
+    grep -q "^$key=" $D8/secrets.env || echo "$key=$(openssl rand -hex 24)" >> $D8/secrets.env
+done
 while IFS='=' read -r key value; do
     sed -i "s|^$key=.*|$key=$value|" .env
 done < $D8/secrets.env
