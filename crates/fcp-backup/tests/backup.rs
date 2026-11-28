@@ -208,6 +208,9 @@ key_ring = "{certs}/master.key"
 recordings = "{files}"
 fcp-certs = "{certs}"
 
+[backup.service_paths]
+"/srv/recordings" = "{files}"
+
 [logging]
 level = "info"
 format = "compact"
@@ -543,6 +546,97 @@ async fn the_database_and_the_files_go_to_an_sftp_server() {
         .await
         .unwrap();
     assert_eq!(again.status(), 404);
+
+    // B3b: a lost recording found and put back by the path its row names;
+    // a file changed since is left as it is.
+    let caps: serde_json::Value = client
+        .get(api("/v1/capabilities"))
+        .bearer_auth("backup-api-token")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(caps["file_restores"], true, "{caps}");
+    let lost = files.path().join("tenant-a/call-1.wav");
+    let kept_before = std::fs::read(&lost).unwrap();
+    std::fs::remove_file(&lost).unwrap();
+    let post = |path: &str, body: serde_json::Value| {
+        let client = client.clone();
+        let url = api(path);
+        async move {
+            let r = client
+                .post(url)
+                .bearer_auth("backup-api-token")
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
+            let status = r.status();
+            (
+                status,
+                r.json::<serde_json::Value>().await.unwrap_or_default(),
+            )
+        }
+    };
+    let (status, checked) = post(
+        "/v1/files/check",
+        serde_json::json!({ "paths": ["/srv/recordings/tenant-a/call-1.wav", "/etc/passwd"] }),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(checked[0]["held_here"], true);
+    assert_eq!(checked[0]["present"], false);
+    assert_eq!(checked[1]["held_here"], false);
+    let (_, found) = post(
+        "/v1/files/find",
+        serde_json::json!({
+            "destination_id": format!("bkd-{}", dest.id),
+            "paths": ["/srv/recordings/tenant-a/call-1.wav"],
+        }),
+    )
+    .await;
+    let snap = found["/srv/recordings/tenant-a/call-1.wav"][0]["snapshot"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(snap.get(..8), run.snapshots[1].get(..8), "{found}");
+    // Something else written since the snapshot is not overwritten.
+    let changed = files.path().join("tenant-a/changed.wav");
+    std::fs::write(&changed, b"newer").unwrap();
+    let (status, refused) = post(
+        "/v1/restores/files",
+        serde_json::json!({
+            "destination_id": format!("bkd-{}", dest.id), "snapshot": snap,
+            "service_paths": ["/etc/passwd"],
+        }),
+    )
+    .await;
+    assert_eq!(status, 400, "{refused}");
+    let (status, restored) = post(
+        "/v1/restores/files",
+        serde_json::json!({
+            "destination_id": format!("bkd-{}", dest.id), "snapshot": snap,
+            "service_paths": ["/srv/recordings/tenant-a/call-1.wav"],
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{restored}");
+    assert_eq!(restored[0]["present"], true);
+    assert_eq!(std::fs::read(&lost).unwrap(), kept_before);
+    // The whole volume, by a platform administrator: what is there stays.
+    std::fs::remove_file(&lost).unwrap();
+    let (status, restored) = post(
+        "/v1/restores/files",
+        serde_json::json!({
+            "destination_id": format!("bkd-{}", dest.id), "snapshot": snap, "volume": "recordings",
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{restored}");
+    assert!(lost.exists());
+    assert_eq!(std::fs::read(&changed).unwrap(), b"newer");
 
     svc.kill().await;
     drop(sftp);

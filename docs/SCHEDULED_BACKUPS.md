@@ -218,14 +218,17 @@ is the one dangerous power in the design.
 - `POST …/snapshots/{snapshot}/restore`: `{scope: "system" | "files",
   paths?, key_file?}`. It answers a restore id, and `GET
   /api/v1/system/backups/restores/{id}` reports its steps.
+- `GET /api/v1/system/backups/capabilities`: whether restores are on.
+- `POST …/snapshots/{run}/restore-files`: `{volume, paths?}`, put back
+  beside what is there.
 - `GET /api/v1/system/backups/key`: the master key, wrapped in a
   passphrase given in the request. This is audited.
 - For a tenant administrator:
   - `GET /api/v1/backups`: the schedule and the last good backup.
   - `GET /api/v1/backups/missing`: the tenant's recordings, voicemail and
     prompts whose files are gone, with the snapshots that hold them.
-  - `POST /api/v1/backups/restore-files`: `{snapshot, items}`, put back
-    beside what is there.
+  - `POST /api/v1/backups/restore-files`: `{point, items}` (a `held_in`
+    point; items by class and row id), put back beside what is there.
 
 ## 4. The page
 
@@ -373,6 +376,65 @@ is the one dangerous power in the design.
       - `e2e/backups.spec.ts`.
   - **B3b:** the override file, and file restores (a platform
     administrator's and a tenant's own), never overwriting.
+
+    **Done (v0.25.673):**
+    - **Switching restores on:**
+      - `deploy/docker-compose/docker-compose.restore.yml` mounts
+        `fcp-backup`'s volumes writable and adds the Docker socket.
+      - `GET /v1/capabilities` reports what the service may do: it probes
+        each volume with a file it removes again, and looks for
+        `[backup] docker_socket`.
+      - `GET /system/backups/capabilities` passes that on, and the page's
+        Restores card says how to switch restores on.
+    - **Paths:**
+      - `[backup.service_paths]` maps each path a service writes into a
+        row to where this service mounts it (`/app/data/recordings` to
+        `/data/call-manager/recordings`).
+      - The longest prefix wins, by path components. A path that climbs
+        out, is relative, or ends up outside a backed-up volume is held
+        by nothing.
+    - **`fcp-backup`:**
+      - `POST /v1/files/check` says whether each path is held here and
+        present.
+      - `POST /v1/files/find` finds the snapshots that hold each path
+        (`restic find`), newest first, with their times.
+      - `POST /v1/restores/files` puts back service paths, or a volume and
+        paths in it (none is the whole volume), with `restic restore
+        --target / --overwrite never`. It is refused (409) while restores
+        are off.
+    - **A platform administrator:** `POST
+      /system/backups/destinations/{id}/snapshots/{run}/restore-files`
+      with `{volume}` puts back the files the volume is missing. The
+      Snapshots dialog has a button per volume; files removed on purpose
+      come back too, and the dialog says so.
+    - **A tenant administrator** (`backup_read` for the tenant
+      administrator and read-only monitor; `backup_restore_own` for the
+      tenant administrator alone):
+      - `GET /backups` gives the daily times, the last good backup and
+        whether restores are available, and no destination.
+      - `GET /backups/missing` lists the tenant's rows whose files are gone:
+        call and conference recordings, voicemail and greetings, and
+        prompts (`BackupStore::tenant_files`; a site's own rows are the
+        site's). Each comes with the backups holding it.
+      - `POST /backups/restore-files` takes `{point, items}`. Each item is
+        found again among the tenant's own rows by class and id, so another
+        tenant's file cannot be named (404).
+      - The page shows tenant administrators the schedule and their lost
+        files, with Restore and Restore all.
+    - **Proved by:**
+      - `fcp-backup/tests/backup.rs`: a recording deleted, found missing,
+        found in its snapshot, put back by its service path, and then by
+        its volume, while a file changed since is not overwritten; a path
+        outside every volume is refused.
+      - `lost_files_are_put_back_and_a_tenant_reaches_only_its_own`: two
+        tenants, the platform's volume restore, the tenant's own and
+        another's refused, a read-only monitor refused.
+      - `e2e/backups.spec.ts`, with a second test for a tenant
+        administrator.
+    - **Found:** in compose, the admin keeps uploaded prompts in
+      `/tmp/fcp/audio/prompts` (no `prompts_dir` is set), which no volume
+      holds, so those files are neither backed up nor restorable. Left for
+      a fix of its own.
   - **B3c:** the full restore.
 
   What each part covers:

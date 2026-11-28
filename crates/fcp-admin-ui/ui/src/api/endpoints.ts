@@ -169,6 +169,7 @@ import type {
   PlatformSpeech,
   SpeechUsagePeriod, SpeechCap, PlatformSpeechCap, CapUnit,
   BackupDestination, BackupDestinationRequest, BackupRun, BackupKeyStatus, BackupSnapshot, BackupDownload,
+  RestoreCapabilities, TenantBackups, LostFile, VolumeRestoreOutcome, TenantRestoreOutcome,
   LogLine,
   LogLevel,
 } from '@/types'
@@ -1593,4 +1594,16 @@ export const backups = {
       `/system/backups/destinations/${encodeURIComponent(id)}/snapshots/${encodeURIComponent(run)}/download`, body),
   downloadState: (id: string) =>
     apiClient.get<BackupDownload>(`/system/backups/downloads/${encodeURIComponent(id)}`),
+  /** Whether restores are switched on (B3b). */
+  capabilities: () => apiClient.get<RestoreCapabilities>('/system/backups/capabilities'),
+  /** A volume's missing files put back; nothing present is overwritten. */
+  restoreVolume: (id: string, run: string, volume: string) =>
+    apiClient.post<VolumeRestoreOutcome>(
+      `/system/backups/destinations/${encodeURIComponent(id)}/snapshots/${encodeURIComponent(run)}/restore-files`,
+      { volume }),
+  // A tenant's own (Q9).
+  tenantStatus: () => apiClient.get<TenantBackups>('/backups'),
+  tenantMissing: () => apiClient.getAll<LostFile>('/backups/missing'),
+  tenantRestore: (point: string, items: { class: string; item: string }[]) =>
+    apiClient.post<TenantRestoreOutcome>('/backups/restore-files', { point, items }),
 }

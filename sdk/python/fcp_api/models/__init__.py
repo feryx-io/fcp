@@ -167,6 +167,7 @@ from .extension_target_response_type_2 import ExtensionTargetResponseType2
 from .extension_target_response_type_2_type import ExtensionTargetResponseType2Type
 from .extension_target_response_type_3 import ExtensionTargetResponseType3
 from .extension_target_response_type_3_type import ExtensionTargetResponseType3Type
+from .file_item import FileItem
 from .file_subject_request import FileSubjectRequest
 from .find_me import FindMe
 from .find_me_step import FindMeStep
@@ -184,6 +185,7 @@ from .group_request import GroupRequest
 from .group_response import GroupResponse
 from .group_role import GroupRole
 from .heard import Heard
+from .held_in import HeldIn
 from .hold_request import HoldRequest
 from .hold_response import HoldResponse
 from .hold_response_held_type_0 import HoldResponseHeldType0
@@ -213,6 +215,7 @@ from .log_line_fields import LogLineFields
 from .login_request import LoginRequest
 from .login_response import LoginResponse
 from .logout_answer import LogoutAnswer
+from .lost_file import LostFile
 from .mailbox_response import MailboxResponse
 from .mailbox_stats_response import MailboxStatsResponse
 from .me_greeting_response import MeGreetingResponse
@@ -326,6 +329,8 @@ from .page_location_response_data_item import PageLocationResponseDataItem
 from .page_log_line import PageLogLine
 from .page_log_line_data_item import PageLogLineDataItem
 from .page_log_line_data_item_fields import PageLogLineDataItemFields
+from .page_lost_file import PageLostFile
+from .page_lost_file_data_item import PageLostFileDataItem
 from .page_mailbox_response import PageMailboxResponse
 from .page_mailbox_response_data_item import PageMailboxResponseDataItem
 from .page_me_greeting_response import PageMeGreetingResponse
@@ -511,6 +516,8 @@ from .rendered_config_response import RenderedConfigResponse
 from .require_totp import RequireTotp
 from .required_claim import RequiredClaim
 from .resource_counts import ResourceCounts
+from .restore_capabilities import RestoreCapabilities
+from .restored_file import RestoredFile
 from .resync_response import ResyncResponse
 from .retention_run_response import RetentionRunResponse
 from .retention_view import RetentionView
@@ -605,6 +612,7 @@ from .target_view_type_0_type import TargetViewType0Type
 from .target_view_type_1 import TargetViewType1
 from .target_view_type_1_type import TargetViewType1Type
 from .template_resync_response import TemplateResyncResponse
+from .tenant_backups import TenantBackups
 from .tenant_calling import TenantCalling
 from .tenant_diagnostics import TenantDiagnostics
 from .tenant_directory import TenantDirectory
@@ -612,6 +620,9 @@ from .tenant_lines import TenantLines
 from .tenant_offboarding import TenantOffboarding
 from .tenant_provisioning import TenantProvisioning
 from .tenant_response import TenantResponse
+from .tenant_restore_outcome import TenantRestoreOutcome
+from .tenant_restore_request import TenantRestoreRequest
+from .tenant_restored import TenantRestored
 from .tenant_sign_in import TenantSignIn
 from .tenant_video import TenantVideo
 from .test_webhook_request import TestWebhookRequest
@@ -678,6 +689,8 @@ from .video_device_budget import VideoDeviceBudget
 from .video_egress import VideoEgress
 from .video_engines import VideoEngines
 from .view_state import ViewState
+from .volume_restore_outcome import VolumeRestoreOutcome
+from .volume_restore_request import VolumeRestoreRequest
 from .watcher_response import WatcherResponse
 from .webhook_delivery_outcome import WebhookDeliveryOutcome
 from .webhook_delivery_response import WebhookDeliveryResponse
@@ -858,6 +871,7 @@ __all__ = (
     "ExtensionTargetResponseType2Type",
     "ExtensionTargetResponseType3",
     "ExtensionTargetResponseType3Type",
+    "FileItem",
     "FileSubjectRequest",
     "FindMe",
     "FindMeStep",
@@ -875,6 +889,7 @@ __all__ = (
     "GroupResponse",
     "GroupRole",
     "Heard",
+    "HeldIn",
     "HoldRequest",
     "HoldResponse",
     "HoldResponseHeldType0",
@@ -904,6 +919,7 @@ __all__ = (
     "LogLine",
     "LogLineFields",
     "LogoutAnswer",
+    "LostFile",
     "MailboxResponse",
     "MailboxStatsResponse",
     "MediaPreferences",
@@ -1017,6 +1033,8 @@ __all__ = (
     "PageLogLine",
     "PageLogLineDataItem",
     "PageLogLineDataItemFields",
+    "PageLostFile",
+    "PageLostFileDataItem",
     "PageMailboxResponse",
     "PageMailboxResponseDataItem",
     "PageMeetingResponse",
@@ -1202,6 +1220,8 @@ __all__ = (
     "RequiredClaim",
     "RequireTotp",
     "ResourceCounts",
+    "RestoreCapabilities",
+    "RestoredFile",
     "ResyncResponse",
     "RetentionRunResponse",
     "RetentionView",
@@ -1296,6 +1316,7 @@ __all__ = (
     "TargetViewType1",
     "TargetViewType1Type",
     "TemplateResyncResponse",
+    "TenantBackups",
     "TenantCalling",
     "TenantDiagnostics",
     "TenantDirectory",
@@ -1303,6 +1324,9 @@ __all__ = (
     "TenantOffboarding",
     "TenantProvisioning",
     "TenantResponse",
+    "TenantRestored",
+    "TenantRestoreOutcome",
+    "TenantRestoreRequest",
     "TenantSignIn",
     "TenantVideo",
     "TestWebhookRequest",
@@ -1369,6 +1393,8 @@ __all__ = (
     "VideoEgress",
     "VideoEngines",
     "ViewState",
+    "VolumeRestoreOutcome",
+    "VolumeRestoreRequest",
     "WatcherResponse",
     "WebhookDeliveryOutcome",
     "WebhookDeliveryResponse",

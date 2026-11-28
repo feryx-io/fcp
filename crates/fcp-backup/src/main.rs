@@ -9,6 +9,7 @@
 
 mod api;
 mod config;
+mod files;
 mod restic;
 mod runner;
 

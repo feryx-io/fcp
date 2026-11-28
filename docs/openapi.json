@@ -18068,6 +18068,201 @@
         }
       }
     },
+    "/api/v1/system/backups/destinations/{id}/snapshots/{run}/restore-files": {
+      "post": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "POST /system/backups/destinations/{id}/snapshots/{run}/restore-files —\na volume's files put back beside what is there: nothing present is\noverwritten. Needs restores switched on. Audited.",
+        "operationId": "backups_restore_volume_files",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The destination",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "run",
+            "in": "path",
+            "description": "The point's run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VolumeRestoreRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What was put back",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VolumeRestoreOutcome"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/backups/capabilities": {
+      "get": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "GET /system/backups/capabilities",
+        "operationId": "backups_capabilities",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoreCapabilities"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/backups": {
+      "get": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "GET /backups",
+        "operationId": "backups_tenant_status",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantBackups"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/backups/missing": {
+      "get": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "GET /backups/missing",
+        "operationId": "backups_tenant_missing",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_LostFile"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/backups/restore-files": {
+      "post": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "POST /backups/restore-files — the tenant's own lost files put back:\neach is found by the tenant's own row, so no other tenant's file can be\nnamed. Never overwrites. Audited.",
+        "operationId": "backups_tenant_restore",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TenantRestoreRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What was put back",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantRestoreOutcome"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/system/backups/runs": {
       "get": {
         "tags": [
@@ -31992,6 +32187,23 @@
           }
         ]
       },
+      "FileItem": {
+        "type": "object",
+        "description": "One file named by its row.",
+        "required": [
+          "class",
+          "item"
+        ],
+        "properties": {
+          "class": {
+            "type": "string"
+          },
+          "item": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "FileSubjectRequest": {
         "type": "object",
         "required": [
@@ -32582,6 +32794,24 @@
             ],
             "format": "double",
             "description": "The recognizer's confidence, 0 to 1, when it gives one."
+          }
+        }
+      },
+      "HeldIn": {
+        "type": "object",
+        "description": "A backup a lost file can come back from.",
+        "required": [
+          "point",
+          "time"
+        ],
+        "properties": {
+          "point": {
+            "type": "string",
+            "description": "Opaque: named back to restore from it."
+          },
+          "time": {
+            "type": "string",
+            "description": "When it was taken, RFC 3339."
           }
         }
       },
@@ -33697,6 +33927,36 @@
           "logout_url": {
             "type": "string",
             "description": "The provider's logout address, with what it needs; the browser is\nsent there and comes back to the login page (`docs/SSO.md` §5)."
+          }
+        }
+      },
+      "LostFile": {
+        "type": "object",
+        "description": "One of the tenant's files whose row is there and whose file is not.",
+        "required": [
+          "class",
+          "item",
+          "held_in"
+        ],
+        "properties": {
+          "class": {
+            "type": "string"
+          },
+          "item": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "held_in": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HeldIn"
+            },
+            "description": "The backups holding it, newest first; none, and it cannot come back."
           }
         }
       },
@@ -38499,6 +38759,64 @@
                     "string",
                     "null"
                   ]
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_LostFile": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One of the tenant's files whose row is there and whose file is not.",
+              "required": [
+                "class",
+                "item",
+                "held_in"
+              ],
+              "properties": {
+                "class": {
+                  "type": "string"
+                },
+                "item": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "held_in": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/HeldIn"
+                  },
+                  "description": "The backups holding it, newest first; none, and it cannot come back."
                 }
               }
             }
@@ -46967,6 +47285,54 @@
           }
         }
       },
+      "RestoreCapabilities": {
+        "type": "object",
+        "description": "What restores the backup service may do: switched on by\n`docker-compose.restore.yml`.",
+        "required": [
+          "service",
+          "file_restores",
+          "full_restore",
+          "read_only"
+        ],
+        "properties": {
+          "service": {
+            "type": "boolean",
+            "description": "The backup service is set up here at all."
+          },
+          "file_restores": {
+            "type": "boolean",
+            "description": "Its volumes are writable: files can be put back."
+          },
+          "full_restore": {
+            "type": "boolean",
+            "description": "It has the Docker socket: the whole system can be restored."
+          },
+          "read_only": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The volumes still read-only."
+          }
+        }
+      },
+      "RestoredFile": {
+        "type": "object",
+        "description": "A file put back, or not.",
+        "required": [
+          "path",
+          "present"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "present": {
+            "type": "boolean",
+            "description": "Whether it is there now."
+          }
+        }
+      },
       "ResyncResponse": {
         "type": "object",
         "description": "What a resync did.",
@@ -50015,6 +50381,34 @@
           }
         }
       },
+      "TenantBackups": {
+        "type": "object",
+        "description": "What a tenant sees of the platform's backups.",
+        "required": [
+          "times_of_day",
+          "restores_available"
+        ],
+        "properties": {
+          "times_of_day": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "When the platform backs up each day, `HH:MM` UTC."
+          },
+          "last_good_backup_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the last good backup finished, RFC 3339."
+          },
+          "restores_available": {
+            "type": "boolean",
+            "description": "Whether lost files can be put back here now."
+          }
+        }
+      },
       "TenantCalling": {
         "type": "object",
         "description": "A tenant's calling defaults.",
@@ -50293,6 +50687,62 @@
           "provisioning": {
             "$ref": "#/components/schemas/TenantProvisioning",
             "description": "How the tenant's phones fetch their configuration\n(`docs/PROVISIONING.md` §3)."
+          }
+        }
+      },
+      "TenantRestoreOutcome": {
+        "type": "object",
+        "description": "What a tenant's restore put back.",
+        "required": [
+          "restored"
+        ],
+        "properties": {
+          "restored": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TenantRestored"
+            }
+          }
+        }
+      },
+      "TenantRestoreRequest": {
+        "type": "object",
+        "description": "Lost files to put back from one backup.",
+        "required": [
+          "point",
+          "items"
+        ],
+        "properties": {
+          "point": {
+            "type": "string",
+            "description": "A `held_in` point from the missing list."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FileItem"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "TenantRestored": {
+        "type": "object",
+        "description": "A file of the tenant's put back, or not.",
+        "required": [
+          "class",
+          "item",
+          "present"
+        ],
+        "properties": {
+          "class": {
+            "type": "string"
+          },
+          "item": {
+            "type": "string"
+          },
+          "present": {
+            "type": "boolean"
           }
         }
       },
@@ -54244,6 +54694,42 @@
           "store_unreachable",
           "remote_regions_lost"
         ]
+      },
+      "VolumeRestoreOutcome": {
+        "type": "object",
+        "description": "What a restore put back.",
+        "required": [
+          "restored"
+        ],
+        "properties": {
+          "restored": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RestoredFile"
+            }
+          }
+        }
+      },
+      "VolumeRestoreRequest": {
+        "type": "object",
+        "description": "A volume's files to put back.",
+        "required": [
+          "volume"
+        ],
+        "properties": {
+          "volume": {
+            "type": "string",
+            "description": "The compose volume (`voicemail-data`)."
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Paths inside it; none is every file it is missing."
+          }
+        },
+        "additionalProperties": false
       },
       "WatcherResponse": {
         "type": "object",

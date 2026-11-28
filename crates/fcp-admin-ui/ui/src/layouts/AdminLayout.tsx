@@ -70,7 +70,7 @@ const navItems: NavItem[] = [
   // System (docs/SERVICES.md §3)
   { label: 'Services', href: '/admin/services', icon: HeartPulse, section: 'System', platformOnly: true },
   { label: 'Cluster', href: '/admin/cluster', icon: Globe, section: 'System', platformOnly: true },
-  { label: 'Backups', href: '/admin/backups', icon: Archive, section: 'System', platformOnly: true },
+  { label: 'Backups', href: '/admin/backups', icon: Archive, section: 'System' },
   { label: 'Sites', href: '/admin/sites', icon: Cable, section: 'System' },
   { label: 'System Settings', href: '/admin/system-settings', icon: Settings, section: 'System' },
   { label: 'Logs', href: '/admin/logs', icon: FileSearch, section: 'System' },

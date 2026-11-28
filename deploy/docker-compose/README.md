@@ -268,6 +268,15 @@ heartbeats into the stack's Redis and the admin reads it, so the admin
 UI's cluster page lists it with its version — a cluster of one, until
 a second call manager on the same Redis joins.
 
+Off the box, on a schedule: the `fcp-backup` service, set up on the
+admin's System › Backups page (SFTP or an S3-compatible bucket;
+`docs/SCHEDULED_BACKUPS.md`). The page downloads any snapshot in
+`backup.sh`'s layout, for `restore.sh`. Putting files back from the page
+needs restores switched on, which makes `fcp-backup`'s volumes writable
+and mounts the Docker socket (root on this host): `docker compose -f
+docker-compose.yml -f docker-compose.restore.yml up -d fcp-backup` for the
+restore, then `docker compose up -d fcp-backup` to switch them off.
+
 ## A site
 
 `site/` is a second compose project: a tenant's own stack on the
