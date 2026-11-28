@@ -897,6 +897,18 @@ pub enum SystemEvent {
         timestamp: SystemTime,
     },
 
+    /// A scheduled destination has had no good backup for a day and two
+    /// hours (`docs/SCHEDULED_BACKUPS.md` B4). Said once per lapse.
+    BackupOverdue {
+        destination_id: String,
+        destination: String,
+        /// The last good backup, RFC 3339, if there ever was one.
+        #[serde(default)]
+        last_success_at: Option<String>,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// A service stopped saying it is there (`docs/SERVICES.md` §2). Said
     /// once, by the admin, when its beacon expired; never while Redis
     /// itself cannot be read.
@@ -2259,6 +2271,7 @@ impl PlatformEvent {
         "system.service_down",
         "system.backup_completed",
         "system.backup_failed",
+        "system.backup_overdue",
         "device.firmware_behind",
         "device.push_failed",
         "user.created",
@@ -2436,6 +2449,7 @@ impl PlatformEvent {
                 SystemEvent::ServiceDown { .. } => "system.service_down",
                 SystemEvent::BackupCompleted { .. } => "system.backup_completed",
                 SystemEvent::BackupFailed { .. } => "system.backup_failed",
+                SystemEvent::BackupOverdue { .. } => "system.backup_overdue",
                 SystemEvent::DeviceFirmwareBehind { .. } => "device.firmware_behind",
                 SystemEvent::DevicePushFailed { .. } => "device.push_failed",
             },
@@ -2719,7 +2733,8 @@ impl PlatformEvent {
                 | SystemEvent::ServiceUp { .. }
                 | SystemEvent::ServiceDown { .. }
                 | SystemEvent::BackupCompleted { .. }
-                | SystemEvent::BackupFailed { .. } => None,
+                | SystemEvent::BackupFailed { .. }
+                | SystemEvent::BackupOverdue { .. } => None,
             },
             PlatformEvent::Voicemail(e) => match e {
                 VoicemailEvent::MessageTranscribed { tenant_id, .. }
@@ -2993,6 +3008,7 @@ impl SystemEvent {
             | SystemEvent::ServiceDown { timestamp, .. }
             | SystemEvent::BackupCompleted { timestamp, .. }
             | SystemEvent::BackupFailed { timestamp, .. }
+            | SystemEvent::BackupOverdue { timestamp, .. }
             | SystemEvent::DeviceFirmwareBehind { timestamp, .. }
             | SystemEvent::DevicePushFailed { timestamp, .. } => *timestamp,
         }

@@ -610,10 +610,22 @@ from .target_request_type_0 import TargetRequestType0
 from .target_request_type_0_type import TargetRequestType0Type
 from .target_request_type_1 import TargetRequestType1
 from .target_request_type_1_type import TargetRequestType1Type
+from .target_request_type_2 import TargetRequestType2
+from .target_request_type_2_type import TargetRequestType2Type
+from .target_request_type_3 import TargetRequestType3
+from .target_request_type_3_type import TargetRequestType3Type
+from .target_request_type_4 import TargetRequestType4
+from .target_request_type_4_type import TargetRequestType4Type
 from .target_view_type_0 import TargetViewType0
 from .target_view_type_0_type import TargetViewType0Type
 from .target_view_type_1 import TargetViewType1
 from .target_view_type_1_type import TargetViewType1Type
+from .target_view_type_2 import TargetViewType2
+from .target_view_type_2_type import TargetViewType2Type
+from .target_view_type_3 import TargetViewType3
+from .target_view_type_3_type import TargetViewType3Type
+from .target_view_type_4 import TargetViewType4
+from .target_view_type_4_type import TargetViewType4Type
 from .template_resync_response import TemplateResyncResponse
 from .tenant_backups import TenantBackups
 from .tenant_calling import TenantCalling
@@ -1317,10 +1329,22 @@ __all__ = (
     "TargetRequestType0Type",
     "TargetRequestType1",
     "TargetRequestType1Type",
+    "TargetRequestType2",
+    "TargetRequestType2Type",
+    "TargetRequestType3",
+    "TargetRequestType3Type",
+    "TargetRequestType4",
+    "TargetRequestType4Type",
     "TargetViewType0",
     "TargetViewType0Type",
     "TargetViewType1",
     "TargetViewType1Type",
+    "TargetViewType2",
+    "TargetViewType2Type",
+    "TargetViewType3",
+    "TargetViewType3Type",
+    "TargetViewType4",
+    "TargetViewType4Type",
     "TemplateResyncResponse",
     "TenantBackups",
     "TenantCalling",

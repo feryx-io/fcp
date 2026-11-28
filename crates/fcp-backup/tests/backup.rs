@@ -185,6 +185,18 @@ async fn service(
     certs: &Path,
     work: &Path,
 ) -> (Service, u16) {
+    service_with(db, restic, files, certs, work, "").await
+}
+
+/// The service, with more of `[backup]` (`extra`, TOML lines).
+async fn service_with(
+    db: &TestDatabase,
+    restic: &Path,
+    files: &Path,
+    certs: &Path,
+    work: &Path,
+    extra: &str,
+) -> (Service, u16) {
     let http = free_port();
     let config = format!(
         r#"[service]
@@ -203,7 +215,7 @@ pg_dump = "{pg_dump}"
 work_dir = "{work}"
 poll_secs = 1
 key_ring = "{certs}/master.key"
-
+{extra}
 [backup.paths]
 recordings = "{files}"
 fcp-certs = "{certs}"
@@ -227,6 +239,7 @@ format = "compact"
         work = work.display(),
         files = files.display(),
         certs = certs.display(),
+        extra = extra,
     );
     let svc = Service::start(
         "fcp-backup",
@@ -840,5 +853,214 @@ async fn the_database_goes_to_an_s3_compatible_bucket() {
         }
     }
     svc.kill().await;
+    db.drop_db().await;
+}
+
+/// The tools B4's destinations need beside restic, if they are here.
+fn tool(name: &str) -> Option<PathBuf> {
+    let beside = restic()?.with_file_name(name);
+    if beside.is_absolute() && beside.exists() {
+        return Some(beside);
+    }
+    let cached = PathBuf::from(std::env::var("HOME").unwrap_or_default())
+        .join(".cache/fcp-restic")
+        .join(name);
+    if cached.exists() {
+        return Some(cached);
+    }
+    Command::new(name)
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|_| name.into())
+}
+
+fn destination(name: &str, target: BackupTarget) -> BackupDestination {
+    let now = SystemTime::now();
+    BackupDestination {
+        id: uuid::Uuid::new_v4(),
+        name: name.into(),
+        target,
+        password: Some(format!("a long password for {name}")),
+        schedule: BackupSchedule {
+            daily_at: None,
+            cron: None,
+        },
+        keep: BackupRetention::default(),
+        include_key: false,
+        enabled: true,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+/// B4: a directory (and its weekly check), a REST server with credentials
+/// (and refused without the right ones), and an rclone remote from its own
+/// configuration.
+#[tokio::test]
+async fn a_directory_a_rest_server_and_an_rclone_remote_take_backups() {
+    let Some(restic) = restic() else {
+        return skip("no restic").unwrap_or(());
+    };
+    let (Some(rest_server), Some(rclone)) = (tool("rest-server"), tool("rclone")) else {
+        return skip("no rest-server or rclone").unwrap_or(());
+    };
+    let Some(db) = TestDatabase::create().await else {
+        return skip("FCP_TEST_DATABASE_URL is not set").unwrap_or(());
+    };
+    let storage = Arc::new(
+        fcp_storage_postgres::PostgresStorage::new(fcp_storage_postgres::PostgresConfig::new(
+            db.url().to_string(),
+        ))
+        .await
+        .unwrap(),
+    );
+    let store: Arc<dyn BackupStore> = storage.clone();
+    let files = tempfile::tempdir().unwrap();
+    std::fs::write(files.path().join("vm.wav"), b"RIFF a message").unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let repos = tempfile::tempdir().unwrap();
+
+    // A REST server with one user.
+    let rest_dir = repos.path().join("rest");
+    std::fs::create_dir_all(&rest_dir).unwrap();
+    let sha = {
+        use std::io::Write;
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("printf %s \"$0\" | openssl dgst -sha1 -binary | base64")
+            .arg("rest-pass")
+            .stdout(std::process::Stdio::piped())
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().flush().unwrap();
+        String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap()
+    };
+    std::fs::write(
+        rest_dir.join(".htpasswd"),
+        format!("fcp:{{SHA}}{}\n", sha.trim()),
+    )
+    .unwrap();
+    let rest_port = free_port();
+    let mut rest = Command::new(&rest_server)
+        .arg("--path")
+        .arg(&rest_dir)
+        .args([
+            "--listen",
+            &format!("127.0.0.1:{rest_port}"),
+            "--htpasswd-file",
+        ])
+        .arg(rest_dir.join(".htpasswd"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    for _ in 0..50 {
+        if std::net::TcpStream::connect(("127.0.0.1", rest_port)).is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let directory = destination(
+        "Share",
+        BackupTarget::Directory {
+            path: repos.path().join("share").display().to_string(),
+        },
+    );
+    let rest_url = format!("http://127.0.0.1:{rest_port}/fcp/");
+    let rest_ok = destination(
+        "REST",
+        BackupTarget::Rest {
+            url: rest_url.clone(),
+            username: Some("fcp".into()),
+            password: Some("rest-pass".into()),
+        },
+    );
+    let rest_wrong = destination(
+        "REST, wrong",
+        BackupTarget::Rest {
+            url: rest_url,
+            username: Some("fcp".into()),
+            password: Some("not it".into()),
+        },
+    );
+    let rclone_dest = destination(
+        "rclone",
+        BackupTarget::Rclone {
+            remote: format!("here:{}", repos.path().join("rclone").display()),
+            config: Some("[here]\ntype = local\n".into()),
+        },
+    );
+    for d in [&directory, &rest_ok, &rest_wrong, &rclone_dest] {
+        store.put_backup_destination(d).await.unwrap();
+    }
+    // The secrets come back as they went in, sealed between.
+    let back = store
+        .get_backup_destination(&rest_ok.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(back.target, rest_ok.target);
+    let back = store
+        .get_backup_destination(&rclone_dest.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(back.target, rclone_dest.target);
+
+    let certs = certs_dir();
+    let extra = format!("rclone = \"{}\"\n", rclone.display());
+    let (svc, _) = service_with(
+        &db,
+        &restic,
+        files.path(),
+        certs.path(),
+        work.path(),
+        &extra,
+    )
+    .await;
+    for d in [&directory, &rest_ok, &rclone_dest] {
+        for kind in [BackupRunKind::Test, BackupRunKind::Backup] {
+            let run = request(d.id, kind);
+            store.request_backup_run(&run).await.unwrap();
+            let run = wait_for(&store, &run.id).await;
+            assert_eq!(
+                run.state,
+                BackupRunState::Succeeded,
+                "{}: {kind:?}: {run:?}",
+                d.name
+            );
+            if kind == BackupRunKind::Backup {
+                assert_eq!(run.snapshots.len(), 2, "{run:?}");
+            }
+        }
+    }
+    let refused = request(rest_wrong.id, BackupRunKind::Test);
+    store.request_backup_run(&refused).await.unwrap();
+    let refused = wait_for(&store, &refused.id).await;
+    assert_eq!(refused.state, BackupRunState::Failed, "{refused:?}");
+    // The weekly check, asked for by hand here.
+    let check = request(directory.id, BackupRunKind::Check);
+    store.request_backup_run(&check).await.unwrap();
+    let check = wait_for(&store, &check.id).await;
+    assert_eq!(check.state, BackupRunState::Succeeded, "{check:?}");
+    assert!(
+        check.message.as_deref().unwrap_or("").contains("Checked"),
+        "{check:?}"
+    );
+    // The rclone configuration lives in the work directory, private.
+    use std::os::unix::fs::PermissionsExt;
+    let conf = work.path().join(format!("rclone/{}.conf", rclone_dest.id));
+    assert_eq!(
+        std::fs::metadata(&conf).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    svc.kill().await;
+    let _ = rest.kill();
+    let _ = rest.wait();
     db.drop_db().await;
 }

@@ -127,6 +127,7 @@ class WebhookEventEventType(StrEnum):
     SPEECH_CAP_REACHED = "speech.cap_reached"
     SYSTEM_BACKUP_COMPLETED = "system.backup_completed"
     SYSTEM_BACKUP_FAILED = "system.backup_failed"
+    SYSTEM_BACKUP_OVERDUE = "system.backup_overdue"
     SYSTEM_CLUSTER_VIEW_CHANGED = "system.cluster_view_changed"
     SYSTEM_CONFIG_CHANGED = "system.config_changed"
     SYSTEM_HEALTH_CHECK = "system.health_check"

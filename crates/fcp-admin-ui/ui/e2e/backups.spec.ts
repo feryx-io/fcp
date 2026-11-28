@@ -95,6 +95,21 @@ test('a platform administrator sets up an off-site destination', async ({ page, 
   await snaps.getByRole('button', { name: 'Close' }).first().click()
   await expect(snaps).toBeHidden()
 
+  // B4: a directory, and its check asked for.
+  await page.getByRole('button', { name: 'Add a destination' }).click()
+  await dialog.getByLabel('Name').fill('Share')
+  await dialog.getByLabel('Where').click()
+  await page.getByRole('option', { name: 'A directory (a share or a disk)' }).click()
+  await dialog.getByLabel('Directory in the backup service').fill('/mnt/backups/fcp')
+  await dialog.getByRole('button', { name: 'Save destination' }).click()
+  await page.getByRole('dialog', { name: 'Keep the repository password' }).getByRole('button', { name: 'Copy and close' }).click()
+  await expect(page.getByRole('row', { name: /Share/ })).toContainText('/mnt/backups/fcp')
+  await page.getByRole('button', { name: 'Check Share' }).click()
+  await expect(page.getByRole('row', { name: /Check · now/ })).toContainText('Waiting')
+  page.once('dialog', (d) => d.accept())
+  await page.getByRole('button', { name: 'Delete Share' }).click()
+  await expect(page.getByRole('row', { name: /Share/ })).toHaveCount(0)
+
   page.once('dialog', (d) => d.accept())
   await page.getByRole('button', { name: 'Delete Off site, Ohio' }).click()
   await expect(page.getByText('None yet: nothing is backed up off this machine.')).toBeVisible()

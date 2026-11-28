@@ -62,6 +62,28 @@ pub enum BackupTarget {
         #[serde(default)]
         secret_access_key: Option<String>,
     },
+    /// A directory this service can write: an NFS or SMB share, or a USB
+    /// disk, mounted into it (B4).
+    Directory { path: String },
+    /// A restic REST server (`rest-server`, which can be append-only).
+    Rest {
+        /// `https://backup.example.com:8000/fcp/`.
+        url: String,
+        #[serde(default)]
+        username: Option<String>,
+        /// Sealed at rest.
+        #[serde(default)]
+        password: Option<String>,
+    },
+    /// A remote through rclone, for a provider none of the others covers.
+    Rclone {
+        /// `<remote>:<path>`, as rclone names it (`b2:bucket/fcp`).
+        remote: String,
+        /// The rclone configuration that defines the remote (`rclone.conf`
+        /// text), sealed at rest.
+        #[serde(default)]
+        config: Option<String>,
+    },
 }
 
 fn default_ssh_port() -> u16 {
@@ -73,6 +95,9 @@ impl BackupTarget {
         match self {
             Self::Sftp { .. } => "sftp",
             Self::S3 { .. } => "s3",
+            Self::Directory { .. } => "directory",
+            Self::Rest { .. } => "rest",
+            Self::Rclone { .. } => "rclone",
         }
     }
 
@@ -118,6 +143,9 @@ impl BackupTarget {
                     None => format!("s3:{endpoint}/{bucket}"),
                 }
             }
+            Self::Directory { path } => path.clone(),
+            Self::Rest { url, .. } => format!("rest:{url}"),
+            Self::Rclone { remote, .. } => format!("rclone:{remote}"),
         }
     }
 }
@@ -160,6 +188,9 @@ pub enum BackupRunKind {
     Backup,
     /// Reach the destination, pin its host key, write and remove a probe.
     Test,
+    /// Read a share of the stored data back (`restic check
+    /// --read-data-subset`), weekly (B4).
+    Check,
 }
 
 /// Where a run is.
@@ -200,6 +231,7 @@ impl BackupRunKind {
         match self {
             Self::Backup => "backup",
             Self::Test => "test",
+            Self::Check => "check",
         }
     }
 
@@ -207,6 +239,7 @@ impl BackupRunKind {
         match s {
             "backup" => Some(Self::Backup),
             "test" => Some(Self::Test),
+            "check" => Some(Self::Check),
             _ => None,
         }
     }
@@ -304,6 +337,23 @@ pub trait BackupStore: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// When `destination` was last found overdue, with the last success it
+    /// was overdue from: noticed once per lapse (B4).
+    async fn overdue_notice(
+        &self,
+        _destination: &uuid::Uuid,
+    ) -> anyhow::Result<Option<Option<SystemTime>>> {
+        Ok(None)
+    }
+
+    async fn note_overdue(
+        &self,
+        _destination: &uuid::Uuid,
+        _last_success: Option<SystemTime>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// The key ring's active KEK id, which a snapshot is tagged with so a
     /// restore can check the key it is given (`docs/SCHEDULED_BACKUPS.md`).
     async fn active_kek_id(&self) -> anyhow::Result<Option<String>> {
@@ -340,6 +390,27 @@ pub fn daily_due(daily_at: &str, last: Option<SystemTime>, now: SystemTime) -> O
     })
 }
 
+/// How long after one was due a destination may go without a good backup
+/// before it is overdue (`docs/SCHEDULED_BACKUPS.md` §2).
+pub const OVERDUE_AFTER: std::time::Duration = std::time::Duration::from_secs(26 * 3600);
+
+/// How often a destination's data is read back.
+pub const CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+
+/// Whether a scheduled destination is overdue at `now`: no good backup in
+/// [`OVERDUE_AFTER`], counting from when it was made if it never had one.
+pub fn overdue(
+    dest: &BackupDestination,
+    last_success: Option<SystemTime>,
+    now: SystemTime,
+) -> bool {
+    if !dest.enabled || (dest.schedule.daily_at.is_none() && dest.schedule.cron.is_none()) {
+        return false;
+    }
+    let since = last_success.unwrap_or(dest.created_at);
+    now.duration_since(since).is_ok_and(|d| d > OVERDUE_AFTER)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,6 +445,60 @@ mod tests {
             secret_access_key: None,
         };
         assert_eq!(s3.repository(), "s3:https://s3.example.com/b/fcp");
+    }
+
+    #[test]
+    fn a_destination_is_overdue_a_day_and_two_hours_on() {
+        let made: SystemTime = Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap().into();
+        let mut d = BackupDestination {
+            id: uuid::Uuid::nil(),
+            name: "x".into(),
+            target: BackupTarget::Directory {
+                path: "/mnt/b".into(),
+            },
+            password: None,
+            schedule: BackupSchedule {
+                daily_at: Some("02:00".into()),
+                cron: None,
+            },
+            keep: BackupRetention::default(),
+            include_key: false,
+            enabled: true,
+            created_at: made,
+            updated_at: made,
+        };
+        let at = |d: u32, h: u32| -> SystemTime {
+            Utc.with_ymd_and_hms(2026, 11, d, h, 0, 0).unwrap().into()
+        };
+        // Never run: counted from when it was made.
+        assert!(!overdue(&d, None, at(2, 1)));
+        assert!(overdue(&d, None, at(2, 3)));
+        // A good backup at 02:00 on the 5th: fine until 04:00 on the 6th.
+        assert!(!overdue(&d, Some(at(5, 2)), at(6, 4)));
+        assert!(overdue(&d, Some(at(5, 2)), at(6, 5)));
+        // Off, or by hand only: never.
+        d.schedule.daily_at = None;
+        assert!(!overdue(&d, None, at(20, 0)));
+        d.schedule.daily_at = Some("02:00".into());
+        d.enabled = false;
+        assert!(!overdue(&d, None, at(20, 0)));
+        assert_eq!(
+            BackupTarget::Rest {
+                url: "https://b:8000/fcp/".into(),
+                username: None,
+                password: None
+            }
+            .repository(),
+            "rest:https://b:8000/fcp/"
+        );
+        assert_eq!(
+            BackupTarget::Rclone {
+                remote: "b2:bucket/fcp".into(),
+                config: None
+            }
+            .repository(),
+            "rclone:b2:bucket/fcp"
+        );
     }
 
     #[test]

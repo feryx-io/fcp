@@ -147,7 +147,7 @@ async fn main() -> Result<()> {
             _ = tokio::signal::ctrl_c() => break,
             _ = term.recv() => break,
         }
-        if let Err(e) = schedule(&ctx).await {
+        if let Err(e) = schedule(&ctx, &events).await {
             warn!(error = %e, "Backups: the schedule could not be read");
         }
         loop {
@@ -169,32 +169,83 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Ask for each enabled destination's scheduled run that has come due.
-async fn schedule(ctx: &runner::Ctx) -> Result<()> {
+fn requested(dest: uuid::Uuid, kind: BackupRunKind, now: SystemTime) -> BackupRun {
+    BackupRun {
+        id: uuid::Uuid::new_v4(),
+        destination_id: dest,
+        kind,
+        state: BackupRunState::Requested,
+        trigger: "schedule".into(),
+        requested_at: now,
+        started_at: None,
+        finished_at: None,
+        snapshots: Vec::new(),
+        bytes_added: 0,
+        message: None,
+        node: None,
+    }
+}
+
+/// For each enabled destination: its scheduled backup when due, its weekly
+/// check, and its overdue noticed once per lapse (B4).
+async fn schedule(ctx: &runner::Ctx, events: &Events) -> Result<()> {
     let now = SystemTime::now();
     for d in ctx.store.list_backup_destinations().await? {
-        let Some(at) = d.schedule.daily_at.as_deref().filter(|_| d.enabled) else {
+        if !d.enabled {
             continue;
-        };
-        let last = ctx.store.last_scheduled_run(&d.id).await?;
-        if daily_due(at, last.map(|r| r.requested_at), now) == Some(true) {
-            info!(destination = %d.name, "Backups: a scheduled run is due");
+        }
+        if let Some(at) = d.schedule.daily_at.as_deref() {
+            let last = ctx.store.last_scheduled_run(&d.id).await?;
+            if daily_due(at, last.map(|r| r.requested_at), now) == Some(true) {
+                info!(destination = %d.name, "Backups: a scheduled run is due");
+                ctx.store
+                    .request_backup_run(&requested(d.id, BackupRunKind::Backup, now))
+                    .await?;
+            }
+        }
+        let runs = ctx.store.list_backup_runs(Some(&d.id), 500).await?;
+        let last_success = runs
+            .iter()
+            .filter(|r| r.kind == BackupRunKind::Backup && r.state == BackupRunState::Succeeded)
+            .filter_map(|r| r.finished_at)
+            .max();
+        // The weekly check, once there is something to check.
+        let last_check = runs
+            .iter()
+            .filter(|r| r.kind == BackupRunKind::Check)
+            .map(|r| r.requested_at)
+            .max();
+        let scheduled = d.schedule.daily_at.is_some() || d.schedule.cron.is_some();
+        let check_due = scheduled
+            && last_success.is_some()
+            && last_check
+                .map(|t| now.duration_since(t).unwrap_or_default() >= fcp_core::backup::CHECK_EVERY)
+                .unwrap_or(true);
+        if check_due {
+            info!(destination = %d.name, "Backups: the weekly check is due");
             ctx.store
-                .request_backup_run(&BackupRun {
-                    id: uuid::Uuid::new_v4(),
-                    destination_id: d.id,
-                    kind: BackupRunKind::Backup,
-                    state: BackupRunState::Requested,
-                    trigger: "schedule".into(),
-                    requested_at: now,
-                    started_at: None,
-                    finished_at: None,
-                    snapshots: Vec::new(),
-                    bytes_added: 0,
-                    message: None,
-                    node: None,
-                })
+                .request_backup_run(&requested(d.id, BackupRunKind::Check, now))
                 .await?;
+        }
+        if fcp_core::backup::overdue(&d, last_success, now) {
+            let noticed = ctx.store.overdue_notice(&d.id).await?;
+            if noticed != Some(last_success) {
+                warn!(destination = %d.name, "Backups: a destination is overdue");
+                ctx.store.note_overdue(&d.id, last_success).await?;
+                events
+                    .publish(fcp_events::PlatformEvent::System(
+                        fcp_events::SystemEvent::BackupOverdue {
+                            destination_id: format!("bkd-{}", d.id),
+                            destination: d.name.clone(),
+                            last_success_at: last_success.map(|t| {
+                                chrono::DateTime::<chrono::Utc>::from(t)
+                                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+                            }),
+                            timestamp: now,
+                        },
+                    ))
+                    .await;
+            }
         }
     }
     Ok(())
