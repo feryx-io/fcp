@@ -1,5 +1,8 @@
 # Backup, restore and upgrade
 
+Scheduled, off-box backups run from the admin are designed in
+`docs/SCHEDULED_BACKUPS.md`.
+
 How a deployment is kept: where every piece of state lives, what a
 backup must hold, what a restore needs, and what an upgrade does. The
 design behind it, with what the survey found, is
