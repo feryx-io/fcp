@@ -789,3 +789,160 @@ async fn the_master_key_is_downloaded_wrapped_in_a_passphrase() {
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
     app.finish().await;
 }
+
+/// `docs/SCHEDULED_BACKUPS.md` B3a: snapshots listed and a download made,
+/// through the backup service (a stand-in here): the key file downloaded
+/// from the page opened with its passphrase and handed on, and the tar
+/// fetched once through the page's link.
+#[tokio::test]
+async fn snapshots_are_listed_and_downloaded_through_the_backup_service() {
+    use axum::routing::{get, post};
+    let seen: Arc<std::sync::Mutex<Vec<Value>>> = Arc::default();
+    let s = Arc::clone(&seen);
+    let router = Router::new()
+        .route(
+            "/v1/destinations/:id/snapshots",
+            get(|| async {
+                axum::Json(json!([{
+                    "run": "6c2a7f0e-1d2b-4c3a-9f00-000000000001",
+                    "time": "2026-11-27T02:00:00Z",
+                    "release": "0.25.672", "kek_id": "local:abc", "host": "backup-1",
+                    "database": "aaaa", "files": "bbbb", "volumes": ["fcp-certs", "voicemail-data"],
+                    "holds_key": false,
+                }]))
+            }),
+        )
+        .route(
+            "/v1/downloads",
+            post(move |axum::Json(body): axum::Json<Value>| {
+                let s = Arc::clone(&s);
+                async move {
+                    s.lock().unwrap().push(body);
+                    (
+                        StatusCode::ACCEPTED,
+                        axum::Json(json!({
+                            "id": "0f6a4e1c-5a8b-4d2e-9f00-0000000000aa",
+                            "token": "tok123", "state": "building",
+                        })),
+                    )
+                }
+            }),
+        )
+        .route(
+            "/v1/downloads/:id",
+            get(|| async { axum::Json(json!({ "state": "ready", "file": "x.tar", "size": 5 })) }),
+        )
+        .route(
+            "/v1/downloads/:id/file",
+            get(
+                |axum::extract::Query(q): axum::extract::Query<
+                    std::collections::HashMap<String, String>,
+                >| async move {
+                    if q.get("token").map(String::as_str) == Some("tok123") {
+                        (
+                            StatusCode::OK,
+                            [("content-type", "application/x-tar")],
+                            "TAR!!".to_string(),
+                        )
+                    } else {
+                        (
+                            StatusCode::NOT_FOUND,
+                            [("content-type", "text/plain")],
+                            String::new(),
+                        )
+                    }
+                },
+            ),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let mut app = app.with_encryption().await;
+    app.state = app
+        .state
+        .clone()
+        .with_backup_service(fcp_api_core::BackupService {
+            url,
+            token: "svc-token".into(),
+        });
+    app.router = create_router(app.state.clone(), &test_api_config());
+    let dest = "bkd-0f6a4e1c-5a8b-4d2e-9f00-000000000002";
+
+    let snaps = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/system/backups/destinations/{dest}/snapshots"),
+            None,
+        )
+        .await;
+    assert_eq!(snaps.status, StatusCode::OK, "{}", snaps.text);
+    let run = snaps.json[0]["run"].as_str().unwrap().to_string();
+    assert_eq!(run, "bkr-6c2a7f0e-1d2b-4c3a-9f00-000000000001");
+
+    // The key file from the page, opened here and handed on.
+    let file = app
+        .admin(
+            Method::POST,
+            "/api/v1/system/backups/key",
+            Some(json!({ "passphrase": "a passphrase for the file" })),
+        )
+        .await;
+    assert_eq!(file.status, StatusCode::OK, "{}", file.text);
+    let path = format!("/api/v1/system/backups/destinations/{dest}/snapshots/{run}/download");
+    let wrong = app
+        .admin(
+            Method::POST,
+            &path,
+            Some(json!({ "key_file": file.text, "passphrase": "not it" })),
+        )
+        .await;
+    assert_eq!(wrong.status, StatusCode::BAD_REQUEST, "{}", wrong.text);
+    let started = app
+        .admin(
+            Method::POST,
+            &path,
+            Some(json!({ "key_file": file.text, "passphrase": "a passphrase for the file" })),
+        )
+        .await;
+    assert_eq!(started.status, StatusCode::ACCEPTED, "{}", started.text);
+    assert_eq!(seen.lock().unwrap()[0]["master_key"], MASTER_KEY);
+    assert_eq!(
+        seen.lock().unwrap()[0]["run"],
+        "6c2a7f0e-1d2b-4c3a-9f00-000000000001"
+    );
+    let id = started.json["id"].as_str().unwrap().to_string();
+
+    let state = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/system/backups/downloads/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(state.status, StatusCode::OK, "{}", state.text);
+    assert_eq!(state.json["state"], "ready");
+    let link = state.json["file_url"].as_str().unwrap().to_string();
+    assert_eq!(
+        link,
+        "/backups/downloads/0f6a4e1c-5a8b-4d2e-9f00-0000000000aa/tok123"
+    );
+    // Fetched with no bearer token: the link is the credential.
+    let tar = app.send(Method::GET, &link, &[], None).await;
+    assert_eq!(tar.status, StatusCode::OK, "{}", tar.text);
+    assert_eq!(tar.text, "TAR!!");
+    let forged = app
+        .send(
+            Method::GET,
+            "/backups/downloads/0f6a4e1c-5a8b-4d2e-9f00-0000000000aa/guess",
+            &[],
+            None,
+        )
+        .await;
+    assert_eq!(forged.status, StatusCode::NOT_FOUND);
+    app.finish().await;
+}

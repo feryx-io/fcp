@@ -122,6 +122,9 @@ async fn main() -> Result<()> {
     if let Some(v) = &cli.conference_join_secret {
         config.conference.join_secret = Some(v.clone());
     }
+    if let (Some(v), Some(b)) = (&cli.backup_token, config.backup.as_mut()) {
+        b.token = Some(v.clone());
+    }
     if let (Some(v), Some(tts)) = (&cli.tts_auth_token, config.tts.as_mut()) {
         tts.auth_token = Some(v.clone());
     }
@@ -742,6 +745,14 @@ async fn main() -> Result<()> {
                 None
             }
         });
+    // The backup service's API (docs/SCHEDULED_BACKUPS.md B3a).
+    let api_state = match &config.backup {
+        Some(b) => api_state.with_backup_service(fcp_api_core::BackupService {
+            url: b.url.trim_end_matches('/').to_string(),
+            token: b.token.clone().unwrap_or_default(),
+        }),
+        None => api_state,
+    };
     // The same server's recognition, for a tenant's recognition preview
     // and its account test (docs/TENANT_RECOGNITION.md R2b).
     let api_state = match config

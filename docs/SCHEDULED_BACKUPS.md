@@ -143,6 +143,35 @@ button runs it at once.
   put back beside what is there. The database is untouched. This is for
   "we deleted the wrong thing".
 
+**Restores are switched on by an override file** (agreed 2026-11-27,
+replacing the `FCP_BACKUP_RESTORE` variable):
+- Normally `fcp-backup` mounts every volume read-only and has no Docker
+  socket.
+- `docker compose -f docker-compose.yml -f docker-compose.restore.yml up -d
+  fcp-backup` turns restores on. The volumes become writable, for file
+  restores and a full restore, and the Docker socket is mounted, for a
+  full restore.
+- The service says which it has, and the page says when restores are off
+  and how to turn them on.
+
+**What a snapshot of the files holds.**
+- The certs volume is backed up as every other volume is, CAs included,
+  but without `master.key` unless the destination includes the key.
+- Paths are named by their compose volume, so a download can be put back
+  in `backup.sh`'s layout.
+
+**A download, in `backup.sh`'s layout** (agreed 2026-11-27): `fcp.dump`, a
+`<volume>.tar.gz` of each volume's root, a `manifest` with the release and
+the KEK id, and `SHA256SUMS`, so `restore.sh` restores it on any new host.
+- `fcp-certs.tar.gz` gets its `master.key` from the snapshot when the
+  snapshot holds it.
+- Otherwise it is the running system's own key, when its KEK is the one
+  the snapshot names.
+- Otherwise the page asks for the key file downloaded in B2, with its
+  passphrase.
+- `fcp-backup` builds the download in its work directory and streams it
+  to the admin, which streams it on.
+
 **Stopping and starting the services.** A full restore needs this, and it
 is the one dangerous power in the design.
 - **In compose:** the service needs the Docker socket. That is root on the
@@ -179,9 +208,13 @@ is the one dangerous power in the design.
   `POST …/{id}/test` (connect, write and remove a probe).
 - `POST …/{id}/run`: back up now.
 - `GET /api/v1/system/backups/runs`: runs, filterable by destination.
-- `GET …/destinations/{id}/snapshots`: what is stored, with its tags.
-- `GET …/snapshots/{snapshot}/download`: the `backup.sh`-layout tar,
-  streamed.
+- `GET …/destinations/{id}/snapshots`: what is stored, one point per run
+  (its database and files snapshots, release, KEK and volumes).
+- `POST …/destinations/{id}/snapshots/{run}/download`: the point made a
+  `backup.sh`-layout tar, with `{key_file, passphrase}` when the key must
+  come from the file. It answers a download id; `GET
+  /api/v1/system/backups/downloads/{id}` follows it, and when ready names
+  a link, `/backups/downloads/{id}/{token}`, that streams the tar once.
 - `POST …/snapshots/{snapshot}/restore`: `{scope: "system" | "files",
   paths?, key_file?}`. It answers a restore id, and `GET
   /api/v1/system/backups/restores/{id}` reports its steps.
@@ -284,7 +317,65 @@ is the one dangerous power in the design.
   - **Proved by:** `the_master_key_is_downloaded_wrapped_in_a_passphrase`
     (the file opened with the passphrase gives the key back) and
     `e2e/backups.spec.ts`.
-- **B3: restoring from the admin.**
+- **B3: restoring from the admin,** in three parts:
+  - **B3a:** snapshots listed, and a download in `backup.sh`'s layout,
+    through `fcp-backup`'s own API.
+
+    **Done (v0.25.672):**
+    - **What a backup holds now:**
+      - The dump is taken `--no-owner --no-privileges`, as `backup.sh`
+        takes it.
+      - Both snapshots are tagged `kek:<id>`, the key ring's active KEK
+        (`BackupStore::active_kek_id`).
+      - `[backup.paths]` is keyed by compose volume name, and the files
+        snapshot tags each volume `vol:<name>:<path>`. The certs volume is
+        among them, with `master.key` excluded unless the destination
+        includes the key.
+    - **`fcp-backup`'s API,** under `[http] token`
+      (`FCP_BACKUP_API_TOKEN`; unset, it answers nothing):
+      - `GET /v1/destinations/{id}/snapshots` groups restic's snapshots
+        into points by run.
+      - `POST /v1/downloads` builds one in the background in `work_dir`.
+        It dumps `/fcp.dump`, restores the files and tars each volume from
+        its root as `<volume>.tar.gz`. It writes the `manifest`
+        (`fcp_backup = 1`, `taken_at`, `stack_version`, `kek_id`,
+        `volumes`) and `SHA256SUMS`, then tars the directory.
+      - `GET /v1/downloads/{id}` follows the build. `…/file?token=` streams
+        the tar once and removes it; an unfetched download goes after an
+        hour.
+      - **Where `master.key` comes from:** the snapshot if it holds the
+        key. Otherwise the key given (from the key file), or else this
+        system's own when its KEK is the snapshot's. Otherwise the build
+        fails with "needs the master key".
+    - **The admin:**
+      - `[backup] url` and `token` (`FCP_ADMIN_BACKUP_TOKEN`), as
+        `ApiState.backup_service`.
+      - The three routes above, platform only. A key file is opened with
+        its passphrase in the admin, so only the key travels on; a wrong
+        passphrase is a 400.
+      - `/backups/downloads/{id}/{token}` proxies the stream. The link is
+        the credential, because a browser saving a file sends no bearer
+        token.
+    - **The page:** Snapshots per destination. Choose a point, give the
+      key file if needed, and Make the download; a link appears that works
+      once.
+    - **Compose:** the token in `.env`, the paths by volume name, and the
+      certs volume added.
+    - **Proved by:**
+      - `fcp-backup/tests/backup.rs` against SFTP: the certs snapshot
+        without its key; the point listed; a download refused without a
+        key, then built with one. Its checksums pass, the manifest reads
+        as `restore.sh` reads it, the dump is a `pg_dump` archive, the
+        recording and the key are in their tars, and a second fetch is a
+        404.
+      - `snapshots_are_listed_and_downloaded_through_the_backup_service`,
+        against a stand-in service.
+      - `e2e/backups.spec.ts`.
+  - **B3b:** the override file, and file restores (a platform
+    administrator's and a tenant's own), never overwriting.
+  - **B3c:** the full restore.
+
+  What each part covers:
   - Download in `backup.sh` layout; partial restores, the tenant's own
     included.
   - Maintenance mode on every service; the full restore, through the

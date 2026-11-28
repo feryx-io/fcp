@@ -137,6 +137,9 @@ pub struct ApiState {
     /// download (`docs/SCHEDULED_BACKUPS.md` B2); unset, read from the
     /// environment as every binary's are.
     pub encryption: Option<fcp_crypto::EncryptionSettings>,
+    /// `fcp-backup`'s API, for snapshots and downloads
+    /// (`docs/SCHEDULED_BACKUPS.md` B3a).
+    pub backup_service: Option<BackupService>,
 
     /// Auth config for WebSocket first-message authentication (optional).
     /// When set, WebSocket endpoints require a valid token in the first message.
@@ -286,6 +289,7 @@ impl ApiState {
             tts_service: None,
             stt_service: None,
             encryption: None,
+            backup_service: None,
             auth_config: None,
             session_keys: None,
             session_ttl: fcp_core::session::DEFAULT_SESSION_TTL,
@@ -407,6 +411,12 @@ impl ApiState {
     /// Set the security policy for login protection.
     pub fn with_security_policy(mut self, policy: SecurityPolicy) -> Self {
         self.security_policy = policy;
+        self
+    }
+
+    /// Set where `fcp-backup`'s API is.
+    pub fn with_backup_service(mut self, service: BackupService) -> Self {
+        self.backup_service = Some(service);
         self
     }
 
@@ -629,4 +639,11 @@ impl ApiState {
             });
         }
     }
+}
+
+/// Where the backup service's API is, and its token.
+#[derive(Clone, Debug)]
+pub struct BackupService {
+    pub url: String,
+    pub token: String,
 }

@@ -5509,6 +5509,61 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/backups/destinations/{id}/snapshots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /system/backups/destinations/{id}/snapshots */
+        get: operations["backups_list_snapshots"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/backups/destinations/{id}/snapshots/{run}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /system/backups/destinations/{id}/snapshots/{run}/download — the
+         *     point made a `backup.sh`-layout tar by the backup service, for
+         *     `restore.sh` on any host. Audited.
+         */
+        post: operations["backups_start_download"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/backups/downloads/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /system/backups/downloads/{id} */
+        get: operations["backups_download_state"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/backups/runs": {
         parameters: {
             query?: never;
@@ -9623,6 +9678,29 @@ export interface components {
             id: string;
             name: string;
         };
+        /**
+         * @description What a download needs when the snapshot holds no master key and this
+         *     system's is another: the key file downloaded from this page, and its
+         *     passphrase.
+         */
+        DownloadRequest: {
+            key_file?: string | null;
+            passphrase?: string | null;
+        };
+        /** @description A download being made. */
+        DownloadView: {
+            id: string;
+            /** @description `building`, `ready` or `failed`. */
+            state: string;
+            /** Format: int64 */
+            size?: number | null;
+            error?: string | null;
+            /**
+             * @description Where the browser fetches it, once, when ready: the link is its own
+             *     credential, good for an hour.
+             */
+            file_url?: string | null;
+        };
         E911AddressResponse: components["schemas"]["CivicElements"] & {
             address1: string;
             address2?: string | null;
@@ -13232,6 +13310,29 @@ export interface components {
             total?: number | null;
         };
         /** @description A page of a list. */
+        Page_SnapshotPoint: {
+            data: {
+                /** @description The run that made it (`bkr-<uuid>`). */
+                run: string;
+                time: string;
+                release?: string | null;
+                kek_id?: string | null;
+                host: string;
+                /** @description restic's ids of the database's snapshot and the files'. */
+                database?: string | null;
+                files?: string | null;
+                /** @description The volumes the files hold. */
+                volumes: string[];
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
         Page_SpeechAccountView: {
             data: {
                 /** @description `speech-<uuid>`. */
@@ -15397,6 +15498,20 @@ export interface components {
              *     `stage_left`; none when its last caller left.
              */
             ended_by?: string | null;
+        };
+        /** @description A run's snapshots, as one point a restore or a download takes. */
+        SnapshotPoint: {
+            /** @description The run that made it (`bkr-<uuid>`). */
+            run: string;
+            time: string;
+            release?: string | null;
+            kek_id?: string | null;
+            host: string;
+            /** @description restic's ids of the database's snapshot and the files'. */
+            database?: string | null;
+            files?: string | null;
+            /** @description The volumes the files hold. */
+            volumes: string[];
         };
         /** @description The SIP account the app registers with. */
         SoftphoneAccount: {
@@ -30502,6 +30617,108 @@ export interface operations {
                 };
                 content: {
                     "application/octet-stream": number[];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backups_list_snapshots: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The destination */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_SnapshotPoint"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backups_start_download: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The destination */
+                id: string;
+                /** @description The point's run */
+                run: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DownloadRequest"];
+            };
+        };
+        responses: {
+            /** @description Being made; follow it */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DownloadView"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backups_download_state: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The download */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DownloadView"];
                 };
             };
             /** @description An error */

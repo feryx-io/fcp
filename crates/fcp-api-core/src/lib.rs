@@ -190,7 +190,7 @@ pub mod validation;
 
 // Re-export commonly used types
 pub use error::ApiError;
-pub use state::{ApiState, SecurityPolicy};
+pub use state::{ApiState, BackupService, SecurityPolicy};
 
 use axum::{
     http::{header, Method},
@@ -409,6 +409,12 @@ pub fn create_router_with(
             .route(
                 "/provision/:key/firmware/:image/:file",
                 axum::routing::get(v1::provisioning::serve_firmware),
+            )
+            // A backup's download, fetched once by the browser; the link is
+            // the credential (`docs/SCHEDULED_BACKUPS.md` B3a).
+            .route(
+                "/backups/downloads/:id/:token",
+                axum::routing::get(v1::backups::serve_download),
             )
             // A brand's assets, public by hash (`docs/BRANDING.md` §6).
             .route(

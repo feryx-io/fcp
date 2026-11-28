@@ -144,6 +144,7 @@ impl Repo {
     pub async fn backup_paths(
         &self,
         paths: &[PathBuf],
+        excludes: &[PathBuf],
         tags: &[String],
         host: &str,
     ) -> Result<Summary> {
@@ -153,6 +154,10 @@ impl Repo {
             "--host".into(),
             host.into(),
         ];
+        for e in excludes {
+            args.push("--exclude".into());
+            args.push(e.display().to_string());
+        }
         for t in tags {
             args.push("--tag".into());
             args.push(t.clone());
@@ -183,6 +188,96 @@ impl Repo {
             args.extend(["--keep-monthly", &m]);
         }
         self.run(&args).await.map(|_| ())
+    }
+}
+
+/// One snapshot as `restic snapshots --json` lists it.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Snapshot {
+    pub id: String,
+    pub time: String,
+    #[serde(default)]
+    pub hostname: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+impl Snapshot {
+    /// The value of a `<prefix>:<value>` tag.
+    pub fn tag(&self, prefix: &str) -> Option<&str> {
+        self.tags
+            .iter()
+            .find_map(|t| t.strip_prefix(prefix).and_then(|r| r.strip_prefix(':')))
+    }
+
+    /// The volumes a files snapshot holds, `vol:<name>:<path>`.
+    pub fn volumes(&self) -> Vec<(String, String)> {
+        self.tags
+            .iter()
+            .filter_map(|t| t.strip_prefix("vol:"))
+            .filter_map(|r| r.split_once(':'))
+            .map(|(n, p)| (n.to_string(), p.to_string()))
+            .collect()
+    }
+}
+
+impl Repo {
+    /// FCP's snapshots, oldest first.
+    pub async fn snapshots(&self) -> Result<Vec<Snapshot>> {
+        let json = self
+            .run(&["snapshots", "--json", "--no-lock", "--tag", "fcp"])
+            .await?;
+        serde_json::from_str(json.trim()).context("restic snapshots --json")
+    }
+
+    /// `snapshot`'s file `path`, written to `out`.
+    pub async fn dump_to(&self, snapshot: &str, path: &str, out: &std::path::Path) -> Result<()> {
+        let file = std::fs::File::create(out).with_context(|| format!("{}", out.display()))?;
+        // Spawned, not `output()`, which would take the stdout given here.
+        let child = self
+            .command(&["dump", snapshot, path])
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(file))
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("restic dump")?;
+        let done = child.wait_with_output().await.context("restic dump")?;
+        if !done.status.success() {
+            bail!(
+                "restic dump failed: {}",
+                tail(&String::from_utf8_lossy(&done.stderr))
+            );
+        }
+        Ok(())
+    }
+
+    /// Restore `snapshot`'s `includes` under `target`, never overwriting a
+    /// file already there.
+    pub async fn restore(
+        &self,
+        snapshot: &str,
+        target: &std::path::Path,
+        includes: &[String],
+        overwrite: bool,
+    ) -> Result<()> {
+        let mut args: Vec<String> = vec![
+            "restore".into(),
+            snapshot.into(),
+            "--target".into(),
+            target.display().to_string(),
+            "--overwrite".into(),
+            if overwrite {
+                "always".into()
+            } else {
+                "never".into()
+            },
+        ];
+        for i in includes {
+            args.push("--include".into());
+            args.push(i.clone());
+        }
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        self.run(&refs).await.map(|_| ())
     }
 }
 

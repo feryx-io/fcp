@@ -17923,6 +17923,151 @@
         }
       }
     },
+    "/api/v1/system/backups/destinations/{id}/snapshots": {
+      "get": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "GET /system/backups/destinations/{id}/snapshots",
+        "operationId": "backups_list_snapshots",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The destination",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_SnapshotPoint"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/backups/destinations/{id}/snapshots/{run}/download": {
+      "post": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "POST /system/backups/destinations/{id}/snapshots/{run}/download — the\npoint made a `backup.sh`-layout tar by the backup service, for\n`restore.sh` on any host. Audited.",
+        "operationId": "backups_start_download",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The destination",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "run",
+            "in": "path",
+            "description": "The point's run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DownloadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Being made; follow it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/backups/downloads/{id}": {
+      "get": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "GET /system/backups/downloads/{id}",
+        "operationId": "backups_download_state",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The download",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/system/backups/runs": {
       "get": {
         "tags": [
@@ -31038,6 +31183,63 @@
           }
         }
       },
+      "DownloadRequest": {
+        "type": "object",
+        "description": "What a download needs when the snapshot holds no master key and this\nsystem's is another: the key file downloaded from this page, and its\npassphrase.",
+        "properties": {
+          "key_file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "passphrase": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "DownloadView": {
+        "type": "object",
+        "description": "A download being made.",
+        "required": [
+          "id",
+          "state"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "description": "`building`, `ready` or `failed`."
+          },
+          "size": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "file_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the browser fetches it, once, when ready: the link is its own\ncredential, good for an hour."
+          }
+        }
+      },
       "E911AddressResponse": {
         "allOf": [
           {
@@ -41963,6 +42165,88 @@
           }
         }
       },
+      "Page_SnapshotPoint": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A run's snapshots, as one point a restore or a download takes.",
+              "required": [
+                "run",
+                "time",
+                "host",
+                "volumes"
+              ],
+              "properties": {
+                "run": {
+                  "type": "string",
+                  "description": "The run that made it (`bkr-<uuid>`)."
+                },
+                "time": {
+                  "type": "string"
+                },
+                "release": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "kek_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "host": {
+                  "type": "string"
+                },
+                "database": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "restic's ids of the database's snapshot and the files'."
+                },
+                "files": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "volumes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The volumes the files hold."
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
       "Page_SpeechAccountView": {
         "type": "object",
         "description": "A page of a list.",
@@ -48087,6 +48371,60 @@
               "null"
             ],
             "description": "Who ended a webinar: a host's participant id, `host`, `api` or\n`stage_left`; none when its last caller left."
+          }
+        }
+      },
+      "SnapshotPoint": {
+        "type": "object",
+        "description": "A run's snapshots, as one point a restore or a download takes.",
+        "required": [
+          "run",
+          "time",
+          "host",
+          "volumes"
+        ],
+        "properties": {
+          "run": {
+            "type": "string",
+            "description": "The run that made it (`bkr-<uuid>`)."
+          },
+          "time": {
+            "type": "string"
+          },
+          "release": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kek_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "host": {
+            "type": "string"
+          },
+          "database": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "restic's ids of the database's snapshot and the files'."
+          },
+          "files": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "volumes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The volumes the files hold."
           }
         }
       },

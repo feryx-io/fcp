@@ -225,6 +225,17 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     ),
     (GET, "/system/backups/key", Needs(SystemConfig)),
     (POST, "/system/backups/key", Needs(SystemConfig)),
+    (
+        GET,
+        "/system/backups/destinations/:id/snapshots",
+        Needs(SystemConfig),
+    ),
+    (
+        POST,
+        "/system/backups/destinations/:id/snapshots/:run/download",
+        Needs(SystemConfig),
+    ),
+    (GET, "/system/backups/downloads/:id", Needs(SystemConfig)),
     (GET, "/system/backups/runs", Needs(SystemConfig)),
     (GET, "/system/backups/runs/:id", Needs(SystemConfig)),
     (GET, "/system/speech/caps", Needs(SystemConfig)),

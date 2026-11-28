@@ -44,15 +44,20 @@ fn default_node_id() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HttpSection {
-    /// `/health` and `/ready`.
+    /// `/health` and `/ready`, and the admin's API (`/v1/...`).
     #[serde(default = "default_bind")]
     pub bind_address: String,
+    /// The bearer token the admin's calls carry; unset, the API answers
+    /// none. `FCP_BACKUP_API_TOKEN` wins.
+    #[serde(default)]
+    pub token: Option<String>,
 }
 
 impl Default for HttpSection {
     fn default() -> Self {
         Self {
             bind_address: default_bind(),
+            token: None,
         }
     }
 }

@@ -8,6 +8,7 @@ node_id = "backup-1"
 
 [http]
 bind_address = "0.0.0.0:8096"
+# The admin's bearer token for snapshots and downloads: FCP_BACKUP_API_TOKEN.
 
 [storage]
 database_url = "postgresql://fcp:change-me@postgres:5432/fcp"
@@ -17,14 +18,17 @@ restic = "/usr/local/bin/restic"
 pg_dump = "/usr/lib/postgresql/16/bin/pg_dump"
 work_dir = "/var/lib/fcp-backup"
 poll_secs = 30
-# Put in a snapshot only for a destination that asks for the key.
+# Left out of the certs volume's snapshot unless a destination asks for the
+# key.
 key_ring = "/var/lib/fcp/certs/master.key"
 
-# Each stateful volume, mounted read-only (docs/BACKUP_AND_RESTORE.md §1).
+# Each stateful volume, mounted read-only (docs/BACKUP_AND_RESTORE.md §1),
+# by its compose name: a download names its tars so, as backup.sh does.
 [backup.paths]
-call-manager = "/data/call-manager"
-admin = "/data/admin"
-voicemail = "/data/voicemail"
+fcp-certs = "/var/lib/fcp/certs"
+call-manager-data = "/data/call-manager"
+admin-data = "/data/admin"
+voicemail-data = "/data/voicemail"
 conference-recordings = "/data/conference-recordings"
 conference-cdr-spool = "/data/conference-cdr-spool"
 media-recordings = "/data/media-recordings"

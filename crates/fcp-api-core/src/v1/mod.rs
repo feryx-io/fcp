@@ -472,6 +472,18 @@ pub fn router() -> Router<ApiState> {
             "/system/backups/key",
             get(backups::key_status).post(backups::export_key),
         )
+        .route(
+            "/system/backups/destinations/:id/snapshots",
+            get(backups::list_snapshots),
+        )
+        .route(
+            "/system/backups/destinations/:id/snapshots/:run/download",
+            post(backups::start_download),
+        )
+        .route(
+            "/system/backups/downloads/:id",
+            get(backups::download_state),
+        )
         .route("/system/backups/runs", get(backups::list_runs))
         .route("/system/backups/runs/:id", get(backups::get_run))
         .route("/system/speech/caps", get(speech::list_platform_caps))

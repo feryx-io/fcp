@@ -7,6 +7,7 @@
 //! each went: on its row, and as `system.backup_completed` or
 //! `system.backup_failed`.
 
+mod api;
 mod config;
 mod restic;
 mod runner;
@@ -47,6 +48,13 @@ struct Cli {
         hide_env_values = true
     )]
     events_auth_token: Option<String>,
+    /// `[http] token`, the admin's bearer token, from the environment.
+    #[arg(
+        long = "api-token",
+        env = "FCP_BACKUP_API_TOKEN",
+        hide_env_values = true
+    )]
+    api_token: Option<String>,
 }
 
 #[tokio::main]
@@ -59,6 +67,9 @@ async fn main() -> Result<()> {
     }
     if let Some(v) = cli.events_auth_token {
         config.events.auth_token = Some(v);
+    }
+    if let Some(v) = cli.api_token {
+        config.http.token = Some(v);
     }
     fcp_core::config::check_stage(config::validate(&config), cli.check_config)?;
     if cli.check_config {
@@ -82,20 +93,6 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("[backup] work_dir {}", config.backup.work_dir.display()))?;
 
-    // /health and /ready.
-    let bind = config.http.bind_address.clone();
-    tokio::spawn(async move {
-        let app = axum::Router::new()
-            .route("/health", axum::routing::get(|| async { "ok" }))
-            .route("/ready", axum::routing::get(|| async { "ok" }));
-        match tokio::net::TcpListener::bind(&bind).await {
-            Ok(l) => {
-                let _ = axum::serve(l, app).await;
-            }
-            Err(e) => error!(bind = %bind, error = %e, "fcp-backup could not bind its health port"),
-        }
-    });
-
     let beacon = config.cluster.redis_url.clone().map(|url| {
         fcp_cluster::ServiceBeacon::new(
             fcp_cluster::ServiceIdentity::new(&config.service.node_id, "backup")
@@ -107,10 +104,36 @@ async fn main() -> Result<()> {
         })
     });
 
-    let ctx = runner::Ctx {
+    let ctx = Arc::new(runner::Ctx {
         config: config.clone(),
         store: storage.clone() as Arc<dyn BackupStore>,
-    };
+    });
+
+    // /health and /ready, and the admin's API when there is a token.
+    let bind = config.http.bind_address.clone();
+    let mut app = axum::Router::new()
+        .route("/health", axum::routing::get(|| async { "ok" }))
+        .route("/ready", axum::routing::get(|| async { "ok" }));
+    match config.http.token.clone().filter(|t| !t.is_empty()) {
+        Some(token) => {
+            app = app.merge(api::router(api::ApiState {
+                ctx: Arc::clone(&ctx),
+                token,
+                downloads: Default::default(),
+            }));
+        }
+        None => {
+            info!("fcp-backup: no [http] token, so the admin cannot list or download snapshots")
+        }
+    }
+    tokio::spawn(async move {
+        match tokio::net::TcpListener::bind(&bind).await {
+            Ok(l) => {
+                let _ = axum::serve(l, app).await;
+            }
+            Err(e) => error!(bind = %bind, error = %e, "fcp-backup could not bind its HTTP port"),
+        }
+    });
     let events = Events::new(&config);
     let mut tick = tokio::time::interval(Duration::from_secs(config.backup.poll_secs));
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
