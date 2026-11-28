@@ -484,6 +484,14 @@ pub fn router() -> Router<ApiState> {
             "/system/backups/downloads/:id",
             get(backups::download_state),
         )
+        .route(
+            "/system/backups/destinations/:id/snapshots/:run/restore-files",
+            post(backups::restore_volume_files),
+        )
+        .route("/system/backups/capabilities", get(backups::capabilities))
+        .route("/backups", get(backups::tenant_status))
+        .route("/backups/missing", get(backups::tenant_missing))
+        .route("/backups/restore-files", post(backups::tenant_restore))
         .route("/system/backups/runs", get(backups::list_runs))
         .route("/system/backups/runs/:id", get(backups::get_run))
         .route("/system/speech/caps", get(speech::list_platform_caps))

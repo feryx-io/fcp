@@ -1169,3 +1169,482 @@ pub async fn serve_download(
     let body = axum::body::Body::from_stream(r.bytes_stream());
     Ok((StatusCode::OK, headers, body).into_response())
 }
+
+// ── File restores (B3b) ────────────────────────────────────────────────────
+
+/// What restores the backup service may do: switched on by
+/// `docker-compose.restore.yml`.
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct RestoreCapabilities {
+    /// The backup service is set up here at all.
+    pub service: bool,
+    /// Its volumes are writable: files can be put back.
+    pub file_restores: bool,
+    /// It has the Docker socket: the whole system can be restored.
+    pub full_restore: bool,
+    /// The volumes still read-only.
+    pub read_only: Vec<String>,
+}
+
+async fn capabilities_of(state: &ApiState) -> RestoreCapabilities {
+    let Some(svc) = state.backup_service.as_ref() else {
+        return RestoreCapabilities {
+            service: false,
+            file_restores: false,
+            full_restore: false,
+            read_only: Vec::new(),
+        };
+    };
+    let got = async {
+        let r = client()
+            .get(format!("{}/v1/capabilities", svc.url))
+            .bearer_auth(&svc.token)
+            .send()
+            .await
+            .ok()?;
+        r.status().is_success().then_some(())?;
+        r.json::<serde_json::Value>().await.ok()
+    }
+    .await;
+    match got {
+        Some(v) => RestoreCapabilities {
+            service: true,
+            file_restores: v["file_restores"].as_bool().unwrap_or(false),
+            full_restore: v["full_restore"].as_bool().unwrap_or(false),
+            read_only: serde_json::from_value(v["read_only"].clone()).unwrap_or_default(),
+        },
+        None => RestoreCapabilities {
+            service: false,
+            file_restores: false,
+            full_restore: false,
+            read_only: Vec::new(),
+        },
+    }
+}
+
+/// GET /system/backups/capabilities
+#[utoipa::path(
+    get,
+    path = "/api/v1/system/backups/capabilities",
+    tag = "backups",
+    operation_id = "backups_capabilities",
+    responses(
+        (status = 200, description = "OK", body = RestoreCapabilities),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn capabilities(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+) -> Result<Json<RestoreCapabilities>, ApiError> {
+    require_platform(&identity)?;
+    Ok(Json(capabilities_of(&state).await))
+}
+
+/// A volume's files to put back.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VolumeRestoreRequest {
+    /// The compose volume (`voicemail-data`).
+    pub volume: String,
+    /// Paths inside it; none is every file it is missing.
+    #[serde(default)]
+    pub paths: Vec<String>,
+}
+
+/// What a restore put back.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct VolumeRestoreOutcome {
+    pub restored: Vec<RestoredFile>,
+}
+
+/// A file put back, or not.
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct RestoredFile {
+    pub path: String,
+    /// Whether it is there now.
+    pub present: bool,
+}
+
+async fn service_post(
+    state: &ApiState,
+    path: &str,
+    body: serde_json::Value,
+) -> Result<serde_json::Value, ApiError> {
+    let svc = service(state)?;
+    let r = client()
+        .post(format!("{}{path}", svc.url))
+        .bearer_auth(&svc.token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| ApiError::ServiceUnavailable(format!("The backup service: {e}")))?;
+    answer(r).await
+}
+
+/// The files snapshot of a destination's run.
+async fn files_snapshot(
+    state: &ApiState,
+    dest: &uuid::Uuid,
+    run: &uuid::Uuid,
+) -> Result<String, ApiError> {
+    let svc = service(state)?;
+    let r = client()
+        .get(format!(
+            "{}/v1/destinations/{DESTINATION_PREFIX}{dest}/snapshots",
+            svc.url
+        ))
+        .bearer_auth(&svc.token)
+        .send()
+        .await
+        .map_err(|e| ApiError::ServiceUnavailable(format!("The backup service: {e}")))?;
+    let points = answer(r).await?;
+    points
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|p| {
+            p["run"].as_str().map(|r| r.trim_start_matches(RUN_PREFIX)) == Some(&run.to_string())
+        })
+        .and_then(|p| p["files"].as_str().map(str::to_string))
+        .ok_or_else(|| ApiError::NotFound("That point holds no files".into()))
+}
+
+/// POST /system/backups/destinations/{id}/snapshots/{run}/restore-files —
+/// a volume's files put back beside what is there: nothing present is
+/// overwritten. Needs restores switched on. Audited.
+#[utoipa::path(
+    post,
+    path = "/api/v1/system/backups/destinations/{id}/snapshots/{run}/restore-files",
+    tag = "backups",
+    operation_id = "backups_restore_volume_files",
+    params(
+        ("id" = String, Path, description = "The destination"),
+        ("run" = String, Path, description = "The point's run"),
+    ),
+    request_body = VolumeRestoreRequest,
+    responses(
+        (status = 200, description = "What was put back", body = VolumeRestoreOutcome),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn restore_volume_files(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    Path((id, run)): Path<(String, String)>,
+    Json(req): Json<VolumeRestoreRequest>,
+) -> Result<Json<VolumeRestoreOutcome>, ApiError> {
+    require_platform(&identity)?;
+    let id = parse_id(DESTINATION_PREFIX, &id)?;
+    let run = parse_id(RUN_PREFIX, &run)?;
+    let snapshot = files_snapshot(&state, &id, &run).await?;
+    let body = service_post(
+        &state,
+        "/v1/restores/files",
+        serde_json::json!({
+            "destination_id": format!("{DESTINATION_PREFIX}{id}"),
+            "snapshot": snapshot,
+            "volume": req.volume,
+            "paths": req.paths,
+        }),
+    )
+    .await?;
+    tracing::warn!(actor = %identity.actor(), volume = %req.volume, run = %run, "Files put back from a backup");
+    Ok(Json(VolumeRestoreOutcome {
+        restored: serde_json::from_value(body).map_err(|e| ApiError::Internal(e.to_string()))?,
+    }))
+}
+
+// ── A tenant's own (Q9) ────────────────────────────────────────────────────
+
+/// What a tenant sees of the platform's backups.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct TenantBackups {
+    /// When the platform backs up each day, `HH:MM` UTC.
+    pub times_of_day: Vec<String>,
+    /// When the last good backup finished, RFC 3339.
+    pub last_good_backup_at: Option<String>,
+    /// Whether lost files can be put back here now.
+    pub restores_available: bool,
+}
+
+/// GET /backups
+#[utoipa::path(
+    get,
+    path = "/api/v1/backups",
+    tag = "backups",
+    operation_id = "backups_tenant_status",
+    responses(
+        (status = 200, description = "OK", body = TenantBackups),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn tenant_status(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    _tenant: crate::auth::TenantContext,
+) -> Result<Json<TenantBackups>, ApiError> {
+    crate::auth::check_permission(
+        &identity,
+        fcp_core::permissions::Permission::BackupRead,
+        state.deployment_mode,
+    )?;
+    let store = store(&state)?;
+    let dests = store.list_backup_destinations().await.map_err(internal)?;
+    let mut times_of_day: Vec<String> = dests
+        .iter()
+        .filter(|d| d.enabled)
+        .filter_map(|d| d.schedule.daily_at.clone())
+        .collect();
+    times_of_day.sort();
+    times_of_day.dedup();
+    let runs = store.list_backup_runs(None, 200).await.map_err(internal)?;
+    let last = runs
+        .iter()
+        .filter(|r| r.kind == BackupRunKind::Backup && r.state == BackupRunState::Succeeded)
+        .filter_map(|r| r.finished_at)
+        .max();
+    Ok(Json(TenantBackups {
+        times_of_day,
+        last_good_backup_at: last.map(crate::time::format_system_time),
+        restores_available: capabilities_of(&state).await.file_restores,
+    }))
+}
+
+/// A backup a lost file can come back from.
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct HeldIn {
+    /// Opaque: named back to restore from it.
+    pub point: String,
+    /// When it was taken, RFC 3339.
+    pub time: String,
+}
+
+/// One of the tenant's files whose row is there and whose file is not.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct MissingFile {
+    pub class: String,
+    pub item: String,
+    pub created_at: Option<String>,
+    /// The backups holding it, newest first; none, and it cannot come back.
+    pub held_in: Vec<HeldIn>,
+}
+
+/// A point, as a tenant names it: the destination and restic's snapshot.
+fn point_id(dest: &uuid::Uuid, snapshot: &str) -> String {
+    format!("{dest}.{snapshot}")
+}
+
+fn parse_point(point: &str) -> Result<(uuid::Uuid, String), ApiError> {
+    let bad = || ApiError::BadRequest("No such backup".into());
+    let (d, s) = point.split_once('.').ok_or_else(bad)?;
+    if s.is_empty() || !s.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(bad());
+    }
+    Ok((d.parse().map_err(|_| bad())?, s.to_string()))
+}
+
+/// The tenant's files that are gone, with the backups holding each.
+async fn missing_of(
+    state: &ApiState,
+    tenant: &str,
+) -> Result<(Vec<fcp_core::backup::TenantFile>, Vec<MissingFile>), ApiError> {
+    let store = store(state)?;
+    let files = store.tenant_files(tenant, 20_000).await.map_err(internal)?;
+    if files.is_empty() {
+        return Ok((files, Vec::new()));
+    }
+    let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    let checked = service_post(
+        state,
+        "/v1/files/check",
+        serde_json::json!({ "paths": paths }),
+    )
+    .await?;
+    let gone: std::collections::HashSet<String> = checked
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| c["held_here"] == true && c["present"] == false)
+        .filter_map(|c| c["path"].as_str().map(str::to_string))
+        .collect();
+    let lost: Vec<&fcp_core::backup::TenantFile> =
+        files.iter().filter(|f| gone.contains(&f.path)).collect();
+    let mut held: std::collections::HashMap<String, Vec<HeldIn>> = std::collections::HashMap::new();
+    if !lost.is_empty() {
+        let wanted: Vec<&str> = lost.iter().map(|f| f.path.as_str()).collect();
+        for d in store.list_backup_destinations().await.map_err(internal)? {
+            let Ok(found) = service_post(
+                state,
+                "/v1/files/find",
+                serde_json::json!({
+                    "destination_id": format!("{DESTINATION_PREFIX}{}", d.id),
+                    "paths": wanted,
+                }),
+            )
+            .await
+            else {
+                continue;
+            };
+            for (path, list) in found.as_object().into_iter().flatten() {
+                for h in list.as_array().into_iter().flatten() {
+                    if let (Some(s), Some(t)) = (h["snapshot"].as_str(), h["time"].as_str()) {
+                        held.entry(path.clone()).or_default().push(HeldIn {
+                            point: point_id(&d.id, s),
+                            time: t.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    let missing = lost
+        .iter()
+        .map(|f| {
+            let mut held_in = held.remove(&f.path).unwrap_or_default();
+            held_in.sort_by(|a, b| b.time.cmp(&a.time));
+            MissingFile {
+                class: f.class.clone(),
+                item: f.item.clone(),
+                created_at: f.created_at.clone(),
+                held_in,
+            }
+        })
+        .collect();
+    Ok((files, missing))
+}
+
+/// GET /backups/missing
+#[utoipa::path(
+    get,
+    path = "/api/v1/backups/missing",
+    tag = "backups",
+    operation_id = "backups_tenant_missing",
+    responses(
+        (status = 200, description = "OK", body = crate::page::Page<MissingFile>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn tenant_missing(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: crate::auth::TenantContext,
+) -> Result<Json<crate::page::Page<MissingFile>>, ApiError> {
+    crate::auth::check_permission(
+        &identity,
+        fcp_core::permissions::Permission::BackupRead,
+        state.deployment_mode,
+    )?;
+    let (_, missing) = missing_of(&state, &tenant.0.to_string()).await?;
+    let total = missing.len() as u64;
+    Ok(Json(crate::page::Page::new(missing, None, Some(total))))
+}
+
+/// One file named by its row.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FileItem {
+    pub class: String,
+    pub item: String,
+}
+
+/// Lost files to put back from one backup.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TenantRestoreRequest {
+    /// A `held_in` point from the missing list.
+    pub point: String,
+    pub items: Vec<FileItem>,
+}
+
+/// What a tenant's restore put back.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct TenantRestoreOutcome {
+    pub restored: Vec<TenantRestored>,
+}
+
+/// A file of the tenant's put back, or not.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct TenantRestored {
+    pub class: String,
+    pub item: String,
+    pub present: bool,
+}
+
+/// POST /backups/restore-files — the tenant's own lost files put back:
+/// each is found by the tenant's own row, so no other tenant's file can be
+/// named. Never overwrites. Audited.
+#[utoipa::path(
+    post,
+    path = "/api/v1/backups/restore-files",
+    tag = "backups",
+    operation_id = "backups_tenant_restore",
+    request_body = TenantRestoreRequest,
+    responses(
+        (status = 200, description = "What was put back", body = TenantRestoreOutcome),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn tenant_restore(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    tenant: crate::auth::TenantContext,
+    Json(req): Json<TenantRestoreRequest>,
+) -> Result<Json<TenantRestoreOutcome>, ApiError> {
+    crate::auth::check_permission(
+        &identity,
+        fcp_core::permissions::Permission::BackupRestoreOwn,
+        state.deployment_mode,
+    )?;
+    if req.items.is_empty() || req.items.len() > 1000 {
+        return Err(ApiError::BadRequest("Name between 1 and 1000 files".into()));
+    }
+    let (dest, snapshot) = parse_point(&req.point)?;
+    let files = store(&state)?
+        .tenant_files(&tenant.0.to_string(), 20_000)
+        .await
+        .map_err(internal)?;
+    let mut chosen: Vec<&fcp_core::backup::TenantFile> = Vec::new();
+    for want in &req.items {
+        match files
+            .iter()
+            .find(|f| f.class == want.class && f.item == want.item)
+        {
+            Some(f) => chosen.push(f),
+            None => {
+                return Err(ApiError::NotFound(format!(
+                    "No {} {}",
+                    want.class, want.item
+                )))
+            }
+        }
+    }
+    let paths: Vec<&str> = chosen.iter().map(|f| f.path.as_str()).collect();
+    let body = service_post(
+        &state,
+        "/v1/restores/files",
+        serde_json::json!({
+            "destination_id": format!("{DESTINATION_PREFIX}{dest}"),
+            "snapshot": snapshot,
+            "service_paths": paths,
+        }),
+    )
+    .await?;
+    let present: std::collections::HashMap<String, bool> = body
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| Some((r["path"].as_str()?.to_string(), r["present"].as_bool()?)))
+        .collect();
+    tracing::warn!(actor = %identity.actor(), tenant = %tenant.0, count = chosen.len(), "A tenant's files put back from a backup");
+    Ok(Json(TenantRestoreOutcome {
+        restored: chosen
+            .iter()
+            .map(|f| TenantRestored {
+                class: f.class.clone(),
+                item: f.item.clone(),
+                present: present.get(&f.path).copied().unwrap_or(false),
+            })
+            .collect(),
+    }))
+}

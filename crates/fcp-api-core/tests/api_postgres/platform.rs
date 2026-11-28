@@ -946,3 +946,207 @@ async fn snapshots_are_listed_and_downloaded_through_the_backup_service() {
     assert_eq!(forged.status, StatusCode::NOT_FOUND);
     app.finish().await;
 }
+
+/// `docs/SCHEDULED_BACKUPS.md` B3b: a platform administrator puts a
+/// volume's files back, and a tenant administrator sees their own lost
+/// files and puts them back. Each is found by the tenant's own row, so
+/// another tenant's file cannot be named.
+#[tokio::test]
+async fn lost_files_are_put_back_and_a_tenant_reaches_only_its_own() {
+    use axum::routing::{get, post};
+    let restores: Arc<std::sync::Mutex<Vec<Value>>> = Arc::default();
+    let r2 = Arc::clone(&restores);
+    let router = Router::new()
+        .route(
+            "/v1/capabilities",
+            get(|| async { axum::Json(json!({ "file_restores": true, "full_restore": false, "read_only": [] })) }),
+        )
+        .route(
+            "/v1/destinations/:id/snapshots",
+            get(|| async {
+                axum::Json(json!([{
+                    "run": "6c2a7f0e-1d2b-4c3a-9f00-000000000001", "time": "2026-11-27T02:00:00Z",
+                    "release": null, "kek_id": null, "host": "b", "database": "aaaa", "files": "ffff",
+                    "volumes": ["voicemail-data"], "holds_key": false,
+                }]))
+            }),
+        )
+        .route(
+            "/v1/files/check",
+            post(|axum::Json(b): axum::Json<Value>| async move {
+                let out: Vec<Value> = b["paths"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|p| json!({ "path": p, "held_here": true, "present": false }))
+                    .collect();
+                axum::Json(Value::Array(out))
+            }),
+        )
+        .route(
+            "/v1/files/find",
+            post(|axum::Json(b): axum::Json<Value>| async move {
+                let mut out = serde_json::Map::new();
+                for p in b["paths"].as_array().unwrap() {
+                    out.insert(
+                        p.as_str().unwrap().to_string(),
+                        json!([{ "snapshot": "ab12cd", "time": "2026-11-27T02:00:00Z" }]),
+                    );
+                }
+                axum::Json(Value::Object(out))
+            }),
+        )
+        .route(
+            "/v1/restores/files",
+            post(move |axum::Json(b): axum::Json<Value>| {
+                let r = Arc::clone(&r2);
+                async move {
+                    r.lock().unwrap().push(b.clone());
+                    let named: Vec<Value> = b["service_paths"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|p| json!({ "path": p, "present": true }))
+                        .chain(b["volume"].as_str().map(|v| json!({ "path": format!("{v}:"), "present": true })))
+                        .collect();
+                    axum::Json(Value::Array(named))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    let Some(mut app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    app.state = app
+        .state
+        .clone()
+        .with_backup_service(fcp_api_core::BackupService {
+            url,
+            token: "t".into(),
+        });
+    app.router = create_router(app.state.clone(), &test_api_config());
+    let made = app
+        .admin(
+            Method::POST,
+            "/api/v1/system/backups/destinations",
+            Some(json!({
+                "name": "Off site",
+                "target": { "type": "sftp", "host": "backup.example.com", "user": "fcp", "path": "/srv/fcp",
+                            "private_key": "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n" },
+                "schedule": { "time_of_day": "02:30" },
+                "keep": { "daily": 7, "weekly": 4, "monthly": 6 },
+            })),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let dest = made.json["id"].as_str().unwrap().to_string();
+
+    // Restores are on; a platform administrator puts a volume back.
+    let caps = app
+        .admin(Method::GET, "/api/v1/system/backups/capabilities", None)
+        .await;
+    assert_eq!(caps.status, StatusCode::OK, "{}", caps.text);
+    assert_eq!(caps.json["file_restores"], true);
+    let put = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/system/backups/destinations/{dest}/snapshots/bkr-6c2a7f0e-1d2b-4c3a-9f00-000000000001/restore-files"),
+            Some(json!({ "volume": "voicemail-data" })),
+        )
+        .await;
+    assert_eq!(put.status, StatusCode::OK, "{}", put.text);
+    assert_eq!(restores.lock().unwrap()[0]["snapshot"], "ffff");
+    assert_eq!(restores.lock().unwrap()[0]["volume"], "voicemail-data");
+
+    // Two tenants' recordings, both lost.
+    for (id, tenant, path) in [
+        (
+            "rec-a",
+            app.tenant_a.to_string(),
+            "/app/data/recordings/a.wav",
+        ),
+        (
+            "rec-b",
+            app.tenant_b.to_string(),
+            "/app/data/recordings/b.wav",
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO call_recordings (id, tenant_id, call_id, source, path, format, started_at)
+             VALUES ($1, $2, 'call-1', 'api', $3, 'wav', now())",
+        )
+        .bind(id)
+        .bind(tenant)
+        .bind(path)
+        .execute(app.storage.pool())
+        .await
+        .unwrap();
+    }
+    app.create_user_with_role("ta", "tenant_admin").await;
+    let ta = session(&app, "ta").await;
+    // Not the platform's routes.
+    let refused = app
+        .send_as(
+            &ta,
+            Method::GET,
+            "/api/v1/system/backups/capabilities",
+            None,
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    let status = app.send_as(&ta, Method::GET, "/api/v1/backups", None).await;
+    assert_eq!(status.status, StatusCode::OK, "{}", status.text);
+    assert_eq!(status.json["times_of_day"], json!(["02:30"]));
+    assert_eq!(status.json["restores_available"], true);
+    let missing = app
+        .send_as(&ta, Method::GET, "/api/v1/backups/missing", None)
+        .await;
+    assert_eq!(missing.status, StatusCode::OK, "{}", missing.text);
+    let list = missing.json.as_array().unwrap();
+    assert_eq!(list.len(), 1, "only its own: {}", missing.text);
+    assert_eq!(list[0]["item"], "rec-a");
+    let point = list[0]["held_in"][0]["point"].as_str().unwrap().to_string();
+    // Another tenant's recording cannot be named.
+    let theirs = app
+        .send_as(
+            &ta,
+            Method::POST,
+            "/api/v1/backups/restore-files",
+            Some(json!({ "point": point, "items": [{ "class": "call_recording", "item": "rec-b" }] })),
+        )
+        .await;
+    assert_eq!(theirs.status, StatusCode::NOT_FOUND, "{}", theirs.text);
+    let own = app
+        .send_as(
+            &ta,
+            Method::POST,
+            "/api/v1/backups/restore-files",
+            Some(json!({ "point": point, "items": [{ "class": "call_recording", "item": "rec-a" }] })),
+        )
+        .await;
+    assert_eq!(own.status, StatusCode::OK, "{}", own.text);
+    assert_eq!(own.json["restored"][0]["present"], true);
+    let sent = restores.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(sent["service_paths"], json!(["/app/data/recordings/a.wav"]));
+    assert_eq!(sent["snapshot"], "ab12cd");
+    // A read-only monitor may look but not restore.
+    app.create_user_with_role("ro", "read_only").await;
+    let ro = session(&app, "ro").await;
+    let looked = app.send_as(&ro, Method::GET, "/api/v1/backups", None).await;
+    assert_eq!(looked.status, StatusCode::OK, "{}", looked.text);
+    let tried = app
+        .send_as(
+            &ro,
+            Method::POST,
+            "/api/v1/backups/restore-files",
+            Some(json!({ "point": point, "items": [{ "class": "call_recording", "item": "rec-a" }] })),
+        )
+        .await;
+    assert_eq!(tried.status, StatusCode::FORBIDDEN, "{}", tried.text);
+    app.finish().await;
+}
