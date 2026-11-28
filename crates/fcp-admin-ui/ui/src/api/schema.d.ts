@@ -8164,6 +8164,25 @@ export interface components {
          * @enum {string}
          */
         BackupRunState: "requested" | "running" | "succeeded" | "failed";
+        /**
+         * @description A destination as a site's link reports it up (`docs/SCHEDULED_BACKUPS.md`
+         *     B5): no secrets, no target beyond its kind.
+         */
+        BackupStatus: {
+            /** @description `bkd-<uuid>`, at the site. */
+            destination_id: string;
+            name: string;
+            /** @description `sftp`, `s3`, `directory`, `rest` or `rclone`. */
+            kind: string;
+            enabled: boolean;
+            scheduled: boolean;
+            /** @description RFC 3339. */
+            last_success_at?: string | null;
+            /** @description The last backup run's state and when it was asked for. */
+            last_run_state?: string | null;
+            last_run_at?: string | null;
+            overdue: boolean;
+        };
         /** @description Balance response. */
         BalanceResponse: {
             tenant_id: string;
@@ -13469,6 +13488,11 @@ export interface components {
                  */
                 trunk_id?: string | null;
                 registrations?: components["schemas"]["SiteRegistrationsView"] | null;
+                /**
+                 * @description The site's own backups, as its link last said
+                 *     (`docs/SCHEDULED_BACKUPS.md` B5).
+                 */
+                backups: components["schemas"]["BackupStatus"][];
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -15689,6 +15713,11 @@ export interface components {
              */
             trunk_id?: string | null;
             registrations?: components["schemas"]["SiteRegistrationsView"] | null;
+            /**
+             * @description The site's own backups, as its link last said
+             *     (`docs/SCHEDULED_BACKUPS.md` B5).
+             */
+            backups: components["schemas"]["BackupStatus"][];
         };
         /**
          * @description Where a site is in its life.

@@ -26131,6 +26131,60 @@
           "failed"
         ]
       },
+      "BackupStatus": {
+        "type": "object",
+        "description": "A destination as a site's link reports it up (`docs/SCHEDULED_BACKUPS.md`\nB5): no secrets, no target beyond its kind.",
+        "required": [
+          "destination_id",
+          "name",
+          "kind",
+          "enabled",
+          "scheduled",
+          "overdue"
+        ],
+        "properties": {
+          "destination_id": {
+            "type": "string",
+            "description": "`bkd-<uuid>`, at the site."
+          },
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`sftp`, `s3`, `directory`, `rest` or `rclone`."
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "scheduled": {
+            "type": "boolean"
+          },
+          "last_success_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339."
+          },
+          "last_run_state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The last backup run's state and when it was asked for."
+          },
+          "last_run_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "overdue": {
+            "type": "boolean"
+          }
+        }
+      },
       "BalanceResponse": {
         "type": "object",
         "description": "Balance response.",
@@ -42444,7 +42498,8 @@
                 "updated_at",
                 "link_up",
                 "versions",
-                "nodes"
+                "nodes",
+                "backups"
               ],
               "properties": {
                 "id": {
@@ -42565,6 +42620,13 @@
                       "type": "null"
                     }
                   ]
+                },
+                "backups": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BackupStatus"
+                  },
+                  "description": "The site's own backups, as its link last said\n(`docs/SCHEDULED_BACKUPS.md` B5)."
                 }
               }
             }
@@ -48738,7 +48800,8 @@
           "updated_at",
           "link_up",
           "versions",
-          "nodes"
+          "nodes",
+          "backups"
         ],
         "properties": {
           "id": {
@@ -48859,6 +48922,13 @@
                 "type": "null"
               }
             ]
+          },
+          "backups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BackupStatus"
+            },
+            "description": "The site's own backups, as its link last said\n(`docs/SCHEDULED_BACKUPS.md` B5)."
           }
         }
       },

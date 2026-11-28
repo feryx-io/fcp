@@ -14,7 +14,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { backups } from '@/api/endpoints'
+import { backups, sites } from '@/api/endpoints'
 import type { BackupDestination, BackupDestinationRequest, BackupDownload, BackupRun, LostFile } from '@/types'
 import { formatDateTime } from '@/lib/utils'
 import { useIsPlatformAdmin } from '@/components/TenantSelector'
@@ -607,6 +607,54 @@ function RestoreProgress() {
   )
 }
 
+/** Each site's own backups, as its link last said (B5): a site whose
+ *  backups stopped is seen here without signing in to it. */
+function SitesBackupsCard() {
+  const list = useQuery({ queryKey: ['backups', 'sites'], queryFn: () => sites.list(), retry: false })
+  const withBackups = (list.data ?? [])
+  if (withBackups.length === 0) return null
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Sites</CardTitle>
+        <CardDescription>Each site backs itself up, set up on its own admin. This is what their links last said.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Site</TableHead>
+                <TableHead>Destination</TableHead>
+                <TableHead>Last good backup</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {withBackups.flatMap((site) => (site.backups.length === 0
+                ? [(
+                  <TableRow key={site.id}>
+                    <TableCell className="font-medium">{site.name}</TableCell>
+                    <TableCell colSpan={2}><Badge variant="outline">No backups set up</Badge></TableCell>
+                  </TableRow>
+                )]
+                : site.backups.map((b) => (
+                  <TableRow key={`${site.id}:${b.destination_id}`}>
+                    <TableCell className="font-medium">{site.name}</TableCell>
+                    <TableCell>{b.name} <span className="text-xs text-muted-foreground">{b.kind}</span></TableCell>
+                    <TableCell>
+                      {b.overdue && <Badge variant="destructive" className="mr-2">Overdue</Badge>}
+                      {b.last_success_at ? formatDateTime(b.last_success_at) : <span className="text-muted-foreground">Never</span>}
+                    </TableCell>
+                  </TableRow>
+                ))))}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 /** Whether restores are on, and how to turn them on. */
 function RestoresCard() {
   const caps = useQuery({ queryKey: ['backups', 'capabilities'], queryFn: backups.capabilities })
@@ -784,6 +832,7 @@ function PlatformBackups() {
       <KeyCard />
       <RestoreProgress />
       <RestoresCard />
+      <SitesBackupsCard />
 
       <Card>
         <CardHeader>

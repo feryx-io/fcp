@@ -662,6 +662,27 @@ impl Link {
             registrations: self.registrations().await,
             services: self.services().await,
             parked: self.parked().await,
+            backups: self.backups().await,
+        }
+    }
+
+    /// The site's own backups, from its database
+    /// (`docs/SCHEDULED_BACKUPS.md` B5): a site whose backups stopped is
+    /// seen from the cloud.
+    async fn backups(&self) -> Vec<fcp_core::backup::BackupStatus> {
+        let Some(store) = self
+            .stores
+            .as_ref()
+            .and_then(|s| s.storage.backup_store().cloned())
+        else {
+            return Vec::new();
+        };
+        match store.backup_status().await {
+            Ok(list) => list,
+            Err(e) => {
+                warn!(error = %e, "Could not read the site's backups");
+                Vec::new()
+            }
         }
     }
 

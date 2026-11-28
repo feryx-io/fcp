@@ -1,0 +1,49 @@
+# The site's own backups (docs/SCHEDULED_BACKUPS.md B5): the site's data is
+# the site's, so its stack runs its own fcp-backup, set up on the site's
+# admin (System › Backups). Its destinations' last good backup and overdue
+# go up the link, so the cloud sees a site whose backups stopped. The
+# database URL comes from FCP_BACKUP_DATABASE_URL, the API token from
+# FCP_BACKUP_API_TOKEN.
+
+[service]
+node_id = "site-backup"
+
+[http]
+bind_address = "0.0.0.0:8096"
+
+[storage]
+database_url = "postgresql://fcp:change-me@postgres:5432/fcp"
+
+[backup]
+restic = "/usr/local/bin/restic"
+rclone = "/usr/local/bin/rclone"
+pg_dump = "/usr/lib/postgresql/16/bin/pg_dump"
+work_dir = "/var/lib/fcp-backup"
+poll_secs = 30
+# Left out of the certs volume's snapshot unless a destination asks for the
+# key.
+key_ring = "/var/lib/fcp/certs/master.key"
+
+# The site's stateful volumes, by their compose names (the firmware is
+# fetched again from the cloud, so it is not among them).
+[backup.paths]
+fcp-certs = "/var/lib/fcp/certs"
+admin-data = "/data/admin"
+call-manager-data = "/data/call-manager"
+link-data = "/data/link"
+
+[backup.service_paths]
+"/app/data/recordings" = "/data/call-manager/recordings"
+"/app/data/prompts" = "/data/call-manager/prompts"
+
+[restore]
+pg_restore = "/usr/lib/postgresql/16/bin/pg_restore"
+drain_secs = 60
+keep_running = ["postgres", "redis", "fcp-backup", "certs"]
+
+[cluster]
+redis_url = "redis://redis:6379"
+
+[logging]
+level = "info"
+format = "compact"

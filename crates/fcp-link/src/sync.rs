@@ -68,6 +68,7 @@ pub async fn open_site(database_url: &str, max_connections: u32) -> Result<SiteS
         )
         .with_compliance_store(compliance_store as Arc<dyn fcp_core::compliance::ComplianceStore>)
         .with_encryption_store(storage.clone() as Arc<dyn fcp_core::encryption::EncryptionStore>)
+        .with_backup_store(storage.clone() as Arc<dyn fcp_core::backup::BackupStore>)
         .with_prompt_store(prompt_store as Arc<dyn fcp_core::prompt::PromptStore>)
         .with_config_template_store(
             storage.clone() as Arc<dyn fcp_core::storage::ConfigTemplateStore>

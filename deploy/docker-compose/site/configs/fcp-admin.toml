@@ -28,6 +28,11 @@ directory = "/var/lib/fcp/firmware"
 # registrar's [registrar] realm, which must say the same.
 realm = "fcp.local"
 
+[backup]
+# The site's own fcp-backup (docs/SCHEDULED_BACKUPS.md B5);
+# FCP_ADMIN_BACKUP_TOKEN authenticates.
+url = "http://fcp-backup:8096"
+
 [storage]
 # Overridden by FCP_ADMIN_DATABASE_URL (the password is in .env).
 database_url = "postgresql://fcp:change-me@postgres:5432/fcp"

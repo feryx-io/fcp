@@ -96,6 +96,9 @@ pub struct SiteResponse {
     /// (`docs/HYBRID_CONTROL_PLANE.md` §3.3).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub registrations: Option<SiteRegistrationsView>,
+    /// The site's own backups, as its link last said
+    /// (`docs/SCHEDULED_BACKUPS.md` B5).
+    pub backups: Vec<fcp_core::backup::BackupStatus>,
 }
 
 impl SiteResponse {
@@ -161,6 +164,11 @@ impl From<Site> for SiteResponse {
             .last_heartbeat
             .as_ref()
             .and_then(|b| b.registrations.as_ref().map(SiteRegistrationsView::from));
+        let backups = site
+            .last_heartbeat
+            .as_ref()
+            .map(|b| b.backups.clone())
+            .unwrap_or_default();
         Self {
             id: site.id.to_string(),
             tenant_id: site.tenant_id.to_string(),
@@ -187,6 +195,7 @@ impl From<Site> for SiteResponse {
             sync_behind: None,
             trunk_id: site.trunk_id.map(|id| id.to_string()),
             registrations,
+            backups,
         }
     }
 }

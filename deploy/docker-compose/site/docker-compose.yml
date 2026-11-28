@@ -115,6 +115,7 @@ services:
       FCP_MASTER_KEY_FILE: /var/lib/fcp/certs/master.key
       FCP_ADMIN_AUTH_TOKEN: ${FCP_ADMIN_AUTH_TOKEN}
       FCP_ADMIN_CALL_MANAGER_AUTH_TOKEN: ${FCP_CALL_MANAGER_API_TOKEN}
+      FCP_ADMIN_BACKUP_TOKEN: ${FCP_BACKUP_API_TOKEN}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -224,7 +225,44 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # The site's own backups (docs/SCHEDULED_BACKUPS.md B5), set up on the
+  # site's admin; every stateful volume read-only, HTTP 8096 on the
+  # bridge only. Restores: docker-compose.restore.yml beside this file.
+  fcp-backup:
+    image: ghcr.io/feryx-io/fcp-backup:${FCP_IMAGE_TAG:-local}
+    build:
+      context: ../../..
+      dockerfile: deploy/docker-compose/Dockerfile.backup
+    container_name: site-backup
+    volumes:
+      - ./configs/fcp-backup.toml:/app/fcp-backup.toml:ro
+      - backup-data:/var/lib/fcp-backup
+      - fcp-certs:/var/lib/fcp/certs:ro
+      - admin-data:/data/admin:ro
+      - call-manager-data:/data/call-manager:ro
+      - link-data:/data/link:ro
+    environment:
+      <<: *otlp
+      RUST_LOG: info
+      FCP_BACKUP_DATABASE_URL: postgresql://fcp:${POSTGRES_PASSWORD}@postgres:5432/fcp
+      FCP_BACKUP_API_TOKEN: ${FCP_BACKUP_API_TOKEN}
+      FCP_ENCRYPTION_PROVIDER: local
+      FCP_MASTER_KEY_FILE: /var/lib/fcp/certs/master.key
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8096/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
 volumes:
+  backup-data:
   site-firmware:
   postgres-data:
   redis-data:
