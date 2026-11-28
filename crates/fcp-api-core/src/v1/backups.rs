@@ -1422,7 +1422,7 @@ pub struct HeldIn {
 
 /// One of the tenant's files whose row is there and whose file is not.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct MissingFile {
+pub struct LostFile {
     pub class: String,
     pub item: String,
     pub created_at: Option<String>,
@@ -1448,7 +1448,7 @@ fn parse_point(point: &str) -> Result<(uuid::Uuid, String), ApiError> {
 async fn missing_of(
     state: &ApiState,
     tenant: &str,
-) -> Result<(Vec<fcp_core::backup::TenantFile>, Vec<MissingFile>), ApiError> {
+) -> Result<(Vec<fcp_core::backup::TenantFile>, Vec<LostFile>), ApiError> {
     let store = store(state)?;
     let files = store.tenant_files(tenant, 20_000).await.map_err(internal)?;
     if files.is_empty() {
@@ -1503,7 +1503,7 @@ async fn missing_of(
         .map(|f| {
             let mut held_in = held.remove(&f.path).unwrap_or_default();
             held_in.sort_by(|a, b| b.time.cmp(&a.time));
-            MissingFile {
+            LostFile {
                 class: f.class.clone(),
                 item: f.item.clone(),
                 created_at: f.created_at.clone(),
@@ -1521,7 +1521,7 @@ async fn missing_of(
     tag = "backups",
     operation_id = "backups_tenant_missing",
     responses(
-        (status = 200, description = "OK", body = crate::page::Page<MissingFile>),
+        (status = 200, description = "OK", body = crate::page::Page<LostFile>),
         (status = "default", description = "An error", body = crate::error::ErrorResponse),
     ),
 )]
@@ -1529,7 +1529,7 @@ pub async fn tenant_missing(
     State(state): State<ApiState>,
     Extension(identity): Extension<AuthIdentity>,
     tenant: crate::auth::TenantContext,
-) -> Result<Json<crate::page::Page<MissingFile>>, ApiError> {
+) -> Result<Json<crate::page::Page<LostFile>>, ApiError> {
     crate::auth::check_permission(
         &identity,
         fcp_core::permissions::Permission::BackupRead,

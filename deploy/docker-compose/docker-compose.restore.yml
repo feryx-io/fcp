@@ -1,0 +1,22 @@
+# Restores switched on (docs/SCHEDULED_BACKUPS.md): fcp-backup's volumes made
+# writable, so files can be put back from the admin's Backups page, and the
+# Docker socket mounted, for a restore of the whole system. The socket is
+# root on this host: turn this on for a restore, and off after.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.restore.yml up -d fcp-backup
+#   # ... restore from the page ...
+#   docker compose up -d fcp-backup          # off again
+services:
+  fcp-backup:
+    volumes:
+      - ./configs/fcp-backup.toml:/app/fcp-backup.toml:ro
+      - backup-data:/var/lib/fcp-backup
+      - fcp-certs:/var/lib/fcp/certs
+      - call-manager-data:/data/call-manager
+      - admin-data:/data/admin
+      - voicemail-data:/data/voicemail
+      - conference-recordings:/data/conference-recordings
+      - conference-cdr-spool:/data/conference-cdr-spool
+      - media-recordings:/data/media-recordings
+      - media-prompts:/data/media-prompts
+      - /var/run/docker.sock:/var/run/docker.sock

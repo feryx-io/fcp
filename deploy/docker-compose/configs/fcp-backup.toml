@@ -34,6 +34,17 @@ conference-cdr-spool = "/data/conference-cdr-spool"
 media-recordings = "/data/media-recordings"
 media-prompts = "/data/media-prompts"
 
+# Where each service's files are here: a row names a file by the path its
+# service wrote, and a tenant's lost files are found and put back through
+# this (docs/SCHEDULED_BACKUPS.md B3b).
+[backup.service_paths]
+"/app/data/recordings" = "/data/call-manager/recordings"
+"/app/data/prompts" = "/data/call-manager/prompts"
+"/var/lib/fcp/voicemail" = "/data/voicemail"
+"/var/fcp/conference/recordings" = "/data/conference-recordings"
+"/var/lib/fcp/media/recordings" = "/data/media-recordings"
+"/var/lib/fcp/media/prompts" = "/data/media-prompts"
+
 [events]
 server_url = "http://fcp-events-server:8081"
 

@@ -5,7 +5,7 @@
 // administrators only; fcp-backup does the work.
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Archive, Download, History, KeyRound, Pencil, Play, Plus, ShieldCheck, Trash2 } from 'lucide-react'
+import { Archive, Download, History, KeyRound, Pencil, Play, Plus, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -15,8 +15,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { backups } from '@/api/endpoints'
-import type { BackupDestination, BackupDestinationRequest, BackupDownload, BackupRun } from '@/types'
+import type { BackupDestination, BackupDestinationRequest, BackupDownload, BackupRun, LostFile } from '@/types'
 import { formatDateTime } from '@/lib/utils'
+import { useIsPlatformAdmin } from '@/components/TenantSelector'
 
 const bytes = (n: number) => {
   const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
@@ -63,7 +64,15 @@ function SnapshotsDialog({ destination, onClose }: { destination: BackupDestinat
     onSuccess: (d) => { setError(null); setBuilding(d) },
     onError: (e) => setError((e as Error).message),
   })
-  const close = () => { setRun(null); setBuilding(null); setKeyFile(''); setPassphrase(''); setError(null); onClose() }
+  const caps = useQuery({ queryKey: ['backups', 'capabilities'], queryFn: backups.capabilities, enabled: destination != null })
+  const [putBack, setPutBack] = useState<string | null>(null)
+  const restoreVolume = useMutation({
+    mutationFn: (volume: string) => backups.restoreVolume(destination!.id, run!, volume),
+    onSuccess: (r, volume) => { setError(null); setPutBack(`${volume}: missing files put back (${r.restored.filter((f) => f.present).length} checked)`) },
+    onError: (e) => setError((e as Error).message),
+  })
+  const chosen = (snaps.data ?? []).find((p) => p.run === run)
+  const close = () => { setRun(null); setBuilding(null); setKeyFile(''); setPassphrase(''); setError(null); setPutBack(null); onClose() }
   return (
     <Dialog open={destination != null} onOpenChange={(o) => { if (!o) close() }}>
       <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
@@ -119,6 +128,26 @@ function SnapshotsDialog({ destination, onClose }: { destination: BackupDestinat
               <div className="space-y-1">
                 <Label htmlFor="bk-pass">Its passphrase</Label>
                 <Input id="bk-pass" type="password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} />
+              </div>
+            )}
+            {chosen && chosen.volumes.length > 0 && (
+              <div className="space-y-1">
+                <Label>Put back missing files</Label>
+                <p className="text-xs text-muted-foreground">
+                  {caps.data?.file_restores
+                    ? 'Files the volume no longer has come back; nothing there now is overwritten. Files removed on purpose come back too.'
+                    : 'Restores are off: start fcp-backup with docker-compose.restore.yml to put files back here.'}
+                </p>
+                <div className="flex flex-wrap gap-1">
+                  {chosen.volumes.filter((v) => v !== 'fcp-certs').map((v) => (
+                    <Button key={v} variant="outline" size="sm" aria-label={`Put back ${v}`}
+                      disabled={!caps.data?.file_restores || restoreVolume.isPending}
+                      onClick={() => { if (confirm(`Put back every file ${v} is missing from this backup?`)) restoreVolume.mutate(v) }}>
+                      <RotateCcw className="mr-1 h-3 w-3" /> {v}
+                    </Button>
+                  ))}
+                </div>
+                {putBack && <p className="text-sm">{putBack}</p>}
               </div>
             )}
             {error && <p className="text-sm text-destructive">{error}</p>}
@@ -442,7 +471,142 @@ function DestinationDialog({ draft, setDraft, onSaved }: {
   )
 }
 
+/** Whether restores are on, and how to turn them on. */
+function RestoresCard() {
+  const caps = useQuery({ queryKey: ['backups', 'capabilities'], queryFn: backups.capabilities })
+  if (!caps.data) return null
+  const c = caps.data
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2"><RotateCcw className="h-5 w-5" /> Restores</CardTitle>
+        <CardDescription>
+          {!c.service ? 'The backup service is not reachable from the admin ([backup] url).'
+            : c.file_restores ? 'On: files can be put back from a snapshot, here and by tenant administrators.'
+              : 'Off: the backup service reads every volume read-only, so nothing can be put back yet.'}
+        </CardDescription>
+      </CardHeader>
+      {c.service && !c.file_restores && (
+        <CardContent className="space-y-2 text-sm">
+          <p>Switch them on for a restore, and off after:</p>
+          <pre className="overflow-x-auto rounded bg-muted p-2 text-xs">docker compose -f docker-compose.yml -f docker-compose.restore.yml up -d fcp-backup</pre>
+          {c.read_only.length > 0 && <p className="text-xs text-muted-foreground">Read-only now: {c.read_only.join(', ')}</p>}
+        </CardContent>
+      )}
+    </Card>
+  )
+}
+
+const CLASS_NAMES: Record<string, string> = {
+  call_recording: 'Call recording',
+  conference_recording: 'Conference recording',
+  voicemail: 'Voicemail',
+  voicemail_greeting: 'Voicemail greeting',
+  prompt: 'Audio prompt',
+}
+
+/** A tenant administrator's view (Q9): the platform's schedule, the last
+ *  good backup, and the tenant's own lost files put back. */
+function TenantBackupsView() {
+  const queryClient = useQueryClient()
+  const status = useQuery({ queryKey: ['backups', 'tenant'], queryFn: backups.tenantStatus })
+  const missing = useQuery({ queryKey: ['backups', 'missing'], queryFn: backups.tenantMissing, retry: false })
+  const [note, setNote] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const restore = useMutation({
+    mutationFn: async (files: LostFile[]) => {
+      // One request per backup, each file from its newest.
+      const byPoint = new Map<string, { class: string; item: string }[]>()
+      for (const f of files) {
+        const p = f.held_in[0]?.point
+        if (!p) continue
+        byPoint.set(p, [...(byPoint.get(p) ?? []), { class: f.class, item: f.item }])
+      }
+      let back = 0
+      for (const [point, items] of byPoint) back += (await backups.tenantRestore(point, items)).restored.filter((r) => r.present).length
+      return back
+    },
+    onSuccess: (n) => { setError(null); setNote(`${n} file${n === 1 ? '' : 's'} put back.`); queryClient.invalidateQueries({ queryKey: ['backups', 'missing'] }) },
+    onError: (e) => setError((e as Error).message),
+  })
+  const list = missing.data ?? []
+  const restorable = list.filter((f) => f.held_in.length > 0)
+  const s = status.data
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="flex items-center gap-2 text-3xl font-bold tracking-tight"><Archive className="h-7 w-7" /> Backups</h1>
+        <p className="text-muted-foreground">The platform backs up your recordings, voicemail and prompts with everything else.</p>
+      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Schedule</CardTitle>
+          <CardDescription>
+            {s?.times_of_day.length ? `Daily at ${s.times_of_day.join(', ')} UTC.` : 'No scheduled backups.'}{' '}
+            {s?.last_good_backup_at ? `The last good backup finished ${formatDateTime(s.last_good_backup_at)}.` : 'No backup has finished yet.'}
+          </CardDescription>
+        </CardHeader>
+      </Card>
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <CardTitle>Lost files</CardTitle>
+              <CardDescription>Files your records still name that are gone. Each comes back from the newest backup holding it; nothing there now is overwritten.</CardDescription>
+            </div>
+            <Button disabled={!s?.restores_available || restorable.length === 0 || restore.isPending} onClick={() => restore.mutate(restorable)}>
+              <RotateCcw className="mr-2 h-4 w-4" /> Restore all
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {s && !s.restores_available && <p className="text-sm text-muted-foreground">Restores are not available right now; your platform administrator can switch them on.</p>}
+          {note && <p className="text-sm">{note}</p>}
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          {missing.error && <p className="text-sm text-destructive">{(missing.error as Error).message}</p>}
+          {missing.isSuccess && list.length === 0 && <p className="text-sm text-muted-foreground">Nothing is missing.</p>}
+          {list.length > 0 && (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>What</TableHead>
+                    <TableHead>Made</TableHead>
+                    <TableHead>In a backup of</TableHead>
+                    <TableHead className="text-right" />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {list.map((f) => (
+                    <TableRow key={`${f.class}:${f.item}`}>
+                      <TableCell>{CLASS_NAMES[f.class] ?? f.class} <span className="font-mono text-xs text-muted-foreground">{f.item}</span></TableCell>
+                      <TableCell>{f.created_at ? formatDateTime(f.created_at) : '—'}</TableCell>
+                      <TableCell>{f.held_in[0] ? formatDateTime(f.held_in[0].time) : <span className="text-muted-foreground">No backup holds it</span>}</TableCell>
+                      <TableCell className="text-right">
+                        <Button variant="outline" size="sm" aria-label={`Restore ${f.item}`}
+                          disabled={!s?.restores_available || f.held_in.length === 0 || restore.isPending}
+                          onClick={() => restore.mutate([f])}>
+                          Restore
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
 export function BackupsPage() {
+  const platform = useIsPlatformAdmin()
+  return platform ? <PlatformBackups /> : <TenantBackupsView />
+}
+
+function PlatformBackups() {
   const queryClient = useQueryClient()
   const destinations = useQuery({ queryKey: ['backups', 'destinations'], queryFn: backups.destinations })
   const runs = useQuery({
@@ -481,6 +645,7 @@ export function BackupsPage() {
       {error && <p className="rounded border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
 
       <KeyCard />
+      <RestoresCard />
 
       <Card>
         <CardHeader>

@@ -3,7 +3,7 @@
 // and a backup (which wait for fcp-backup: none runs under this test), edits
 // it without its key, downloads a snapshot, and deletes it. Encryption at rest is off for the
 // admin under test, so the key card says nothing needs downloading.
-import { test, expect, admin, signIn, settled } from './fixtures'
+import { test, expect, admin, tenantAdmin, signIn, settled } from './fixtures'
 
 test.afterEach(async ({ troubles }) => {
   expect(troubles, JSON.stringify(troubles, null, 2)).toEqual([])
@@ -19,6 +19,8 @@ test('a platform administrator sets up an off-site destination', async ({ page, 
   await expect(page.getByRole('heading', { name: 'Backups' })).toBeVisible()
   await expect(page.getByText('Encryption at rest is off')).toBeVisible()
   await expect(page.getByText('None yet: nothing is backed up off this machine.')).toBeVisible()
+  // No backup service runs under this test, so restores cannot be on.
+  await expect(page.getByText('The backup service is not reachable from the admin')).toBeVisible()
 
   await page.getByRole('button', { name: 'Add a destination' }).click()
   const dialog = page.getByRole('dialog')
@@ -83,6 +85,9 @@ test('a platform administrator sets up an off-site destination', async ({ page, 
   await snaps.getByRole('button', { name: 'Make the download' }).click()
   await expect(snaps.getByRole('link', { name: 'save it' })).toHaveAttribute('href', '/backups/downloads/dl/tok')
   await expect(snaps).toContainText('2.0 KiB')
+  // B3b: a volume's files are put back only with restores on.
+  await expect(snaps.getByRole('button', { name: 'Put back voicemail-data' })).toBeDisabled()
+  await expect(snaps.getByText('Restores are off')).toBeVisible()
   expect(asked).toEqual({})
   await snaps.getByRole('button', { name: 'Close' }).first().click()
   await expect(snaps).toBeHidden()
@@ -90,4 +95,20 @@ test('a platform administrator sets up an off-site destination', async ({ page, 
   page.once('dialog', (d) => d.accept())
   await page.getByRole('button', { name: 'Delete Off site, Ohio' }).click()
   await expect(page.getByText('None yet: nothing is backed up off this machine.')).toBeVisible()
+})
+
+// A tenant administrator's Backups (Q9): the schedule and their own lost
+// files, never the destinations.
+test('a tenant administrator sees the schedule and their lost files', async ({ page }) => {
+  await signIn(page, tenantAdmin())
+  await settled(page)
+  const nav = page.getByRole('navigation', { name: 'Main navigation' })
+  await nav.getByRole('link', { name: 'Backups' }).click()
+  await expect(page).toHaveURL(/\/admin\/backups$/)
+  await settled(page)
+  await expect(page.getByRole('heading', { name: 'Schedule' })).toBeVisible()
+  await expect(page.getByText('No scheduled backups.')).toBeVisible()
+  await expect(page.getByText('Nothing is missing.')).toBeVisible()
+  await expect(page.getByText('Restores are not available right now')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Add a destination' })).toHaveCount(0)
 })

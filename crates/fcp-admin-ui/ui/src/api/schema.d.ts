@@ -5564,6 +5564,99 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/backups/destinations/{id}/snapshots/{run}/restore-files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /system/backups/destinations/{id}/snapshots/{run}/restore-files —
+         *     a volume's files put back beside what is there: nothing present is
+         *     overwritten. Needs restores switched on. Audited.
+         */
+        post: operations["backups_restore_volume_files"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/backups/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /system/backups/capabilities */
+        get: operations["backups_capabilities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /backups */
+        get: operations["backups_tenant_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backups/missing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /backups/missing */
+        get: operations["backups_tenant_missing"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backups/restore-files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /backups/restore-files — the tenant's own lost files put back:
+         *     each is found by the tenant's own row, so no other tenant's file can be
+         *     named. Never overwrites. Audited.
+         */
+        post: operations["backups_tenant_restore"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/backups/runs": {
         parameters: {
             query?: never;
@@ -9962,6 +10055,11 @@ export interface components {
             /** @enum {string} */
             type: "service";
         };
+        /** @description One file named by its row. */
+        FileItem: {
+            class: string;
+            item: string;
+        };
         FileSubjectRequest: {
             /** @description `export` or `erasure`. */
             kind: string;
@@ -10159,6 +10257,13 @@ export interface components {
              * @description The recognizer's confidence, 0 to 1, when it gives one.
              */
             confidence?: number | null;
+        };
+        /** @description A backup a lost file can come back from. */
+        HeldIn: {
+            /** @description Opaque: named back to restore from it. */
+            point: string;
+            /** @description When it was taken, RFC 3339. */
+            time: string;
         };
         /** @description Who is put on hold. */
         HoldRequest: {
@@ -10540,6 +10645,14 @@ export interface components {
              *     sent there and comes back to the login page (`docs/SSO.md` §5).
              */
             logout_url: string;
+        };
+        /** @description One of the tenant's files whose row is there and whose file is not. */
+        LostFile: {
+            class: string;
+            item: string;
+            created_at?: string | null;
+            /** @description The backups holding it, newest first; none, and it cannot come back. */
+            held_in: components["schemas"]["HeldIn"][];
         };
         /** @description Voicemail mailbox response. */
         MailboxResponse: {
@@ -12135,6 +12248,23 @@ export interface components {
                 };
                 tenant_id?: string | null;
                 call_id?: string | null;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_LostFile: {
+            data: {
+                class: string;
+                item: string;
+                created_at?: string | null;
+                /** @description The backups holding it, newest first; none, and it cannot come back. */
+                held_in: components["schemas"]["HeldIn"][];
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -14976,6 +15106,26 @@ export interface components {
             users: number;
             devices: number;
         };
+        /**
+         * @description What restores the backup service may do: switched on by
+         *     `docker-compose.restore.yml`.
+         */
+        RestoreCapabilities: {
+            /** @description The backup service is set up here at all. */
+            service: boolean;
+            /** @description Its volumes are writable: files can be put back. */
+            file_restores: boolean;
+            /** @description It has the Docker socket: the whole system can be restored. */
+            full_restore: boolean;
+            /** @description The volumes still read-only. */
+            read_only: string[];
+        };
+        /** @description A file put back, or not. */
+        RestoredFile: {
+            path: string;
+            /** @description Whether it is there now. */
+            present: boolean;
+        };
         /** @description What a resync did. */
         ResyncResponse: {
             device_id: string;
@@ -16131,6 +16281,15 @@ export interface components {
              */
             sent: number;
         };
+        /** @description What a tenant sees of the platform's backups. */
+        TenantBackups: {
+            /** @description When the platform backs up each day, `HH:MM` UTC. */
+            times_of_day: string[];
+            /** @description When the last good backup finished, RFC 3339. */
+            last_good_backup_at?: string | null;
+            /** @description Whether lost files can be put back here now. */
+            restores_available: boolean;
+        };
         /** @description A tenant's calling defaults. */
         TenantCalling: {
             /**
@@ -16289,6 +16448,22 @@ export interface components {
              *     (`docs/PROVISIONING.md` §3).
              */
             provisioning: components["schemas"]["TenantProvisioning"];
+        };
+        /** @description What a tenant's restore put back. */
+        TenantRestoreOutcome: {
+            restored: components["schemas"]["TenantRestored"][];
+        };
+        /** @description Lost files to put back from one backup. */
+        TenantRestoreRequest: {
+            /** @description A `held_in` point from the missing list. */
+            point: string;
+            items: components["schemas"]["FileItem"][];
+        };
+        /** @description A file of the tenant's put back, or not. */
+        TenantRestored: {
+            class: string;
+            item: string;
+            present: boolean;
         };
         /** @description How a tenant's people may sign in (`docs/IDENTITY_AND_DEVICES.md` §2). */
         TenantSignIn: {
@@ -17454,6 +17629,17 @@ export interface components {
          * @enum {string}
          */
         ViewState: "whole" | "store_unreachable" | "remote_regions_lost";
+        /** @description What a restore put back. */
+        VolumeRestoreOutcome: {
+            restored: components["schemas"]["RestoredFile"][];
+        };
+        /** @description A volume's files to put back. */
+        VolumeRestoreRequest: {
+            /** @description The compose volume (`voicemail-data`). */
+            volume: string;
+            /** @description Paths inside it; none is every file it is missing. */
+            paths?: string[];
+        };
         /** @description Watcher info response. */
         WatcherResponse: {
             watcher_aor: string;
@@ -30719,6 +30905,164 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DownloadView"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backups_restore_volume_files: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The destination */
+                id: string;
+                /** @description The point's run */
+                run: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VolumeRestoreRequest"];
+            };
+        };
+        responses: {
+            /** @description What was put back */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VolumeRestoreOutcome"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backups_capabilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestoreCapabilities"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backups_tenant_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantBackups"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backups_tenant_missing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_LostFile"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backups_tenant_restore: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TenantRestoreRequest"];
+            };
+        };
+        responses: {
+            /** @description What was put back */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantRestoreOutcome"];
                 };
             };
             /** @description An error */

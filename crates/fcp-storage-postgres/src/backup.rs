@@ -234,9 +234,13 @@ impl BackupStore for PostgresStorage {
     ) -> anyhow::Result<Vec<fcp_core::backup::TenantFile>> {
         // Each row naming a file the tenant owns, held here rather than at a
         // site; a webinar's stream is a directory and is left out.
-        let rows: Vec<(String, String, String, Option<chrono::DateTime<chrono::Utc>>)> =
-            sqlx::query_as(
-                "SELECT * FROM (
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            Option<chrono::DateTime<chrono::Utc>>,
+        )> = sqlx::query_as(
+            "SELECT * FROM (
                    SELECT 'call_recording' AS class, id::text AS item, path, started_at AS at
                      FROM call_recordings WHERE tenant_id = $1 AND site_id IS NULL AND path <> ''
                    UNION ALL
@@ -256,11 +260,11 @@ impl BackupStore for PostgresStorage {
                      FROM prompts
                     WHERE tenant_id = $1 AND source_type = 'file' AND COALESCE(audio_path, '') <> ''
                  ) f ORDER BY at DESC NULLS LAST LIMIT $2",
-            )
-            .bind(tenant)
-            .bind(limit as i64)
-            .fetch_all(self.reads())
-            .await?;
+        )
+        .bind(tenant)
+        .bind(limit as i64)
+        .fetch_all(self.reads())
+        .await?;
         Ok(rows
             .into_iter()
             .map(|(class, item, path, at)| fcp_core::backup::TenantFile {
