@@ -1061,5 +1061,6 @@ async fn a_directory_a_rest_server_and_an_rclone_remote_take_backups() {
 
     svc.kill().await;
     let _ = rest.kill();
+    let _ = rest.wait();
     db.drop_db().await;
 }

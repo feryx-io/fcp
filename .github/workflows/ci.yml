@@ -235,6 +235,15 @@ jobs:
           echo "5097faeda6aa13167aae6e36efdba636637f8741fed89bbf015678334632d4d3  /tmp/restic.bz2" | sha256sum -c -
           bunzip2 -f /tmp/restic.bz2 && sudo install -m 0755 /tmp/restic /usr/local/bin/restic
           restic version
+          # B4's destinations: a REST server to back up to, and rclone (the
+          # image's version) for an rclone remote.
+          curl -fsSL -o /tmp/rest.tgz https://github.com/restic/rest-server/releases/download/v0.13.0/rest-server_0.13.0_linux_amd64.tar.gz
+          echo "b7f357628a2cf9bdbce56a44b0ae7125de79b72af55b232a5c1aec3f732f3a49  /tmp/rest.tgz" | sha256sum -c -
+          tar -xzf /tmp/rest.tgz -C /tmp && sudo install -m 0755 /tmp/rest-server_0.13.0_linux_amd64/rest-server /usr/local/bin/rest-server
+          curl -fsSL -o /tmp/rclone.zip https://github.com/rclone/rclone/releases/download/v1.68.2/rclone-v1.68.2-linux-amd64.zip
+          echo "0e6fa18051e67fc600d803a2dcb10ddedb092247fc6eee61be97f64ec080a13c  /tmp/rclone.zip" | sha256sum -c -
+          unzip -o -q /tmp/rclone.zip -d /tmp && sudo install -m 0755 /tmp/rclone-v1.68.2-linux-amd64/rclone /usr/local/bin/rclone
+          rest-server --version && rclone version | head -n 1
           ls /usr/sbin/sshd >/dev/null 2>&1 || sudo apt-get install -y openssh-server
           ls /usr/lib/openssh/sftp-server
       # Every request that reaches an /api/v1 route, in this test process or

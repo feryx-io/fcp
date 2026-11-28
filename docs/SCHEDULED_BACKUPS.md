@@ -523,6 +523,49 @@ is the one dangerous power in the design.
   - Proved by restoring a populated stack and placing a call.
 - **B4: more destinations and the watch.** A directory, a REST server and
   rclone; the weekly check; overdue; metrics.
+
+  **Done (v0.25.675):**
+  - **Destinations** (`BackupTarget::{Directory, Rest, Rclone}`):
+    - a directory mounted into `fcp-backup` (absolute, no `..`);
+    - a REST server (`rest:<url>`; the user and password reach restic as
+      `RESTIC_REST_USERNAME`/`RESTIC_REST_PASSWORD`, and a URL carrying
+      credentials is refused);
+    - an rclone remote (`rclone:<remote>`; its `rclone.conf` text is
+      written 0600 to `work_dir/rclone/<id>.conf` for `RCLONE_CONFIG`, and
+      `rclone.program` is `[backup] rclone`).
+  - **Secrets:** the REST password or the rclone configuration is sealed
+    in `target_secret` (migration 163, `SEALED_COLUMNS`). Like every other
+    secret, it is write-only and kept when an edit leaves it out.
+  - **The check:**
+    - A `check` run runs `restic check --read-data-subset=5%`.
+    - A scheduled destination with a good backup gets one each week
+      (`CHECK_EVERY`), and there is a Check button beside Test and Back up
+      now (`POST …/destinations/{id}/check`).
+    - A failed check is a `system.backup_failed` with `kind = "check"`.
+  - **Overdue:** a scheduled, enabled destination with no good backup for
+    26 hours, counted from when it was made if it never had one
+    (`fcp_core::backup::overdue`).
+    - The service notices it once per lapse (`backup_overdue_notices`,
+      keyed by the last success) and sends `system.backup_overdue`.
+    - Destinations show `overdue`, `last_success_at` and `last_check`, and
+      the page marks an overdue one in red.
+  - **Metrics** on the admin's `/metrics` (`BackupMetrics`):
+    `fcp_backup_last_success_timestamp`, `fcp_backup_bytes_added` (the
+    last good backup's) and `fcp_backup_overdue`, per destination with its
+    name and type.
+  - **The image:** rclone 1.68.2 pinned by checksum. CI installs restic
+    0.17.3 (apt's 0.16 lacks `restore --overwrite`/`--delete` and the REST
+    credentials), `rest-server` 0.13.0 and rclone.
+  - **Proved by:**
+    - `a_directory_a_rest_server_and_an_rclone_remote_take_backups`: each
+      tested and backed up; a REST server with the wrong password refused;
+      the directory's check run; the rclone configuration private.
+    - `more_destinations_a_check_and_the_overdue_watch`: bad targets
+      refused, secrets write-only and kept, Check now, overdue, metrics.
+    - `a_destination_is_overdue_a_day_and_two_hours_on`.
+    - `e2e/backups.spec.ts`: a directory made and checked.
+  - **Left:** the cron expression (`schedule.cron` is still read by
+    nothing).
 - **B5: sites.** The site's own service, and runs up the link.
 
 ## 6. Questions

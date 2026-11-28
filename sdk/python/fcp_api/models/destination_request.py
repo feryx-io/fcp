@@ -16,6 +16,9 @@ if TYPE_CHECKING:
   from ..models.schedule_view import ScheduleView
   from ..models.target_request_type_0 import TargetRequestType0
   from ..models.target_request_type_1 import TargetRequestType1
+  from ..models.target_request_type_2 import TargetRequestType2
+  from ..models.target_request_type_3 import TargetRequestType3
+  from ..models.target_request_type_4 import TargetRequestType4
 
 
 
@@ -31,8 +34,8 @@ class DestinationRequest:
 
         Attributes:
             name (str):
-            target (TargetRequestType0 | TargetRequestType1): A destination's target to keep; a secret left out on a change
-                keeps the
+            target (TargetRequestType0 | TargetRequestType1 | TargetRequestType2 | TargetRequestType3 | TargetRequestType4):
+                A destination's target to keep; a secret left out on a change keeps the
                 one kept.
             password (None | str | Unset): The repository password; write-only. Left out when a destination is
                 made, one is generated and shown once.
@@ -43,7 +46,7 @@ class DestinationRequest:
      """
 
     name: str
-    target: TargetRequestType0 | TargetRequestType1
+    target: TargetRequestType0 | TargetRequestType1 | TargetRequestType2 | TargetRequestType3 | TargetRequestType4
     password: None | str | Unset = UNSET
     schedule: None | ScheduleView | Unset = UNSET
     keep: None | RetentionView | Unset = UNSET
@@ -59,10 +62,19 @@ class DestinationRequest:
         from ..models.schedule_view import ScheduleView # noqa: PLC0415
         from ..models.target_request_type_0 import TargetRequestType0 # noqa: PLC0415
         from ..models.target_request_type_1 import TargetRequestType1 # noqa: PLC0415
+        from ..models.target_request_type_2 import TargetRequestType2 # noqa: PLC0415
+        from ..models.target_request_type_3 import TargetRequestType3 # noqa: PLC0415
+        from ..models.target_request_type_4 import TargetRequestType4 # noqa: PLC0415
         name = self.name
 
         target: dict[str, Any]
         if isinstance(self.target, TargetRequestType0):
+            target = self.target.to_dict()
+        elif isinstance(self.target, TargetRequestType1):
+            target = self.target.to_dict()
+        elif isinstance(self.target, TargetRequestType2):
+            target = self.target.to_dict()
+        elif isinstance(self.target, TargetRequestType3):
             target = self.target.to_dict()
         else:
             target = self.target.to_dict()
@@ -122,10 +134,13 @@ class DestinationRequest:
         from ..models.schedule_view import ScheduleView # noqa: PLC0415
         from ..models.target_request_type_0 import TargetRequestType0 # noqa: PLC0415
         from ..models.target_request_type_1 import TargetRequestType1 # noqa: PLC0415
+        from ..models.target_request_type_2 import TargetRequestType2 # noqa: PLC0415
+        from ..models.target_request_type_3 import TargetRequestType3 # noqa: PLC0415
+        from ..models.target_request_type_4 import TargetRequestType4 # noqa: PLC0415
         d = dict(src_dict)
         name = d.pop("name")
 
-        def _parse_target(data: object) -> TargetRequestType0 | TargetRequestType1:
+        def _parse_target(data: object) -> TargetRequestType0 | TargetRequestType1 | TargetRequestType2 | TargetRequestType3 | TargetRequestType4:
             try:
                 if not isinstance(data, dict):
                     raise TypeError()
@@ -136,13 +151,43 @@ class DestinationRequest:
                 return componentsschemas_target_request_type_0
             except (TypeError, ValueError, AttributeError, KeyError):
                 pass
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                componentsschemas_target_request_type_1 = TargetRequestType1.from_dict(data)
+
+
+
+                return componentsschemas_target_request_type_1
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                componentsschemas_target_request_type_2 = TargetRequestType2.from_dict(data)
+
+
+
+                return componentsschemas_target_request_type_2
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                componentsschemas_target_request_type_3 = TargetRequestType3.from_dict(data)
+
+
+
+                return componentsschemas_target_request_type_3
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
             if not isinstance(data, dict):
                 raise TypeError()
-            componentsschemas_target_request_type_1 = TargetRequestType1.from_dict(data)
+            componentsschemas_target_request_type_4 = TargetRequestType4.from_dict(data)
 
 
 
-            return componentsschemas_target_request_type_1
+            return componentsschemas_target_request_type_4
 
         target = _parse_target(d.pop("target"))
 

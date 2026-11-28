@@ -929,9 +929,11 @@ async fn main() -> Result<()> {
 
     // Backups on /metrics (docs/SCHEDULED_BACKUPS.md B4).
     let api_state = match storage.backup_store() {
-        Some(store) => api_state
-            .with_metrics_source(Arc::new(fcp_api_core::v1::backups::BackupMetrics { store: Arc::clone(store) })
-                as Arc<dyn fcp_api_core::MetricsSource>),
+        Some(store) => {
+            api_state.with_metrics_source(Arc::new(fcp_api_core::v1::backups::BackupMetrics {
+                store: Arc::clone(store),
+            }) as Arc<dyn fcp_api_core::MetricsSource>)
+        }
         None => api_state,
     };
 

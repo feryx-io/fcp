@@ -17848,6 +17848,48 @@
         }
       }
     },
+    "/api/v1/system/backups/destinations/{id}/check": {
+      "post": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "POST /system/backups/destinations/{id}/check — read a share of the\nstored data back now, as the weekly check does (B4).",
+        "operationId": "backups_check_destination",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The destination",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Asked for; follow the run",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/system/backups/key": {
       "get": {
         "tags": [
@@ -26075,7 +26117,8 @@
         "description": "What a run did.",
         "enum": [
           "backup",
-          "test"
+          "test",
+          "check"
         ]
       },
       "BackupRunState": {
@@ -30782,6 +30825,7 @@
           "include_key",
           "enabled",
           "repository",
+          "overdue",
           "created_at",
           "updated_at"
         ],
@@ -30825,6 +30869,28 @@
                 "type": "null"
               }
             ]
+          },
+          "last_check": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunView",
+                "description": "The last weekly check, if any (B4)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_success_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the last good backup finished."
+          },
+          "overdue": {
+            "type": "boolean",
+            "description": "Scheduled, and no good backup for a day and two hours."
           },
           "password": {
             "type": [
@@ -36619,6 +36685,7 @@
                 "include_key",
                 "enabled",
                 "repository",
+                "overdue",
                 "created_at",
                 "updated_at"
               ],
@@ -36662,6 +36729,28 @@
                       "type": "null"
                     }
                   ]
+                },
+                "last_check": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/RunView",
+                      "description": "The last weekly check, if any (B4)."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "last_success_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "When the last good backup finished."
+                },
+                "overdue": {
+                  "type": "boolean",
+                  "description": "Scheduled, and no good backup for a day and two hours."
                 },
                 "password": {
                   "type": [
@@ -50462,6 +50551,83 @@
                 ]
               }
             }
+          },
+          {
+            "type": "object",
+            "description": "An absolute path in the backup service: a share or a disk mounted\ninto it.",
+            "required": [
+              "path",
+              "type"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "directory"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "url",
+              "type"
+            ],
+            "properties": {
+              "url": {
+                "type": "string",
+                "description": "`https://host:8000/path/`."
+              },
+              "username": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "password": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Write-only."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "rest"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "remote",
+              "type"
+            ],
+            "properties": {
+              "remote": {
+                "type": "string",
+                "description": "`<remote>:<path>`."
+              },
+              "config": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The `rclone.conf` text defining the remote; write-only."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "rclone"
+                ]
+              }
+            }
           }
         ],
         "description": "A destination's target to keep; a secret left out on a change keeps the\none kept."
@@ -50549,6 +50715,77 @@
                 "type": "string",
                 "enum": [
                   "s3"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A directory mounted into the backup service (B4).",
+            "required": [
+              "path",
+              "type"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "directory"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "A restic REST server.",
+            "required": [
+              "url",
+              "has_password",
+              "type"
+            ],
+            "properties": {
+              "url": {
+                "type": "string"
+              },
+              "username": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "has_password": {
+                "type": "boolean"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "rest"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "An rclone remote.",
+            "required": [
+              "remote",
+              "has_config",
+              "type"
+            ],
+            "properties": {
+              "remote": {
+                "type": "string"
+              },
+              "has_config": {
+                "type": "boolean"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "rclone"
                 ]
               }
             }
@@ -55130,6 +55367,7 @@
               "system.service_down",
               "system.backup_completed",
               "system.backup_failed",
+              "system.backup_overdue",
               "device.firmware_behind",
               "device.push_failed",
               "user.created",

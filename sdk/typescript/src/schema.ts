@@ -5487,6 +5487,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/backups/destinations/{id}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /system/backups/destinations/{id}/check — read a share of the
+         *     stored data back now, as the weekly check does (B4).
+         */
+        post: operations["backups_check_destination"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/backups/key": {
         parameters: {
             query?: never;
@@ -8138,7 +8158,7 @@ export interface components {
          * @description What a run did.
          * @enum {string}
          */
-        BackupRunKind: "backup" | "test";
+        BackupRunKind: "backup" | "test" | "check";
         /**
          * @description Where a run is.
          * @enum {string}
@@ -9594,6 +9614,11 @@ export interface components {
             /** @description The repository's address as restic names it, for restoring by hand. */
             repository: string;
             last_run?: components["schemas"]["RunView"] | null;
+            last_check?: components["schemas"]["RunView"] | null;
+            /** @description When the last good backup finished. */
+            last_success_at?: string | null;
+            /** @description Scheduled, and no good backup for a day and two hours. */
+            overdue: boolean;
             /**
              * @description Shown once, when a destination is made without a password and one
              *     is generated: keep it, it opens every snapshot.
@@ -11605,6 +11630,11 @@ export interface components {
                 /** @description The repository's address as restic names it, for restoring by hand. */
                 repository: string;
                 last_run?: components["schemas"]["RunView"] | null;
+                last_check?: components["schemas"]["RunView"] | null;
+                /** @description When the last good backup finished. */
+                last_success_at?: string | null;
+                /** @description Scheduled, and no good backup for a day and two hours. */
+                overdue: boolean;
                 /**
                  * @description Shown once, when a destination is made without a password and one
                  *     is generated: keep it, it opens every snapshot.
@@ -16320,6 +16350,25 @@ export interface components {
             secret_access_key?: string | null;
             /** @enum {string} */
             type: "s3";
+        } | {
+            path: string;
+            /** @enum {string} */
+            type: "directory";
+        } | {
+            /** @description `https://host:8000/path/`. */
+            url: string;
+            username?: string | null;
+            /** @description Write-only. */
+            password?: string | null;
+            /** @enum {string} */
+            type: "rest";
+        } | {
+            /** @description `<remote>:<path>`. */
+            remote: string;
+            /** @description The `rclone.conf` text defining the remote; write-only. */
+            config?: string | null;
+            /** @enum {string} */
+            type: "rclone";
         };
         /** @description A destination's target, its secrets never shown. */
         TargetView: {
@@ -16342,6 +16391,21 @@ export interface components {
             has_secret_access_key: boolean;
             /** @enum {string} */
             type: "s3";
+        } | {
+            path: string;
+            /** @enum {string} */
+            type: "directory";
+        } | {
+            url: string;
+            username?: string | null;
+            has_password: boolean;
+            /** @enum {string} */
+            type: "rest";
+        } | {
+            remote: string;
+            has_config: boolean;
+            /** @enum {string} */
+            type: "rclone";
         };
         /** @description What a template's resync did. */
         TemplateResyncResponse: {
@@ -17766,7 +17830,7 @@ export interface components {
              * @description A name from `/api/v1/webhooks/event-types`, or `webhook.test`
              * @enum {string}
              */
-            event_type: "call.initiated" | "call.ringing" | "call.progress" | "call.answered" | "call.ended" | "call.failed" | "call.emergency" | "call.emergency_completed" | "emergency.notification_failed" | "call.parked" | "call.unparked" | "call.park_timed_out" | "call.quality_poor" | "call.held" | "call.resumed" | "call.transcript" | "call.party_joined" | "call.party_left" | "media.session_started" | "media.session_ended" | "media.dtmf_received" | "media.quality_warning" | "ivr.prompt_started" | "ivr.prompt_completed" | "ivr.input_gathered" | "ivr.gather_timeout" | "recording.started" | "recording.completed" | "recording.failed" | "flow.started" | "flow.node_executed" | "flow.waiting_for_input" | "flow.completed" | "flow.failed" | "system.started" | "system.stopping" | "system.health_check" | "system.config_changed" | "system.node_draining" | "system.node_drained" | "system.node_joined" | "system.node_left" | "system.cluster_view_changed" | "system.version_skew" | "system.site_link_changed" | "system.service_up" | "system.service_down" | "system.backup_completed" | "system.backup_failed" | "device.firmware_behind" | "device.push_failed" | "user.created" | "user.updated" | "user.deleted" | "user.deprovisioned" | "user.restored" | "user.renamed" | "user.enabled" | "user.disabled" | "user.calling_changed" | "user.contact_changed" | "user.signed_in" | "user.sign_in_failed" | "hoteling.login" | "hoteling.logout" | "registration.registered" | "registration.refreshed" | "registration.unregistered" | "registration.expired" | "registration.failed" | "voicemail.message_recorded" | "voicemail.transcribed" | "voicemail.message_deleted" | "voicemail.message_played" | "voicemail.mwi_updated" | "voicemail.mailbox_created" | "voicemail.mailbox_updated" | "voicemail.mailbox_deleted" | "conference.participant_joined" | "conference.participant_left" | "conference.room_locked" | "conference.room_unlocked" | "conference.recording_started" | "conference.recording_stopped" | "conference.pin_failed" | "conference.room_destroyed" | "conference.meeting_created" | "conference.meeting_updated" | "conference.meeting_deleted" | "conference.meeting_started" | "conference.meeting_ended" | "conference.dial_out_invited" | "conference.dial_out_failed" | "conference.video_state_changed" | "conference.content_started" | "conference.content_stopped" | "conference.video_overload" | "conference.video_layout_changed" | "conference.active_speaker_changed" | "conference.hand_raised" | "conference.hand_lowered" | "conference.stage_joined" | "conference.stage_left" | "conference.question_asked" | "conference.question_published" | "conference.question_answered" | "conference.question_dismissed" | "conference.chat_deleted" | "conference.chat_muted" | "conference.webinar_live" | "conference.webinar_ended" | "conference.rtmp_live" | "conference.rtmp_failed" | "queue.caller_enqueued" | "queue.caller_dequeued" | "queue.caller_abandoned" | "queue.caller_overflowed" | "queue.agent_logged_in" | "queue.agent_logged_out" | "queue.agent_state_changed" | "queue.agent_kicked" | "queue.callback_initiated" | "queue.stats_snapshot" | "queue.caller_transferred" | "queue.supervisor_joined" | "queue.supervisor_left" | "queue.callback_attempted" | "queue.callback_completed" | "queue.callback_failed" | "queue.service_level_warning" | "queue.queue_draining" | "queue.queue_drained" | "queue.campaign_call_placed" | "queue.campaign_call_connected" | "queue.campaign_call_failed" | "presence.status_changed" | "presence.watcher_added" | "presence.watcher_removed" | "presence.publish_received" | "presence.dialog_changed" | "presence.user_changed" | "presence.user_call" | "presence.publish_expiry_warning" | "presence.publish_expired" | "line.appearance_changed" | "sip.message_captured" | "billing.call_rated" | "billing.balance_changed" | "billing.balance_low" | "billing.balance_depleted" | "billing.call_rejected" | "billing.call_cut_off" | "cdr.written" | "cdr.archived" | "trunk.registered" | "trunk.registration_failed" | "trunk.health_changed" | "compliance.hold_placed" | "compliance.hold_released" | "compliance.subject_request_completed" | "speech.cap_near" | "speech.cap_reached" | "webhook.test";
+            event_type: "call.initiated" | "call.ringing" | "call.progress" | "call.answered" | "call.ended" | "call.failed" | "call.emergency" | "call.emergency_completed" | "emergency.notification_failed" | "call.parked" | "call.unparked" | "call.park_timed_out" | "call.quality_poor" | "call.held" | "call.resumed" | "call.transcript" | "call.party_joined" | "call.party_left" | "media.session_started" | "media.session_ended" | "media.dtmf_received" | "media.quality_warning" | "ivr.prompt_started" | "ivr.prompt_completed" | "ivr.input_gathered" | "ivr.gather_timeout" | "recording.started" | "recording.completed" | "recording.failed" | "flow.started" | "flow.node_executed" | "flow.waiting_for_input" | "flow.completed" | "flow.failed" | "system.started" | "system.stopping" | "system.health_check" | "system.config_changed" | "system.node_draining" | "system.node_drained" | "system.node_joined" | "system.node_left" | "system.cluster_view_changed" | "system.version_skew" | "system.site_link_changed" | "system.service_up" | "system.service_down" | "system.backup_completed" | "system.backup_failed" | "system.backup_overdue" | "device.firmware_behind" | "device.push_failed" | "user.created" | "user.updated" | "user.deleted" | "user.deprovisioned" | "user.restored" | "user.renamed" | "user.enabled" | "user.disabled" | "user.calling_changed" | "user.contact_changed" | "user.signed_in" | "user.sign_in_failed" | "hoteling.login" | "hoteling.logout" | "registration.registered" | "registration.refreshed" | "registration.unregistered" | "registration.expired" | "registration.failed" | "voicemail.message_recorded" | "voicemail.transcribed" | "voicemail.message_deleted" | "voicemail.message_played" | "voicemail.mwi_updated" | "voicemail.mailbox_created" | "voicemail.mailbox_updated" | "voicemail.mailbox_deleted" | "conference.participant_joined" | "conference.participant_left" | "conference.room_locked" | "conference.room_unlocked" | "conference.recording_started" | "conference.recording_stopped" | "conference.pin_failed" | "conference.room_destroyed" | "conference.meeting_created" | "conference.meeting_updated" | "conference.meeting_deleted" | "conference.meeting_started" | "conference.meeting_ended" | "conference.dial_out_invited" | "conference.dial_out_failed" | "conference.video_state_changed" | "conference.content_started" | "conference.content_stopped" | "conference.video_overload" | "conference.video_layout_changed" | "conference.active_speaker_changed" | "conference.hand_raised" | "conference.hand_lowered" | "conference.stage_joined" | "conference.stage_left" | "conference.question_asked" | "conference.question_published" | "conference.question_answered" | "conference.question_dismissed" | "conference.chat_deleted" | "conference.chat_muted" | "conference.webinar_live" | "conference.webinar_ended" | "conference.rtmp_live" | "conference.rtmp_failed" | "queue.caller_enqueued" | "queue.caller_dequeued" | "queue.caller_abandoned" | "queue.caller_overflowed" | "queue.agent_logged_in" | "queue.agent_logged_out" | "queue.agent_state_changed" | "queue.agent_kicked" | "queue.callback_initiated" | "queue.stats_snapshot" | "queue.caller_transferred" | "queue.supervisor_joined" | "queue.supervisor_left" | "queue.callback_attempted" | "queue.callback_completed" | "queue.callback_failed" | "queue.service_level_warning" | "queue.queue_draining" | "queue.queue_drained" | "queue.campaign_call_placed" | "queue.campaign_call_connected" | "queue.campaign_call_failed" | "presence.status_changed" | "presence.watcher_added" | "presence.watcher_removed" | "presence.publish_received" | "presence.dialog_changed" | "presence.user_changed" | "presence.user_call" | "presence.publish_expiry_warning" | "presence.publish_expired" | "line.appearance_changed" | "sip.message_captured" | "billing.call_rated" | "billing.balance_changed" | "billing.balance_low" | "billing.balance_depleted" | "billing.call_rejected" | "billing.call_cut_off" | "cdr.written" | "cdr.archived" | "trunk.registered" | "trunk.registration_failed" | "trunk.health_changed" | "compliance.hold_placed" | "compliance.hold_released" | "compliance.subject_request_completed" | "speech.cap_near" | "speech.cap_reached" | "webhook.test";
             /**
              * Format: date-time
              * @description When the event happened, RFC 3339.
@@ -30799,6 +30863,38 @@ export interface operations {
         };
     };
     backups_run_destination: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The destination */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Asked for; follow the run */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunView"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backups_check_destination: {
         parameters: {
             query?: never;
             header?: never;

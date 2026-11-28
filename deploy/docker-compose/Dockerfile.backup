@@ -20,21 +20,31 @@ RUN cargo build --release -p fcp-backup
 
 FROM postgres:16
 
-# restic, pinned and checked; ssh for its SFTP backend.
+# restic, pinned and checked; ssh for its SFTP backend; rclone for an
+# rclone destination (docs/SCHEDULED_BACKUPS.md B4).
 ARG RESTIC_VERSION=0.17.3
 ARG RESTIC_SHA256=5097faeda6aa13167aae6e36efdba636637f8741fed89bbf015678334632d4d3
+ARG RCLONE_VERSION=1.68.2
+ARG RCLONE_SHA256=0e6fa18051e67fc600d803a2dcb10ddedb092247fc6eee61be97f64ec080a13c
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     bzip2 \
+    unzip \
     openssh-client \
+    && curl -fsSL -o /tmp/rclone.zip \
+       "https://github.com/rclone/rclone/releases/download/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip" \
+    && echo "${RCLONE_SHA256}  /tmp/rclone.zip" | sha256sum -c - \
+    && unzip -q /tmp/rclone.zip -d /tmp \
+    && install -m 0755 "/tmp/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone \
+    && rm -rf /tmp/rclone.zip "/tmp/rclone-v${RCLONE_VERSION}-linux-amd64" \
     && curl -fsSL -o /tmp/restic.bz2 \
        "https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_amd64.bz2" \
     && echo "${RESTIC_SHA256}  /tmp/restic.bz2" | sha256sum -c - \
     && bunzip2 /tmp/restic.bz2 \
     && install -m 0755 /tmp/restic /usr/local/bin/restic \
     && rm -f /tmp/restic \
-    && apt-get purge -y bzip2 \
+    && apt-get purge -y bzip2 unzip \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
