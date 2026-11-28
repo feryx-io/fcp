@@ -1,6 +1,8 @@
 # Backups from the admin
 
-Designed 2026-11-27. Backup and restore exist (`docs/BACKUP_AND_RESTORE.md`,
+Designed 2026-11-27; the questions were agreed the same day on every
+recommendation except one: question 9, where tenant administrators may see
+the platform's backups and put back their own files. Backup and restore exist (`docs/BACKUP_AND_RESTORE.md`,
 `deploy/docker-compose/scripts/backup.sh` and `restore.sh`), but an
 operator runs them by hand on the host. Nothing schedules them, nothing
 takes them off the box, and the admin knows nothing of them.
@@ -157,9 +159,19 @@ is the one dangerous power in the design.
   every site's last backup. A site whose backups stopped is visible without
   logging into it.
 
-**Who may.** Only a platform administrator, on new `backup_read` and
-`backup_manage` permissions. A backup is every tenant's data. A restore,
-and turning on a destination, is audited.
+**Who may.**
+- **A platform administrator** may do everything, on new `backup_read`
+  and `backup_manage` permissions. A backup is every tenant's data.
+- **A tenant administrator** gets two things (Q9):
+  - `backup_read` held to their tenant: the platform's schedule and when
+    the last good backup was taken (never its destinations or secrets);
+  - `backup_restore_own`: putting back their own tenant's lost files
+    (recordings, voicemail and prompts) from a snapshot.
+
+  The files are picked by the tenant's own rows that name them, so a
+  tenant can reach no other tenant's file. A tenant never downloads a
+  snapshot or restores the system.
+- **Audited:** restores, key downloads and changes to destinations.
 
 ## 3. The API
 
@@ -175,6 +187,12 @@ and turning on a destination, is audited.
   /api/v1/system/backups/restores/{id}` reports its steps.
 - `GET /api/v1/system/backups/key`: the master key, wrapped in a
   passphrase given in the request. This is audited.
+- For a tenant administrator:
+  - `GET /api/v1/backups`: the schedule and the last good backup.
+  - `GET /api/v1/backups/missing`: the tenant's recordings, voicemail and
+    prompts whose files are gone, with the snapshots that hold them.
+  - `POST /api/v1/backups/restore-files`: `{snapshot, items}`, put back
+    beside what is there.
 
 ## 4. The page
 
@@ -188,6 +206,8 @@ and turning on a destination, is audited.
 - **Setup:** a first-run panel, "Download your master key", until a key
   file has been downloaded once.
 - **Sites:** a card listing each site's last backup.
+- **A tenant's Backups page:** the last good backup, and the tenant's
+  missing files with a Restore button for each or for all.
 
 ## 5. Phases
 
@@ -200,7 +220,8 @@ and turning on a destination, is audited.
     Garage, plus a snapshot `restore.sh` takes.
 - **B2: the page,** with the key download, and a Playwright spec.
 - **B3: restoring from the admin.**
-  - Download in `backup.sh` layout; partial restores.
+  - Download in `backup.sh` layout; partial restores, the tenant's own
+    included.
   - Maintenance mode on every service; the full restore, through the
     Docker socket or the operator's commands, with the database swapped by
     rename.
@@ -232,4 +253,7 @@ and turning on a destination, is audited.
 8. **Sites:** each runs its own, its status visible in the cloud
    (recommended); or the cloud backs sites up through the link.
 9. **Who:** platform administrators only, on new permissions, restores
-   audited (recommended).
+   audited (recommended). **Agreed instead:** tenant administrators too.
+   They see the platform's schedule and last good backup, and restore their
+   own files picked by their own rows. Everything else stays with the
+   platform.
