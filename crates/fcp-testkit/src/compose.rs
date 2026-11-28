@@ -62,6 +62,7 @@ fn binary_for(dockerfile: &str) -> Option<(&'static str, &'static str)> {
         "presence" => ("fcp-presence-server", "fcp-presence"),
         "tts" | "tts-full" => ("fcp-tts-server", "fcp-tts"),
         "link" => ("fcp-link", "fcp-link"),
+        "backup" => ("fcp-backup", "fcp-backup"),
         _ => return None,
     })
 }

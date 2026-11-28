@@ -3755,6 +3755,7 @@ pub struct DynStorage {
     speech_store: Option<Arc<dyn crate::speech::SpeechSettingsStore>>,
     speech_account_store: Option<Arc<dyn crate::speech::SpeechAccountStore>>,
     speech_usage_store: Option<Arc<dyn crate::speech::SpeechUsageStore>>,
+    backup_store: Option<Arc<dyn crate::backup::BackupStore>>,
     contact_store: Option<Arc<dyn crate::contact::ContactStore>>,
     presence_status_store: Option<Arc<dyn crate::presence_status::PresenceStatusStore>>,
     parking_lot_store: Option<Arc<dyn crate::parking::ParkingLotStore>>,
@@ -3847,6 +3848,7 @@ impl DynStorage {
             speech_store: None,
             speech_account_store: None,
             speech_usage_store: None,
+            backup_store: None,
             contact_store: None,
             presence_status_store: None,
             parking_lot_store: None,
@@ -3948,6 +3950,7 @@ impl DynStorage {
             speech_store: None,
             speech_account_store: None,
             speech_usage_store: None,
+            backup_store: None,
             contact_store: None,
             presence_status_store: None,
             parking_lot_store: None,
@@ -4409,6 +4412,16 @@ impl DynStorage {
 
     pub fn speech_usage_store(&self) -> Option<&Arc<dyn crate::speech::SpeechUsageStore>> {
         self.speech_usage_store.as_ref()
+    }
+
+    /// Backup destinations and runs (`docs/SCHEDULED_BACKUPS.md`).
+    pub fn with_backup_store(mut self, store: Arc<dyn crate::backup::BackupStore>) -> Self {
+        self.backup_store = Some(store);
+        self
+    }
+
+    pub fn backup_store(&self) -> Option<&Arc<dyn crate::backup::BackupStore>> {
+        self.backup_store.as_ref()
     }
 
     pub fn speech_account_store(&self) -> Option<&Arc<dyn crate::speech::SpeechAccountStore>> {

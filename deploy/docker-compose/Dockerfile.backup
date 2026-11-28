@@ -1,0 +1,47 @@
+# fcp-backup (docs/SCHEDULED_BACKUPS.md): the database and the files to
+# restic repositories off the box. On the postgres image the stack runs,
+# so pg_dump is the server's own version (a newer one writes archives the
+# stack's pg_restore cannot read).
+FROM rust:1.98 as builder
+
+RUN apt-get update && apt-get install -y \
+    cmake \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY external ./external
+
+RUN cargo build --release -p fcp-backup
+
+FROM postgres:16
+
+# restic, pinned and checked; ssh for its SFTP backend.
+ARG RESTIC_VERSION=0.17.3
+ARG RESTIC_SHA256=5097faeda6aa13167aae6e36efdba636637f8741fed89bbf015678334632d4d3
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    bzip2 \
+    openssh-client \
+    && curl -fsSL -o /tmp/restic.bz2 \
+       "https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}/restic_${RESTIC_VERSION}_linux_amd64.bz2" \
+    && echo "${RESTIC_SHA256}  /tmp/restic.bz2" | sha256sum -c - \
+    && bunzip2 /tmp/restic.bz2 \
+    && install -m 0755 /tmp/restic /usr/local/bin/restic \
+    && rm -f /tmp/restic \
+    && apt-get purge -y bzip2 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=builder /app/target/release/fcp-backup /app/fcp-backup
+
+EXPOSE 8096
+
+ENTRYPOINT []
+CMD ["/app/fcp-backup", "--config", "/app/fcp-backup.toml"]

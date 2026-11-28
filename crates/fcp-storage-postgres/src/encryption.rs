@@ -123,6 +123,22 @@ pub(crate) const SEALED_COLUMNS: &[SealedColumn] = &[
         column: "secret",
         json_field: None,
     },
+    // Backup destinations' secrets (docs/SCHEDULED_BACKUPS.md B1).
+    SealedColumn {
+        table: "backup_destinations",
+        column: "password",
+        json_field: None,
+    },
+    SealedColumn {
+        table: "backup_destinations",
+        column: "private_key",
+        json_field: None,
+    },
+    SealedColumn {
+        table: "backup_destinations",
+        column: "secret_access_key",
+        json_field: None,
+    },
 ];
 
 /// Live encryption state for one backend instance.

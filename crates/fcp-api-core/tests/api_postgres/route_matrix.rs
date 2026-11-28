@@ -799,6 +799,9 @@ fn not_cross_tenant(method: &str, path: &str) -> Option<&'static str> {
     if path.starts_with("/queues/") {
         return Some("the runtime queue manager's queues by name; seeded only for tenant A");
     }
+    if path.starts_with("/system/backups/") {
+        return Some("the platform's backups (docs/SCHEDULED_BACKUPS.md): no tenant's");
+    }
     if path.starts_with("/system/speech/caps/") {
         return Some("a platform provider's default cap, by the provider's name: no tenant's");
     }

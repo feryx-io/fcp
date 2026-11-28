@@ -116,6 +116,7 @@ pub async fn initialize_storage(config: &StorageConfig) -> Result<StorageResult>
         .with_speech_store(storage.clone() as Arc<dyn fcp_core::speech::SpeechSettingsStore>)
         .with_speech_account_store(storage.clone() as Arc<dyn fcp_core::speech::SpeechAccountStore>)
         .with_speech_usage_store(storage.clone() as Arc<dyn fcp_core::speech::SpeechUsageStore>)
+        .with_backup_store(storage.clone() as Arc<dyn fcp_core::backup::BackupStore>)
         .with_contact_store(storage.clone() as Arc<dyn fcp_core::contact::ContactStore>)
         .with_parking_lot_store(storage.clone() as Arc<dyn fcp_core::parking::ParkingLotStore>)
         .with_line_label_store(storage.clone() as Arc<dyn fcp_core::line_label::LineLabelStore>)

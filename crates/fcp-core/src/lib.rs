@@ -3,6 +3,7 @@
 //! This crate holds common error types, identifiers, and configuration
 //! structures that other crates depend on.
 
+pub mod backup;
 pub mod billing;
 pub mod branding;
 pub mod cached_storage;

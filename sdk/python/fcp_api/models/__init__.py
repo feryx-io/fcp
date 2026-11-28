@@ -30,6 +30,8 @@ from .auth_user_response import AuthUserResponse
 from .avatar_upload import AvatarUpload
 from .b_tree_map import BTreeMap
 from .backchannel_logout_form import BackchannelLogoutForm
+from .backup_run_kind import BackupRunKind
+from .backup_run_state import BackupRunState
 from .balance_response import BalanceResponse
 from .balance_transaction_kind import BalanceTransactionKind
 from .balance_transaction_response import BalanceTransactionResponse
@@ -118,6 +120,8 @@ from .delete_config_response import DeleteConfigResponse
 from .deletion_response import DeletionResponse
 from .destination_class import DestinationClass
 from .destination_override import DestinationOverride
+from .destination_request import DestinationRequest
+from .destination_view import DestinationView
 from .device_app_response import DeviceAppResponse
 from .device_binding_response import DeviceBindingResponse
 from .device_fetch_response import DeviceFetchResponse
@@ -272,6 +276,8 @@ from .page_debug_call_info import PageDebugCallInfo
 from .page_debug_call_info_data_item import PageDebugCallInfoDataItem
 from .page_deletion_response import PageDeletionResponse
 from .page_deletion_response_data_item import PageDeletionResponseDataItem
+from .page_destination_view import PageDestinationView
+from .page_destination_view_data_item import PageDestinationViewDataItem
 from .page_device_fetch_response import PageDeviceFetchResponse
 from .page_device_fetch_response_data_item import PageDeviceFetchResponseDataItem
 from .page_device_response import PageDeviceResponse
@@ -381,6 +387,8 @@ from .page_retention_run_response import PageRetentionRunResponse
 from .page_retention_run_response_data_item import PageRetentionRunResponseDataItem
 from .page_routing_rule_response import PageRoutingRuleResponse
 from .page_routing_rule_response_data_item import PageRoutingRuleResponseDataItem
+from .page_run_view import PageRunView
+from .page_run_view_data_item import PageRunViewDataItem
 from .page_schedule_response import PageScheduleResponse
 from .page_schedule_response_data_item import PageScheduleResponseDataItem
 from .page_service_view import PageServiceView
@@ -499,6 +507,7 @@ from .required_claim import RequiredClaim
 from .resource_counts import ResourceCounts
 from .resync_response import ResyncResponse
 from .retention_run_response import RetentionRunResponse
+from .retention_view import RetentionView
 from .retrieve_parked_request import RetrieveParkedRequest
 from .rewrap_report import RewrapReport
 from .rollout_stage import RolloutStage
@@ -507,12 +516,14 @@ from .rotate_webhook_secret_request import RotateWebhookSecretRequest
 from .routing_rule_response import RoutingRuleResponse
 from .rtmp_destination_request import RtmpDestinationRequest
 from .rtmp_destination_response import RtmpDestinationResponse
+from .run_view import RunView
 from .saml_logout_post import SamlLogoutPost
 from .saml_post import SamlPost
 from .saml_settings import SamlSettings
 from .say_request import SayRequest
 from .schedule_request import ScheduleRequest
 from .schedule_response import ScheduleResponse
+from .schedule_view import ScheduleView
 from .seal_request import SealRequest
 from .seal_response import SealResponse
 from .service_check_view import ServiceCheckView
@@ -578,6 +589,14 @@ from .subject_request_response import SubjectRequestResponse
 from .subscription_info import SubscriptionInfo
 from .supervise_request import SuperviseRequest
 from .synthesize_greeting_request import SynthesizeGreetingRequest
+from .target_request_type_0 import TargetRequestType0
+from .target_request_type_0_type import TargetRequestType0Type
+from .target_request_type_1 import TargetRequestType1
+from .target_request_type_1_type import TargetRequestType1Type
+from .target_view_type_0 import TargetViewType0
+from .target_view_type_0_type import TargetViewType0Type
+from .target_view_type_1 import TargetViewType1
+from .target_view_type_1_type import TargetViewType1Type
 from .template_resync_response import TemplateResyncResponse
 from .tenant_calling import TenantCalling
 from .tenant_diagnostics import TenantDiagnostics
@@ -694,6 +713,8 @@ __all__ = (
     "AuthUserResponse",
     "AvatarUpload",
     "BackchannelLogoutForm",
+    "BackupRunKind",
+    "BackupRunState",
     "BalanceResponse",
     "BalanceTransactionKind",
     "BalanceTransactionResponse",
@@ -783,6 +804,8 @@ __all__ = (
     "DeletionResponse",
     "DestinationClass",
     "DestinationOverride",
+    "DestinationRequest",
+    "DestinationView",
     "DeviceAppResponse",
     "DeviceBindingResponse",
     "DeviceFetchResponse",
@@ -937,6 +960,8 @@ __all__ = (
     "PageDebugCallInfoDataItem",
     "PageDeletionResponse",
     "PageDeletionResponseDataItem",
+    "PageDestinationView",
+    "PageDestinationViewDataItem",
     "PageDeviceFetchResponse",
     "PageDeviceFetchResponseDataItem",
     "PageDeviceResponse",
@@ -1046,6 +1071,8 @@ __all__ = (
     "PageRetentionRunResponseDataItem",
     "PageRoutingRuleResponse",
     "PageRoutingRuleResponseDataItem",
+    "PageRunView",
+    "PageRunViewDataItem",
     "PageScheduleResponse",
     "PageScheduleResponseDataItem",
     "PageServiceView",
@@ -1164,6 +1191,7 @@ __all__ = (
     "ResourceCounts",
     "ResyncResponse",
     "RetentionRunResponse",
+    "RetentionView",
     "RetrieveParkedRequest",
     "RewrapReport",
     "RolloutStage",
@@ -1172,12 +1200,14 @@ __all__ = (
     "RoutingRuleResponse",
     "RtmpDestinationRequest",
     "RtmpDestinationResponse",
+    "RunView",
     "SamlLogoutPost",
     "SamlPost",
     "SamlSettings",
     "SayRequest",
     "ScheduleRequest",
     "ScheduleResponse",
+    "ScheduleView",
     "SealRequest",
     "SealResponse",
     "ServiceCheckView",
@@ -1243,6 +1273,14 @@ __all__ = (
     "SubscriptionInfo",
     "SuperviseRequest",
     "SynthesizeGreetingRequest",
+    "TargetRequestType0",
+    "TargetRequestType0Type",
+    "TargetRequestType1",
+    "TargetRequestType1Type",
+    "TargetViewType0",
+    "TargetViewType0Type",
+    "TargetViewType1",
+    "TargetViewType1Type",
     "TemplateResyncResponse",
     "TenantCalling",
     "TenantDiagnostics",

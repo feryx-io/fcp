@@ -223,6 +223,15 @@ jobs:
           baresip -h 2>&1 | head -1
           ls /usr/lib/baresip/modules | tr '\n' ' '
           echo "FCP_BARESIP_MODULES=/usr/lib/baresip/modules" >> "$GITHUB_ENV"
+      # restic and an OpenSSH server for crates/fcp-backup/tests/backup.rs
+      # (docs/SCHEDULED_BACKUPS.md B1): the test runs its own sshd as a stand-in
+      # SFTP server; FCP_BACKUP_TESTS=required makes their absence a failure.
+      - name: restic and sshd for the backup test
+        run: |
+          command -v restic >/dev/null || sudo apt-get install -y restic
+          restic version
+          ls /usr/sbin/sshd >/dev/null 2>&1 || sudo apt-get install -y openssh-server
+          ls /usr/lib/openssh/sftp-server
       # Every request that reaches an /api/v1 route, in this test process or
       # an admin binary a test starts, is logged to FCP_ROUTE_LOG
       # (fcp_api_core::route_log) for the step after.
@@ -231,6 +240,7 @@ jobs:
           FCP_SDK_TESTS: required
           FCP_SIPP_TESTS: required
           FCP_BARESIP_TESTS: required
+          FCP_BACKUP_TESTS: required
           FCP_ROUTE_LOG: ${{ runner.temp }}/routes.log
         run: cargo test --all-targets --features fcp-conference-server/recording-webm,fcp-conference-server/recording-mp4,fcp-conference-server/rtmp,fcp-conference-server/video-openh264,fcp-api-core/saml
       # docs/DEEP_TESTING.md D1: every operation in the contract is called

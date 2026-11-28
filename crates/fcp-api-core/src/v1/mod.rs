@@ -3,6 +3,7 @@
 pub mod api_tokens;
 pub mod app_auth;
 pub mod auth_session;
+pub mod backups;
 pub mod billing;
 pub mod branding;
 pub mod call_control;
@@ -450,6 +451,25 @@ pub fn router() -> Router<ApiState> {
             "/system/speech",
             get(speech::get_platform).put(speech::put_platform),
         )
+        // Backups from the admin (docs/SCHEDULED_BACKUPS.md), platform only.
+        .route(
+            "/system/backups/destinations",
+            get(backups::list_destinations).post(backups::create_destination),
+        )
+        .route(
+            "/system/backups/destinations/:id",
+            put(backups::update_destination).delete(backups::delete_destination),
+        )
+        .route(
+            "/system/backups/destinations/:id/test",
+            post(backups::test_destination),
+        )
+        .route(
+            "/system/backups/destinations/:id/run",
+            post(backups::run_destination),
+        )
+        .route("/system/backups/runs", get(backups::list_runs))
+        .route("/system/backups/runs/:id", get(backups::get_run))
         .route("/system/speech/caps", get(speech::list_platform_caps))
         .route(
             "/system/speech/caps/:provider",

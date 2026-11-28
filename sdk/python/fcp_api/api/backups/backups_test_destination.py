@@ -1,0 +1,178 @@
+from http import HTTPStatus
+from typing import Any, cast
+from urllib.parse import quote
+
+import httpx
+
+from ...client import AuthenticatedClient, Client
+from ...types import Response, UNSET
+from ... import errors
+
+from ...models.error_response import ErrorResponse
+from ...models.run_view import RunView
+from typing import cast
+
+
+
+def _get_kwargs(
+    id: str,
+
+) -> dict[str, Any]:
+    
+
+    
+
+    
+
+    _kwargs: dict[str, Any] = {
+        "method": "post",
+        "url": "/api/v1/system/backups/destinations/{id}/test".format(id=quote(str(id), safe=""),),
+    }
+
+
+    return _kwargs
+
+
+
+def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> ErrorResponse | RunView:
+    if response.status_code == 202:
+        response_202 = RunView.from_dict(response.json())
+
+
+
+        return response_202
+
+    response_default = ErrorResponse.from_dict(response.json())
+
+
+
+    return response_default
+
+
+
+def _build_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> Response[ErrorResponse | RunView]:
+    return Response(
+        status_code=HTTPStatus(response.status_code),
+        content=response.content,
+        headers=response.headers,
+        parsed=_parse_response(client=client, response=response),
+    )
+
+
+def sync_detailed(
+    id: str,
+    *,
+    client: AuthenticatedClient | Client,
+
+) -> Response[ErrorResponse | RunView]:
+    """ POST /system/backups/destinations/{id}/test — reach it, pin its host
+    key, write and remove a probe; the run says how it went.
+
+    Args:
+        id (str):
+
+    Raises:
+        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
+        httpx.TimeoutException: If the request takes longer than Client.timeout.
+
+    Returns:
+        Response[ErrorResponse | RunView]
+     """
+
+
+    kwargs = _get_kwargs(
+        id=id,
+
+    )
+
+    response = client.get_httpx_client().request(
+        **kwargs,
+    )
+
+    return _build_response(client=client, response=response)
+
+def sync(
+    id: str,
+    *,
+    client: AuthenticatedClient | Client,
+
+) -> ErrorResponse | RunView | None:
+    """ POST /system/backups/destinations/{id}/test — reach it, pin its host
+    key, write and remove a probe; the run says how it went.
+
+    Args:
+        id (str):
+
+    Raises:
+        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
+        httpx.TimeoutException: If the request takes longer than Client.timeout.
+
+    Returns:
+        ErrorResponse | RunView
+     """
+
+
+    return sync_detailed(
+        id=id,
+client=client,
+
+    ).parsed
+
+async def asyncio_detailed(
+    id: str,
+    *,
+    client: AuthenticatedClient | Client,
+
+) -> Response[ErrorResponse | RunView]:
+    """ POST /system/backups/destinations/{id}/test — reach it, pin its host
+    key, write and remove a probe; the run says how it went.
+
+    Args:
+        id (str):
+
+    Raises:
+        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
+        httpx.TimeoutException: If the request takes longer than Client.timeout.
+
+    Returns:
+        Response[ErrorResponse | RunView]
+     """
+
+
+    kwargs = _get_kwargs(
+        id=id,
+
+    )
+
+    response = await client.get_async_httpx_client().request(
+        **kwargs
+    )
+
+    return _build_response(client=client, response=response)
+
+async def asyncio(
+    id: str,
+    *,
+    client: AuthenticatedClient | Client,
+
+) -> ErrorResponse | RunView | None:
+    """ POST /system/backups/destinations/{id}/test — reach it, pin its host
+    key, write and remove a probe; the run says how it went.
+
+    Args:
+        id (str):
+
+    Raises:
+        errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
+        httpx.TimeoutException: If the request takes longer than Client.timeout.
+
+    Returns:
+        ErrorResponse | RunView
+     """
+
+
+    return (await asyncio_detailed(
+        id=id,
+client=client,
+
+    )).parsed

@@ -17609,6 +17609,339 @@
         }
       }
     },
+    "/api/v1/system/backups/destinations": {
+      "get": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "GET /system/backups/destinations",
+        "operationId": "backups_list_destinations",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_DestinationView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "POST /system/backups/destinations",
+        "operationId": "backups_create_destination",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DestinationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Made; a generated password is shown this once",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DestinationView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/backups/destinations/{id}": {
+      "put": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "PUT /system/backups/destinations/{id}",
+        "operationId": "backups_update_destination",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The destination",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DestinationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DestinationView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "DELETE /system/backups/destinations/{id} — what is stored there stays.",
+        "operationId": "backups_delete_destination",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The destination",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed; the snapshots at the destination are not touched"
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/backups/destinations/{id}/test": {
+      "post": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "POST /system/backups/destinations/{id}/test — reach it, pin its host\nkey, write and remove a probe; the run says how it went.",
+        "operationId": "backups_test_destination",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The destination",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Asked for; follow the run",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/backups/destinations/{id}/run": {
+      "post": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "POST /system/backups/destinations/{id}/run — back up now.",
+        "operationId": "backups_run_destination",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The destination",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Asked for; follow the run",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/backups/runs": {
+      "get": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "GET /system/backups/runs",
+        "operationId": "backups_list_runs",
+        "parameters": [
+          {
+            "name": "destination",
+            "in": "query",
+            "description": "One destination's runs (`bkd-<uuid>`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "At most this many, newest first (100 by default, 1000 at most).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_RunView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/system/backups/runs/{id}": {
+      "get": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "GET /system/backups/runs/{id}",
+        "operationId": "backups_get_run",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The run",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunView"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/speech/caps": {
       "get": {
         "tags": [
@@ -25230,6 +25563,24 @@
           }
         }
       },
+      "BackupRunKind": {
+        "type": "string",
+        "description": "What a run did.",
+        "enum": [
+          "backup",
+          "test"
+        ]
+      },
+      "BackupRunState": {
+        "type": "string",
+        "description": "Where a run is.",
+        "enum": [
+          "requested",
+          "running",
+          "succeeded",
+          "failed"
+        ]
+      },
       "BalanceResponse": {
         "type": "object",
         "description": "Balance response.",
@@ -29858,6 +30209,128 @@
           },
           "class": {
             "$ref": "#/components/schemas/DestinationClass"
+          }
+        }
+      },
+      "DestinationRequest": {
+        "type": "object",
+        "description": "A destination to make or change.",
+        "required": [
+          "name",
+          "target"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/TargetRequest"
+          },
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The repository password; write-only. Left out when a destination is\nmade, one is generated and shown once."
+          },
+          "schedule": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ScheduleView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "keep": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RetentionView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "include_key": {
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "DestinationView": {
+        "type": "object",
+        "description": "A backup destination.",
+        "required": [
+          "id",
+          "name",
+          "target",
+          "has_password",
+          "schedule",
+          "keep",
+          "include_key",
+          "enabled",
+          "repository",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "`bkd-<uuid>`."
+          },
+          "name": {
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/TargetView"
+          },
+          "has_password": {
+            "type": "boolean"
+          },
+          "schedule": {
+            "$ref": "#/components/schemas/ScheduleView"
+          },
+          "keep": {
+            "$ref": "#/components/schemas/RetentionView"
+          },
+          "include_key": {
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "repository": {
+            "type": "string",
+            "description": "The repository's address as restic names it, for restoring by hand."
+          },
+          "last_run": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RunView",
+                "description": "The last run of a backup, if any."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Shown once, when a destination is made without a password and one\nis generated: keep it, it opens every snapshot."
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
           }
         }
       },
@@ -35444,6 +35917,106 @@
           }
         }
       },
+      "Page_DestinationView": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A backup destination.",
+              "required": [
+                "id",
+                "name",
+                "target",
+                "has_password",
+                "schedule",
+                "keep",
+                "include_key",
+                "enabled",
+                "repository",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "`bkd-<uuid>`."
+                },
+                "name": {
+                  "type": "string"
+                },
+                "target": {
+                  "$ref": "#/components/schemas/TargetView"
+                },
+                "has_password": {
+                  "type": "boolean"
+                },
+                "schedule": {
+                  "$ref": "#/components/schemas/ScheduleView"
+                },
+                "keep": {
+                  "$ref": "#/components/schemas/RetentionView"
+                },
+                "include_key": {
+                  "type": "boolean"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "repository": {
+                  "type": "string",
+                  "description": "The repository's address as restic names it, for restoring by hand."
+                },
+                "last_run": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/RunView",
+                      "description": "The last run of a backup, if any."
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "password": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Shown once, when a destination is made without a password and one\nis generated: keep it, it opens every snapshot."
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
       "Page_DeviceFetchResponse": {
         "type": "object",
         "description": "A page of a list.",
@@ -40597,6 +41170,104 @@
                 "updated_at": {
                   "type": "string",
                   "format": "date-time"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cursor for the next page; null on the last."
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "How many items the whole list holds, where that is known.",
+            "minimum": 0
+          }
+        }
+      },
+      "Page_RunView": {
+        "type": "object",
+        "description": "A page of a list.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A run of a destination.",
+              "required": [
+                "id",
+                "destination_id",
+                "kind",
+                "state",
+                "trigger",
+                "requested_at",
+                "snapshots",
+                "bytes_added"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "`bkr-<uuid>`."
+                },
+                "destination_id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "$ref": "#/components/schemas/BackupRunKind"
+                },
+                "state": {
+                  "$ref": "#/components/schemas/BackupRunState"
+                },
+                "trigger": {
+                  "type": "string"
+                },
+                "requested_at": {
+                  "type": "string"
+                },
+                "started_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "finished_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "snapshots": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "bytes_added": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                },
+                "message": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "node": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               }
             }
@@ -45998,6 +46669,31 @@
           }
         }
       },
+      "RetentionView": {
+        "type": "object",
+        "required": [
+          "daily",
+          "weekly",
+          "monthly"
+        ],
+        "properties": {
+          "daily": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "weekly": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "monthly": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "RetrieveParkedRequest": {
         "type": "object",
         "description": "Where a parked call is sent.",
@@ -46243,6 +46939,76 @@
           }
         }
       },
+      "RunView": {
+        "type": "object",
+        "description": "A run of a destination.",
+        "required": [
+          "id",
+          "destination_id",
+          "kind",
+          "state",
+          "trigger",
+          "requested_at",
+          "snapshots",
+          "bytes_added"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "`bkr-<uuid>`."
+          },
+          "destination_id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/BackupRunKind"
+          },
+          "state": {
+            "$ref": "#/components/schemas/BackupRunState"
+          },
+          "trigger": {
+            "type": "string"
+          },
+          "requested_at": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "snapshots": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "bytes_added": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "SamlLogoutPost": {
         "type": "object",
         "description": "What a SAML provider posts to ask for a logout, or to answer FCP's\n(the HTTP-POST binding).",
@@ -46421,6 +47187,18 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "ScheduleView": {
+        "type": "object",
+        "properties": {
+          "time_of_day": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A daily backup at `HH:MM`, UTC; unset, none is scheduled."
           }
         }
       },
@@ -48569,6 +49347,187 @@
             "minimum": 0
           }
         }
+      },
+      "TargetRequest": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "host",
+              "user",
+              "path",
+              "type"
+            ],
+            "properties": {
+              "host": {
+                "type": "string"
+              },
+              "port": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "minimum": 0
+              },
+              "user": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "private_key": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "An OpenSSH private key; write-only."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "sftp"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "endpoint",
+              "bucket",
+              "access_key_id",
+              "type"
+            ],
+            "properties": {
+              "endpoint": {
+                "type": "string"
+              },
+              "bucket": {
+                "type": "string"
+              },
+              "region": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "prefix": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "access_key_id": {
+                "type": "string"
+              },
+              "secret_access_key": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Write-only."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "s3"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "A destination's target to keep; a secret left out on a change keeps the\none kept."
+      },
+      "TargetView": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "host",
+              "port",
+              "user",
+              "path",
+              "has_private_key",
+              "type"
+            ],
+            "properties": {
+              "host": {
+                "type": "string"
+              },
+              "port": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "user": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "has_private_key": {
+                "type": "boolean"
+              },
+              "host_key": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The server's host key as pinned by the first test."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "sftp"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "endpoint",
+              "bucket",
+              "access_key_id",
+              "has_secret_access_key",
+              "type"
+            ],
+            "properties": {
+              "endpoint": {
+                "type": "string"
+              },
+              "bucket": {
+                "type": "string"
+              },
+              "region": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "prefix": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "access_key_id": {
+                "type": "string"
+              },
+              "has_secret_access_key": {
+                "type": "boolean"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "s3"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "A destination's target, its secrets never shown."
       },
       "TemplateResyncResponse": {
         "type": "object",
@@ -53022,6 +53981,8 @@
               "system.site_link_changed",
               "system.service_up",
               "system.service_down",
+              "system.backup_completed",
+              "system.backup_failed",
               "device.firmware_behind",
               "device.push_failed",
               "user.created",
