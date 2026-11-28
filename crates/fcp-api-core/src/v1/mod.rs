@@ -468,6 +468,10 @@ pub fn router() -> Router<ApiState> {
             "/system/backups/destinations/:id/run",
             post(backups::run_destination),
         )
+        .route(
+            "/system/backups/key",
+            get(backups::key_status).post(backups::export_key),
+        )
         .route("/system/backups/runs", get(backups::list_runs))
         .route("/system/backups/runs/:id", get(backups::get_run))
         .route("/system/speech/caps", get(speech::list_platform_caps))

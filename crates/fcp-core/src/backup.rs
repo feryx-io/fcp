@@ -272,6 +272,16 @@ pub trait BackupStore: Send + Sync {
         &self,
         destination: &uuid::Uuid,
     ) -> anyhow::Result<Option<BackupRun>>;
+
+    /// The master key downloaded from the page for `kek_id`, by `actor`.
+    async fn record_key_export(&self, _kek_id: &str, _actor: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// When the key for `kek_id` was last downloaded, and by whom.
+    async fn last_key_export(&self, _kek_id: &str) -> anyhow::Result<Option<(SystemTime, String)>> {
+        Ok(None)
+    }
 }
 
 /// Whether a run is due at `now` for a schedule whose last scheduled run

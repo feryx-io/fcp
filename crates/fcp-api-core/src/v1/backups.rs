@@ -735,3 +735,147 @@ pub async fn get_run(
         .ok_or_else(|| ApiError::NotFound("No such backup run".into()))?;
     Ok(Json(RunView::of(&run)))
 }
+
+// ── The master key, downloaded once (B2) ───────────────────────────────────
+
+/// Whether the master key can be downloaded here, and when it last was.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct KeyStatus {
+    /// `local`, `aws-kms` or `none`.
+    pub provider: String,
+    /// A local key can be downloaded; a KMS key never leaves the KMS.
+    pub exportable: bool,
+    pub kek_id: Option<String>,
+    /// When this KEK was last downloaded; until then the page asks for it.
+    pub last_exported_at: Option<String>,
+    pub last_exported_by: Option<String>,
+}
+
+fn encryption(state: &ApiState) -> Result<fcp_crypto::EncryptionSettings, ApiError> {
+    match &state.encryption {
+        Some(s) => Ok(s.clone()),
+        None => fcp_crypto::EncryptionSettings::from_env()
+            .map_err(|e| ApiError::ServiceUnavailable(format!("Encryption settings: {e}"))),
+    }
+}
+
+/// GET /system/backups/key
+#[utoipa::path(
+    get,
+    path = "/api/v1/system/backups/key",
+    tag = "backups",
+    operation_id = "backups_key_status",
+    responses(
+        (status = 200, description = "OK", body = KeyStatus),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn key_status(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+) -> Result<Json<KeyStatus>, ApiError> {
+    require_platform(&identity)?;
+    let settings = encryption(&state)?;
+    let export = settings.exportable_master_key();
+    let kek_id = export.as_ref().map(|(_, id)| id.clone());
+    let last = match &kek_id {
+        Some(id) => store(&state)?.last_key_export(id).await.map_err(internal)?,
+        None => None,
+    };
+    Ok(Json(KeyStatus {
+        provider: settings.provider_name().to_string(),
+        exportable: export.is_some(),
+        kek_id,
+        last_exported_at: last
+            .as_ref()
+            .map(|(at, _)| crate::time::format_system_time(*at)),
+        last_exported_by: last.map(|(_, by)| by),
+    }))
+}
+
+/// A passphrase to wrap the key in.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct KeyExportRequest {
+    /// At least 12 characters; kept nowhere, needed to open the file.
+    pub passphrase: String,
+}
+
+/// POST /system/backups/key — the local master key and its KEK id, as an
+/// age file wrapped in the passphrase (`age -d` opens it). Recorded and
+/// audited; the key itself is kept nowhere new.
+#[utoipa::path(
+    post,
+    path = "/api/v1/system/backups/key",
+    tag = "backups",
+    operation_id = "backups_export_key",
+    request_body = KeyExportRequest,
+    responses(
+        (status = 200, description = "The key, an ASCII-armored age file", content_type = "application/octet-stream", body = Vec<u8>),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn export_key(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    Json(req): Json<KeyExportRequest>,
+) -> Result<axum::response::Response, ApiError> {
+    use axum::response::IntoResponse;
+    use std::io::Write;
+    require_platform(&identity)?;
+    if req.passphrase.chars().count() < 12 || req.passphrase.len() > 1024 {
+        return Err(ApiError::BadRequest(
+            "A passphrase is 12 to 1024 characters".into(),
+        ));
+    }
+    let (key, kek_id) = encryption(&state)?.exportable_master_key().ok_or_else(|| {
+        ApiError::BadRequest(
+            "This deployment's master key is not local: a KMS key never leaves the KMS".into(),
+        )
+    })?;
+    let plain = serde_json::json!({
+        "format": "fcp-master-key-v1",
+        "kek_id": kek_id,
+        // As FCP_MASTER_KEY takes it, or the file FCP_MASTER_KEY_FILE names.
+        "master_key": key,
+    })
+    .to_string();
+    let encryptor =
+        age::Encryptor::with_user_passphrase(age::secrecy::SecretString::from(req.passphrase));
+    let mut armored = Vec::new();
+    {
+        let armor =
+            age::armor::ArmoredWriter::wrap_output(&mut armored, age::armor::Format::AsciiArmor)
+                .map_err(|e| ApiError::Internal(e.to_string()))?;
+        let mut w = encryptor
+            .wrap_output(armor)
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        w.write_all(plain.as_bytes())
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        w.finish()
+            .and_then(|armor| armor.finish())
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+    }
+    store(&state)?
+        .record_key_export(&kek_id, &identity.actor())
+        .await
+        .map_err(internal)?;
+    tracing::warn!(actor = %identity.actor(), kek_id = %kek_id, "The master key was downloaded from the backup page");
+    let name = format!("fcp-master-key-{}.age", kek_id.replace(':', "-"));
+    Ok((
+        StatusCode::OK,
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "application/octet-stream".to_string(),
+            ),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{name}\""),
+            ),
+            (axum::http::header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+        armored,
+    )
+        .into_response())
+}

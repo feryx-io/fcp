@@ -5487,6 +5487,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/backups/key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /system/backups/key */
+        get: operations["backups_key_status"];
+        put?: never;
+        /**
+         * POST /system/backups/key — the local master key and its KEK id, as an
+         *     age file wrapped in the passphrase (`age -d` opens it). Recorded and
+         *     audited; the key itself is kept nowhere new.
+         */
+        post: operations["backups_export_key"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/system/backups/runs": {
         parameters: {
             query?: never;
@@ -10201,6 +10223,22 @@ export interface components {
              *     `[conference] gateway_url` is configured.
              */
             join_url?: string | null;
+        };
+        /** @description A passphrase to wrap the key in. */
+        KeyExportRequest: {
+            /** @description At least 12 characters; kept nowhere, needed to open the file. */
+            passphrase: string;
+        };
+        /** @description Whether the master key can be downloaded here, and when it last was. */
+        KeyStatus: {
+            /** @description `local`, `aws-kms` or `none`. */
+            provider: string;
+            /** @description A local key can be downloaded; a KMS key never leaves the KMS. */
+            exportable: boolean;
+            kek_id?: string | null;
+            /** @description When this KEK was last downloaded; until then the page asks for it. */
+            last_exported_at?: string | null;
+            last_exported_by?: string | null;
         };
         LcrRouteResponse: {
             id: string;
@@ -30402,6 +30440,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunView"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backups_key_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KeyStatus"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backups_export_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KeyExportRequest"];
+            };
+        };
+        responses: {
+            /** @description The key, an ASCII-armored age file */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": number[];
                 };
             };
             /** @description An error */

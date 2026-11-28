@@ -168,6 +168,7 @@ import type {
   SpeechAccountRequest,
   PlatformSpeech,
   SpeechUsagePeriod, SpeechCap, PlatformSpeechCap, CapUnit,
+  BackupDestination, BackupDestinationRequest, BackupRun, BackupKeyStatus,
   LogLine,
   LogLevel,
 } from '@/types'
@@ -1567,4 +1568,20 @@ export const webinars = {
     apiClient.get<AttendanceResponse>(
       `${meetingPath(id)}/attendance${sitting ? `?sitting=${encodeURIComponent(sitting)}` : ''}`,
     ),
+}
+
+// Backups from the admin (docs/SCHEDULED_BACKUPS.md), platform only.
+export const backups = {
+  destinations: () => apiClient.getAll<BackupDestination>('/system/backups/destinations'),
+  create: (body: BackupDestinationRequest) => apiClient.post<BackupDestination>('/system/backups/destinations', body),
+  update: (id: string, body: BackupDestinationRequest) =>
+    apiClient.put<BackupDestination>(`/system/backups/destinations/${encodeURIComponent(id)}`, body),
+  remove: (id: string) => apiClient.delete<void>(`/system/backups/destinations/${encodeURIComponent(id)}`),
+  test: (id: string) => apiClient.post<BackupRun>(`/system/backups/destinations/${encodeURIComponent(id)}/test`, {}),
+  run: (id: string) => apiClient.post<BackupRun>(`/system/backups/destinations/${encodeURIComponent(id)}/run`, {}),
+  runs: (destination?: string) =>
+    apiClient.getAll<BackupRun>(`/system/backups/runs${destination ? `?destination=${encodeURIComponent(destination)}` : ''}`),
+  keyStatus: () => apiClient.get<BackupKeyStatus>('/system/backups/key'),
+  /** The master key wrapped in `passphrase`, as an object URL to save. */
+  exportKey: (passphrase: string) => apiClient.postBlobUrl('/system/backups/key', { passphrase }),
 }

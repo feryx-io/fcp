@@ -17848,6 +17848,81 @@
         }
       }
     },
+    "/api/v1/system/backups/key": {
+      "get": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "GET /system/backups/key",
+        "operationId": "backups_key_status",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "backups"
+        ],
+        "summary": "POST /system/backups/key — the local master key and its KEK id, as an\nage file wrapped in the passphrase (`age -d` opens it). Recorded and\naudited; the key itself is kept nowhere new.",
+        "operationId": "backups_export_key",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The key, an ASCII-armored age file",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "An error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/system/backups/runs": {
       "get": {
         "tags": [
@@ -32716,6 +32791,57 @@
               "null"
             ],
             "description": "The gateway's join page with the token filled in, when\n`[conference] gateway_url` is configured."
+          }
+        }
+      },
+      "KeyExportRequest": {
+        "type": "object",
+        "description": "A passphrase to wrap the key in.",
+        "required": [
+          "passphrase"
+        ],
+        "properties": {
+          "passphrase": {
+            "type": "string",
+            "description": "At least 12 characters; kept nowhere, needed to open the file."
+          }
+        },
+        "additionalProperties": false
+      },
+      "KeyStatus": {
+        "type": "object",
+        "description": "Whether the master key can be downloaded here, and when it last was.",
+        "required": [
+          "provider",
+          "exportable"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "`local`, `aws-kms` or `none`."
+          },
+          "exportable": {
+            "type": "boolean",
+            "description": "A local key can be downloaded; a KMS key never leaves the KMS."
+          },
+          "kek_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_exported_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When this KEK was last downloaded; until then the page asks for it."
+          },
+          "last_exported_by": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
