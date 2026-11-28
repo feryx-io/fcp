@@ -320,6 +320,62 @@ impl BackupStore for PostgresStorage {
         Ok(())
     }
 
+    async fn backup_status(&self) -> anyhow::Result<Vec<fcp_core::backup::BackupStatus>> {
+        type Row = (
+            String,
+            String,
+            Option<String>,
+            bool,
+            bool,
+            DateTime<Utc>,
+            Option<DateTime<Utc>>,
+            Option<String>,
+            Option<DateTime<Utc>>,
+        );
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT d.id, d.name, d.target->>'type', d.enabled,
+                    (COALESCE(d.schedule->>'daily_at', '') <> '' OR COALESCE(d.schedule->>'cron', '') <> ''),
+                    d.created_at,
+                    (SELECT max(r.finished_at) FROM backup_runs r
+                      WHERE r.destination_id = d.id AND r.kind = 'backup' AND r.state = 'succeeded'),
+                    last.state, last.requested_at
+               FROM backup_destinations d
+               LEFT JOIN LATERAL (
+                   SELECT r.state, r.requested_at FROM backup_runs r
+                    WHERE r.destination_id = d.id AND r.kind = 'backup'
+                    ORDER BY r.requested_at DESC LIMIT 1
+               ) last ON TRUE
+              ORDER BY d.name",
+        )
+        .fetch_all(self.reads())
+        .await?;
+        let now = std::time::SystemTime::now();
+        let t = |d: DateTime<Utc>| d.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, name, kind, enabled, scheduled, created, success, state, at)| {
+                    fcp_core::backup::BackupStatus {
+                        destination_id: format!("bkd-{id}"),
+                        name,
+                        kind: kind.unwrap_or_default(),
+                        enabled,
+                        scheduled,
+                        overdue: fcp_core::backup::overdue_from(
+                            enabled && scheduled,
+                            created.into(),
+                            success.map(Into::into),
+                            now,
+                        ),
+                        last_success_at: success.map(t),
+                        last_run_state: state,
+                        last_run_at: at.map(t),
+                    }
+                },
+            )
+            .collect())
+    }
+
     async fn active_kek_id(&self) -> anyhow::Result<Option<String>> {
         Ok(sqlx::query_scalar::<_, String>(
             "SELECT kek_id FROM data_encryption_keys WHERE active ORDER BY created_at DESC LIMIT 1",

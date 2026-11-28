@@ -244,7 +244,8 @@ is the one dangerous power in the design.
   back, and lists what it will replace.
 - **Setup:** a first-run panel, "Download your master key", until a key
   file has been downloaded once.
-- **Sites:** a card listing each site's last backup.
+- **Sites:** a card listing each site's destinations and their last good
+  backup, overdue in red (the sites of the tenant picked).
 - **A tenant's Backups page:** the last good backup, and the tenant's
   missing files with a Restore button for each or for all.
 
@@ -567,6 +568,33 @@ is the one dangerous power in the design.
   - **Left:** the cron expression (`schedule.cron` is still read by
     nothing).
 - **B5: sites.** The site's own service, and runs up the link.
+
+  **Done (v0.25.676):**
+  - **The site's own service:**
+    - `deploy/docker-compose/site` runs `fcp-backup` (`site-backup`) over
+      `fcp-certs`, `admin-data`, `call-manager-data` and `link-data`, all
+      read-only. The firmware is left out because the link fetches it
+      again.
+    - It has its own `configs/fcp-backup.toml` and `.env` token.
+    - The site's admin takes `[backup] url`, and
+      `docker-compose.restore.yml` switches restores on for the site. It
+      is set up on the site's own admin, since backup destinations are not
+      journaled and so are the site's own.
+  - **Up the link:**
+    - `BackupStore::backup_status` reads every destination's kind,
+      schedule, last good backup, last run and `overdue` (`overdue_from`)
+      without opening a secret: the link holds no key to the site's sealed
+      columns.
+    - The link puts them on its heartbeat (`SiteHeartbeat.backups`, its
+      site storage now with the backup store).
+    - The cloud's `/api/v1/sites/{id}` shows them as `backups`, and the
+      platform's Backups page lists each site's destinations, with
+      overdue in red.
+    - A site's own `system.backup_*` events go up with the site's other
+      events.
+  - **Proved by:** `fcp-link/tests/backups.rs`: an overdue destination in
+    the site's database reaches the cloud's site, without its secrets.
+    Also `e2e/backups.spec.ts`.
 
 ## 6. Questions
 

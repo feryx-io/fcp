@@ -14,6 +14,7 @@ from typing import cast
 import datetime
 
 if TYPE_CHECKING:
+  from ..models.backup_status import BackupStatus
   from ..models.site_node import SiteNode
   from ..models.site_registrations_view import SiteRegistrationsView
   from ..models.site_response_versions import SiteResponseVersions
@@ -40,6 +41,8 @@ class SiteResponse:
             link_up (bool):
             versions (SiteResponseVersions): Release → node ids, from the last heartbeat.
             nodes (list[SiteNode]): The site's nodes as the link last found them.
+            backups (list[BackupStatus]): The site's own backups, as its link last said
+                (`docs/SCHEDULED_BACKUPS.md` B5).
             enrolled_at (datetime.datetime | None | Unset):
             certificate_expires_at (datetime.datetime | None | Unset):
             last_seen_at (datetime.datetime | None | Unset):
@@ -63,6 +66,7 @@ class SiteResponse:
     link_up: bool
     versions: SiteResponseVersions
     nodes: list[SiteNode]
+    backups: list[BackupStatus]
     enrolled_at: datetime.datetime | None | Unset = UNSET
     certificate_expires_at: datetime.datetime | None | Unset = UNSET
     last_seen_at: datetime.datetime | None | Unset = UNSET
@@ -80,6 +84,7 @@ class SiteResponse:
 
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.backup_status import BackupStatus # noqa: PLC0415
         from ..models.site_node import SiteNode # noqa: PLC0415
         from ..models.site_registrations_view import SiteRegistrationsView # noqa: PLC0415
         from ..models.site_response_versions import SiteResponseVersions # noqa: PLC0415
@@ -103,6 +108,13 @@ class SiteResponse:
         for nodes_item_data in self.nodes:
             nodes_item = nodes_item_data.to_dict()
             nodes.append(nodes_item)
+
+
+
+        backups = []
+        for backups_item_data in self.backups:
+            backups_item = backups_item_data.to_dict()
+            backups.append(backups_item)
 
 
 
@@ -189,6 +201,7 @@ class SiteResponse:
             "link_up": link_up,
             "versions": versions,
             "nodes": nodes,
+            "backups": backups,
         })
         if enrolled_at is not UNSET:
             field_dict["enrolled_at"] = enrolled_at
@@ -217,6 +230,7 @@ class SiteResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.backup_status import BackupStatus # noqa: PLC0415
         from ..models.site_node import SiteNode # noqa: PLC0415
         from ..models.site_registrations_view import SiteRegistrationsView # noqa: PLC0415
         from ..models.site_response_versions import SiteResponseVersions # noqa: PLC0415
@@ -257,6 +271,16 @@ class SiteResponse:
 
 
             nodes.append(nodes_item)
+
+
+        backups = []
+        _backups = d.pop("backups")
+        for backups_item_data in (_backups):
+            backups_item = BackupStatus.from_dict(backups_item_data)
+
+
+
+            backups.append(backups_item)
 
 
         def _parse_enrolled_at(data: object) -> datetime.datetime | None | Unset:
@@ -419,6 +443,7 @@ class SiteResponse:
             link_up=link_up,
             versions=versions,
             nodes=nodes,
+            backups=backups,
             enrolled_at=enrolled_at,
             certificate_expires_at=certificate_expires_at,
             last_seen_at=last_seen_at,

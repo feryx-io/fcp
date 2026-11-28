@@ -14,6 +14,7 @@ from typing import cast
 import datetime
 
 if TYPE_CHECKING:
+  from ..models.backup_status import BackupStatus
   from ..models.site_node import SiteNode
   from ..models.site_registrations_view import SiteRegistrationsView
   from ..models.site_response_versions import SiteResponseVersions
@@ -40,6 +41,8 @@ class SiteWithTokenResponse:
             link_up (bool):
             versions (SiteResponseVersions): Release → node ids, from the last heartbeat.
             nodes (list[SiteNode]): The site's nodes as the link last found them.
+            backups (list[BackupStatus]): The site's own backups, as its link last said
+                (`docs/SCHEDULED_BACKUPS.md` B5).
             enrollment_token (str): The one-time enrollment token; `fcp-link` spends it. Not stored,
                 not shown again.
             enrollment_token_expires_at (datetime.datetime):
@@ -66,6 +69,7 @@ class SiteWithTokenResponse:
     link_up: bool
     versions: SiteResponseVersions
     nodes: list[SiteNode]
+    backups: list[BackupStatus]
     enrollment_token: str
     enrollment_token_expires_at: datetime.datetime
     enrolled_at: datetime.datetime | None | Unset = UNSET
@@ -85,6 +89,7 @@ class SiteWithTokenResponse:
 
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.backup_status import BackupStatus # noqa: PLC0415
         from ..models.site_node import SiteNode # noqa: PLC0415
         from ..models.site_registrations_view import SiteRegistrationsView # noqa: PLC0415
         from ..models.site_response_versions import SiteResponseVersions # noqa: PLC0415
@@ -108,6 +113,13 @@ class SiteWithTokenResponse:
         for nodes_item_data in self.nodes:
             nodes_item = nodes_item_data.to_dict()
             nodes.append(nodes_item)
+
+
+
+        backups = []
+        for backups_item_data in self.backups:
+            backups_item = backups_item_data.to_dict()
+            backups.append(backups_item)
 
 
 
@@ -198,6 +210,7 @@ class SiteWithTokenResponse:
             "link_up": link_up,
             "versions": versions,
             "nodes": nodes,
+            "backups": backups,
             "enrollment_token": enrollment_token,
             "enrollment_token_expires_at": enrollment_token_expires_at,
         })
@@ -228,6 +241,7 @@ class SiteWithTokenResponse:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.backup_status import BackupStatus # noqa: PLC0415
         from ..models.site_node import SiteNode # noqa: PLC0415
         from ..models.site_registrations_view import SiteRegistrationsView # noqa: PLC0415
         from ..models.site_response_versions import SiteResponseVersions # noqa: PLC0415
@@ -268,6 +282,16 @@ class SiteWithTokenResponse:
 
 
             nodes.append(nodes_item)
+
+
+        backups = []
+        _backups = d.pop("backups")
+        for backups_item_data in (_backups):
+            backups_item = BackupStatus.from_dict(backups_item_data)
+
+
+
+            backups.append(backups_item)
 
 
         enrollment_token = d.pop("enrollment_token")
@@ -437,6 +461,7 @@ class SiteWithTokenResponse:
             link_up=link_up,
             versions=versions,
             nodes=nodes,
+            backups=backups,
             enrollment_token=enrollment_token,
             enrollment_token_expires_at=enrollment_token_expires_at,
             enrolled_at=enrolled_at,

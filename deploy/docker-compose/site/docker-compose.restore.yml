@@ -1,0 +1,16 @@
+# Restores switched on at a site (docs/SCHEDULED_BACKUPS.md): the site's
+# fcp-backup with its volumes writable and the Docker socket, which is root
+# on this host. On for a restore, off after:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.restore.yml up -d fcp-backup
+#   docker compose up -d fcp-backup
+services:
+  fcp-backup:
+    volumes:
+      - ./configs/fcp-backup.toml:/app/fcp-backup.toml:ro
+      - backup-data:/var/lib/fcp-backup
+      - fcp-certs:/var/lib/fcp/certs
+      - admin-data:/data/admin
+      - call-manager-data:/data/call-manager
+      - link-data:/data/link
+      - /var/run/docker.sock:/var/run/docker.sock

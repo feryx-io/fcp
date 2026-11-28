@@ -32,6 +32,7 @@ from .b_tree_map import BTreeMap
 from .backchannel_logout_form import BackchannelLogoutForm
 from .backup_run_kind import BackupRunKind
 from .backup_run_state import BackupRunState
+from .backup_status import BackupStatus
 from .balance_response import BalanceResponse
 from .balance_transaction_kind import BalanceTransactionKind
 from .balance_transaction_response import BalanceTransactionResponse
@@ -750,6 +751,7 @@ __all__ = (
     "BackchannelLogoutForm",
     "BackupRunKind",
     "BackupRunState",
+    "BackupStatus",
     "BalanceResponse",
     "BalanceTransactionKind",
     "BalanceTransactionResponse",

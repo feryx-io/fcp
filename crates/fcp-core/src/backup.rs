@@ -354,6 +354,12 @@ pub trait BackupStore: Send + Sync {
         Ok(())
     }
 
+    /// Every destination's status, without opening a secret: what a site
+    /// reports up its link (B5).
+    async fn backup_status(&self) -> anyhow::Result<Vec<BackupStatus>> {
+        Ok(Vec::new())
+    }
+
     /// The key ring's active KEK id, which a snapshot is tagged with so a
     /// restore can check the key it is given (`docs/SCHEDULED_BACKUPS.md`).
     async fn active_kek_id(&self) -> anyhow::Result<Option<String>> {
@@ -404,11 +410,49 @@ pub fn overdue(
     last_success: Option<SystemTime>,
     now: SystemTime,
 ) -> bool {
-    if !dest.enabled || (dest.schedule.daily_at.is_none() && dest.schedule.cron.is_none()) {
-        return false;
-    }
-    let since = last_success.unwrap_or(dest.created_at);
-    now.duration_since(since).is_ok_and(|d| d > OVERDUE_AFTER)
+    let scheduled = dest.schedule.daily_at.is_some() || dest.schedule.cron.is_some();
+    overdue_from(
+        dest.enabled && scheduled,
+        dest.created_at,
+        last_success,
+        now,
+    )
+}
+
+/// [`overdue`], from what a status holds.
+pub fn overdue_from(
+    watched: bool,
+    created_at: SystemTime,
+    last_success: Option<SystemTime>,
+    now: SystemTime,
+) -> bool {
+    watched
+        && now
+            .duration_since(last_success.unwrap_or(created_at))
+            .is_ok_and(|d| d > OVERDUE_AFTER)
+}
+
+/// A destination as a site's link reports it up (`docs/SCHEDULED_BACKUPS.md`
+/// B5): no secrets, no target beyond its kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct BackupStatus {
+    /// `bkd-<uuid>`, at the site.
+    pub destination_id: String,
+    pub name: String,
+    /// `sftp`, `s3`, `directory`, `rest` or `rclone`.
+    pub kind: String,
+    pub enabled: bool,
+    pub scheduled: bool,
+    /// RFC 3339.
+    #[serde(default)]
+    pub last_success_at: Option<String>,
+    /// The last backup run's state and when it was asked for.
+    #[serde(default)]
+    pub last_run_state: Option<String>,
+    #[serde(default)]
+    pub last_run_at: Option<String>,
+    pub overdue: bool,
 }
 
 #[cfg(test)]

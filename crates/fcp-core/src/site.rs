@@ -91,6 +91,10 @@ pub struct SiteHeartbeat {
     /// older link.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parked: Vec<crate::storage::ClusterParkedCall>,
+    /// The site's own backups (`docs/SCHEDULED_BACKUPS.md` B5), from its
+    /// database; empty from an older link or a site with none.
+    #[serde(default)]
+    pub backups: Vec<crate::backup::BackupStatus>,
 }
 
 /// The site's registrations as its link last saw them.
@@ -419,6 +423,7 @@ mod tests {
             registrations: None,
             services: Vec::new(),
             parked: Vec::new(),
+            backups: Vec::new(),
         });
         let groups = site.versions();
         assert_eq!(groups["0.25.268"], vec!["cm-1", "cm-2"]);

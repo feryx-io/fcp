@@ -199,7 +199,7 @@ retry (up to 35 s after a refusal).
 
 ## 6. Keeping it
 
-Everything the site holds is in seven volumes of the project `site`
+Everything the site holds is in eight volumes of the project `site`
 (`docker volume ls --filter label=com.docker.compose.project=site`):
 
 | Volume | Holds | Re-derivable? |
@@ -210,6 +210,7 @@ Everything the site holds is in seven volumes of the project `site`
 | `admin-data` | Exports. | Mostly. |
 | `link-data` | The link's key, certificate and the site's secret from enrollment; the sync and ship cursors. | With a new enrollment token from the cloud. |
 | `redis-data` | Registrations, the event stream. | Yes. |
+| `backup-data` | `fcp-backup`'s restic cache, the keys and known hosts it writes from its destinations, and the last restore's record. | Yes: written again from the database. |
 | `site-firmware` | The firmware images the tenant's targets name, fetched from the cloud by the link (`docs/PROVISIONING.md` §11). | Yes: the link fetches them again. |
 
 The cloud stack's scripts keep a site the way they keep the cloud
@@ -234,6 +235,21 @@ cursors, and catches up on the feed. A restore without `link-data` —
 a site rebuilt from the database alone — needs a new enrollment token in
 `.env`: the link enrolls afresh, and the cloud replaces the site's
 certificate, secret and link trunk password.
+
+**Off the box, on a schedule** (`docs/SCHEDULED_BACKUPS.md`): the site runs
+its own `fcp-backup`, with every volume above but the firmware read-only.
+It is set up on the site's admin (System › Backups) and works as the
+cloud's does:
+- SFTP, an S3-compatible bucket, a directory, a REST server or rclone;
+- a daily time, retention and the weekly check;
+- the master key downloaded once;
+- snapshots downloadable for `restore.sh`.
+
+Put `FCP_BACKUP_API_TOKEN` in `.env`. Restores are switched on by
+`docker-compose.restore.yml` beside this project's compose file. Each
+destination's last good backup, and whether it is overdue, goes up the
+link: the cloud's site and its Backups page show a site whose backups
+stopped, without signing in to it.
 
 ## 7. Upgrading
 
