@@ -469,6 +469,10 @@ pub fn router() -> Router<ApiState> {
             post(backups::run_destination),
         )
         .route(
+            "/system/backups/destinations/:id/check",
+            post(backups::check_destination),
+        )
+        .route(
             "/system/backups/key",
             get(backups::key_status).post(backups::export_key),
         )

@@ -295,7 +295,14 @@ function KeyCard() {
 interface Draft {
   id?: string
   name: string
-  type: 'sftp' | 's3'
+  type: 'sftp' | 's3' | 'directory' | 'rest' | 'rclone'
+  url: string
+  username: string
+  rest_password: string
+  has_rest_password: boolean
+  remote: string
+  rclone_config: string
+  has_config: boolean
   host: string
   port: string
   user: string
@@ -321,6 +328,7 @@ interface Draft {
 const empty: Draft = {
   name: '', type: 'sftp', host: '', port: '22', user: '', path: '', private_key: '', has_private_key: false,
   endpoint: '', bucket: '', region: '', prefix: '', access_key_id: '', secret_access_key: '', has_secret: false,
+  url: '', username: '', rest_password: '', has_rest_password: false, remote: '', rclone_config: '', has_config: false,
   password: '', time_of_day: '02:00', daily: '7', weekly: '4', monthly: '12', include_key: false, enabled: true,
 }
 
@@ -333,8 +341,14 @@ const draftOf = (d: BackupDestination): Draft => {
     type: t.type,
     ...(t.type === 'sftp'
       ? { host: t.host, port: String(t.port), user: t.user, path: t.path, has_private_key: t.has_private_key }
-      : { endpoint: t.endpoint, bucket: t.bucket, region: t.region ?? '', prefix: t.prefix ?? '',
-          access_key_id: t.access_key_id, has_secret: t.has_secret_access_key }),
+      : t.type === 's3'
+        ? { endpoint: t.endpoint, bucket: t.bucket, region: t.region ?? '', prefix: t.prefix ?? '',
+            access_key_id: t.access_key_id, has_secret: t.has_secret_access_key }
+        : t.type === 'directory'
+          ? { path: t.path }
+          : t.type === 'rest'
+            ? { url: t.url, username: t.username ?? '', has_rest_password: t.has_password }
+            : { remote: t.remote, has_config: t.has_config }),
     time_of_day: d.schedule.time_of_day ?? '',
     daily: String(d.keep.daily), weekly: String(d.keep.weekly), monthly: String(d.keep.monthly),
     include_key: d.include_key,
@@ -346,8 +360,14 @@ const requestOf = (d: Draft): BackupDestinationRequest => ({
   name: d.name,
   target: d.type === 'sftp'
     ? { type: 'sftp', host: d.host, port: Number(d.port) || 22, user: d.user, path: d.path, private_key: d.private_key || null }
-    : { type: 's3', endpoint: d.endpoint, bucket: d.bucket, region: d.region || null, prefix: d.prefix || null,
-        access_key_id: d.access_key_id, secret_access_key: d.secret_access_key || null },
+    : d.type === 's3'
+      ? { type: 's3', endpoint: d.endpoint, bucket: d.bucket, region: d.region || null, prefix: d.prefix || null,
+          access_key_id: d.access_key_id, secret_access_key: d.secret_access_key || null }
+      : d.type === 'directory'
+        ? { type: 'directory', path: d.path }
+        : d.type === 'rest'
+          ? { type: 'rest', url: d.url, username: d.username || null, password: d.rest_password || null }
+          : { type: 'rclone', remote: d.remote, config: d.rclone_config || null },
   password: d.password || null,
   schedule: { time_of_day: d.time_of_day || null },
   keep: { daily: Number(d.daily) || 0, weekly: Number(d.weekly) || 0, monthly: Number(d.monthly) || 0 },
@@ -387,10 +407,13 @@ function DestinationDialog({ draft, setDraft, onSaved }: {
                 <SelectContent>
                   <SelectItem value="sftp">SFTP server</SelectItem>
                   <SelectItem value="s3">S3-compatible bucket</SelectItem>
+                  <SelectItem value="directory">A directory (a share or a disk)</SelectItem>
+                  <SelectItem value="rest">restic REST server</SelectItem>
+                  <SelectItem value="rclone">rclone remote</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            {draft.type === 'sftp' ? (
+            {draft.type === 'sftp' && (
               <>
                 <div className="grid gap-2 sm:grid-cols-[1fr_6rem]">
                   <div className="space-y-1">
@@ -420,7 +443,8 @@ function DestinationDialog({ draft, setDraft, onSaved }: {
                   <p className="text-xs text-muted-foreground">The server's host key is pinned by the first test.</p>
                 </div>
               </>
-            ) : (
+            )}
+            {draft.type === 's3' && (
               <>
                 <div className="space-y-1">
                   <Label htmlFor="dest-endpoint">Endpoint</Label>
@@ -452,6 +476,48 @@ function DestinationDialog({ draft, setDraft, onSaved }: {
                       placeholder={draft.has_secret ? 'Kept' : ''} required={!draft.has_secret}
                       onChange={(e) => set({ secret_access_key: e.target.value })} />
                   </div>
+                </div>
+              </>
+            )}
+            {draft.type === 'directory' && (
+              <div className="space-y-1">
+                <Label htmlFor="dest-dir">Directory in the backup service</Label>
+                <Input id="dest-dir" placeholder="/mnt/backups/fcp" value={draft.path} onChange={(e) => set({ path: e.target.value })} required />
+                <p className="text-xs text-muted-foreground">An NFS or SMB share or a disk, mounted into fcp-backup. Off this machine only if the mount is.</p>
+              </div>
+            )}
+            {draft.type === 'rest' && (
+              <>
+                <div className="space-y-1">
+                  <Label htmlFor="dest-url">Server URL</Label>
+                  <Input id="dest-url" placeholder="https://backup.example.com:8000/fcp/" value={draft.url} onChange={(e) => set({ url: e.target.value })} required />
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="dest-rest-user">User</Label>
+                    <Input id="dest-rest-user" value={draft.username} onChange={(e) => set({ username: e.target.value })} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="dest-rest-pass">Password</Label>
+                    <Input id="dest-rest-pass" type="password" autoComplete="off" value={draft.rest_password}
+                      placeholder={draft.has_rest_password ? 'Kept' : ''} onChange={(e) => set({ rest_password: e.target.value })} />
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">Run the server with --append-only and a stolen password cannot delete what is there.</p>
+              </>
+            )}
+            {draft.type === 'rclone' && (
+              <>
+                <div className="space-y-1">
+                  <Label htmlFor="dest-remote">Remote</Label>
+                  <Input id="dest-remote" placeholder="b2:bucket/fcp" value={draft.remote} onChange={(e) => set({ remote: e.target.value })} required />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="dest-rclone">rclone configuration</Label>
+                  <textarea id="dest-rclone" className="min-h-24 w-full rounded-md border bg-background p-2 font-mono text-xs"
+                    placeholder={draft.has_config ? 'Kept — paste a new one to replace it' : '[b2]\ntype = b2\naccount = …\nkey = …'}
+                    value={draft.rclone_config} onChange={(e) => set({ rclone_config: e.target.value })} />
+                  <p className="text-xs text-muted-foreground">The section that defines the remote, as rclone config writes it; sealed at rest.</p>
                 </div>
               </>
             )}
@@ -691,9 +757,10 @@ function PlatformBackups() {
   const [error, setError] = useState<string | null>(null)
   const changed = () => queryClient.invalidateQueries({ queryKey: ['backups'] })
   const act = useMutation({
-    mutationFn: async ({ id, what }: { id: string; what: 'test' | 'run' | 'delete' }) => {
+    mutationFn: async ({ id, what }: { id: string; what: 'test' | 'run' | 'check' | 'delete' }) => {
       if (what === 'test') await backups.test(id)
       else if (what === 'run') await backups.run(id)
+      else if (what === 'check') await backups.check(id)
       else await backups.remove(id)
     },
     onSuccess: () => { setError(null); changed() },
@@ -746,6 +813,7 @@ function PlatformBackups() {
                         {d.name}
                         {!d.enabled && <Badge variant="outline" className="ml-2">Off</Badge>}
                         {d.include_key && <Badge variant="warning" className="ml-2">Holds the key</Badge>}
+                        {d.overdue && <Badge variant="destructive" className="ml-2">Overdue</Badge>}
                       </TableCell>
                       <TableCell className="font-mono text-xs">{d.repository}</TableCell>
                       <TableCell>{d.schedule.time_of_day ? `Daily at ${d.schedule.time_of_day} UTC` : 'By hand'}</TableCell>
@@ -754,6 +822,7 @@ function PlatformBackups() {
                         <div className="flex flex-col gap-1">
                           {runBadge(d.last_run)}
                           {d.last_run?.finished_at && <span className="text-xs text-muted-foreground">{formatDateTime(d.last_run.finished_at)}</span>}
+                          {d.last_check && <span className="text-xs text-muted-foreground">Checked: {d.last_check.state === 'succeeded' ? formatDateTime(d.last_check.finished_at ?? d.last_check.requested_at) : d.last_check.state}</span>}
                         </div>
                       </TableCell>
                       <TableCell className="text-right">
@@ -763,6 +832,9 @@ function PlatformBackups() {
                           </Button>
                           <Button variant="outline" size="sm" aria-label={`Back up ${d.name} now`} onClick={() => act.mutate({ id: d.id, what: 'run' })}>
                             <Play className="mr-1 h-4 w-4" /> Back up now
+                          </Button>
+                          <Button variant="outline" size="sm" aria-label={`Check ${d.name}`} title="Read a share of the stored data back" onClick={() => act.mutate({ id: d.id, what: 'check' })}>
+                            Check
                           </Button>
                           <Button variant="outline" size="sm" aria-label={`Snapshots in ${d.name}`} onClick={() => setBrowsing(d)}>
                             <History className="mr-1 h-4 w-4" /> Snapshots
@@ -811,7 +883,7 @@ function PlatformBackups() {
                   {(runs.data ?? []).map((r) => (
                     <TableRow key={r.id}>
                       <TableCell>{names.get(r.destination_id) ?? r.destination_id}</TableCell>
-                      <TableCell>{r.kind === 'test' ? 'Test' : 'Backup'} <span className="text-muted-foreground">· {r.trigger}</span></TableCell>
+                      <TableCell>{r.kind === 'test' ? 'Test' : r.kind === 'check' ? 'Check' : 'Backup'} <span className="text-muted-foreground">· {r.trigger}</span></TableCell>
                       <TableCell>{runBadge(r)}</TableCell>
                       <TableCell>{formatDateTime(r.requested_at)}</TableCell>
                       <TableCell>{r.finished_at ? formatDateTime(r.finished_at) : ''}</TableCell>

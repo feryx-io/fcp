@@ -10,7 +10,8 @@ use sqlx::Row;
 
 use crate::{datetime_to_system_time, system_time_to_datetime, PostgresStorage};
 
-const DESTINATION_COLUMNS: &str = "id, name, target, password, private_key, secret_access_key, \
+const DESTINATION_COLUMNS: &str =
+    "id, name, target, password, private_key, secret_access_key, target_secret, \
      schedule, keep, include_key, enabled, created_at, updated_at";
 const RUN_COLUMNS: &str = "id, destination_id, kind, state, trigger, requested_at, started_at, \
      finished_at, snapshots, bytes_added, message, node";
@@ -29,6 +30,13 @@ impl PostgresStorage {
                 secret_access_key, ..
             } => {
                 *secret_access_key = self.open_opt(row.try_get("secret_access_key")?).await?;
+            }
+            BackupTarget::Directory { .. } => {}
+            BackupTarget::Rest { password, .. } => {
+                *password = self.open_opt(row.try_get("target_secret")?).await?;
+            }
+            BackupTarget::Rclone { config, .. } => {
+                *config = self.open_opt(row.try_get("target_secret")?).await?;
             }
         }
         Ok(BackupDestination {
@@ -111,21 +119,25 @@ impl BackupStore for PostgresStorage {
     async fn put_backup_destination(&self, d: &BackupDestination) -> anyhow::Result<()> {
         // The secrets come out of the JSON and are sealed in their columns.
         let mut target = d.target.clone();
-        let (private_key, secret_access_key) = match &mut target {
-            BackupTarget::Sftp { private_key, .. } => (private_key.take(), None),
+        let (private_key, secret_access_key, target_secret) = match &mut target {
+            BackupTarget::Sftp { private_key, .. } => (private_key.take(), None, None),
             BackupTarget::S3 {
                 secret_access_key, ..
-            } => (None, secret_access_key.take()),
+            } => (None, secret_access_key.take(), None),
+            BackupTarget::Directory { .. } => (None, None, None),
+            BackupTarget::Rest { password, .. } => (None, None, password.take()),
+            BackupTarget::Rclone { config, .. } => (None, None, config.take()),
         };
         sqlx::query(
             "INSERT INTO backup_destinations
                  (id, name, target, password, private_key, secret_access_key, schedule, keep,
-                  include_key, enabled, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                  include_key, enabled, created_at, updated_at, target_secret)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
              ON CONFLICT (id) DO UPDATE SET
                  name = EXCLUDED.name, target = EXCLUDED.target, password = EXCLUDED.password,
                  private_key = EXCLUDED.private_key,
                  secret_access_key = EXCLUDED.secret_access_key,
+                 target_secret = EXCLUDED.target_secret,
                  schedule = EXCLUDED.schedule, keep = EXCLUDED.keep,
                  include_key = EXCLUDED.include_key, enabled = EXCLUDED.enabled,
                  updated_at = EXCLUDED.updated_at",
@@ -142,6 +154,7 @@ impl BackupStore for PostgresStorage {
         .bind(d.enabled)
         .bind(system_time_to_datetime(d.created_at))
         .bind(system_time_to_datetime(d.updated_at))
+        .bind(self.seal_opt(target_secret.as_deref())?)
         .execute(self.writes())
         .await?;
         Ok(())
@@ -274,6 +287,37 @@ impl BackupStore for PostgresStorage {
                 created_at: at.map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
             })
             .collect())
+    }
+
+    async fn overdue_notice(
+        &self,
+        destination: &uuid::Uuid,
+    ) -> anyhow::Result<Option<Option<std::time::SystemTime>>> {
+        let row: Option<(Option<DateTime<Utc>>,)> = sqlx::query_as(
+            "SELECT last_success_at FROM backup_overdue_notices WHERE destination_id = $1",
+        )
+        .bind(destination.to_string())
+        .fetch_optional(self.writes())
+        .await?;
+        Ok(row.map(|(t,)| t.map(std::time::SystemTime::from)))
+    }
+
+    async fn note_overdue(
+        &self,
+        destination: &uuid::Uuid,
+        last_success: Option<std::time::SystemTime>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO backup_overdue_notices (destination_id, last_success_at, noticed_at)
+             VALUES ($1, $2, NOW())
+             ON CONFLICT (destination_id) DO UPDATE SET
+                 last_success_at = EXCLUDED.last_success_at, noticed_at = NOW()",
+        )
+        .bind(destination.to_string())
+        .bind(last_success.map(system_time_to_datetime))
+        .execute(self.writes())
+        .await?;
+        Ok(())
     }
 
     async fn active_kek_id(&self) -> anyhow::Result<Option<String>> {

@@ -1580,6 +1580,7 @@ export const backups = {
   remove: (id: string) => apiClient.delete<void>(`/system/backups/destinations/${encodeURIComponent(id)}`),
   test: (id: string) => apiClient.post<BackupRun>(`/system/backups/destinations/${encodeURIComponent(id)}/test`, {}),
   run: (id: string) => apiClient.post<BackupRun>(`/system/backups/destinations/${encodeURIComponent(id)}/run`, {}),
+  check: (id: string) => apiClient.post<BackupRun>(`/system/backups/destinations/${encodeURIComponent(id)}/check`, {}),
   runs: (destination?: string) =>
     apiClient.getAll<BackupRun>(`/system/backups/runs${destination ? `?destination=${encodeURIComponent(destination)}` : ''}`),
   keyStatus: () => apiClient.get<BackupKeyStatus>('/system/backups/key'),

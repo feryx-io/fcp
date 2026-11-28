@@ -5,7 +5,7 @@
 
 use anyhow::{bail, Context, Result};
 use fcp_core::backup::{BackupDestination, BackupRun, BackupRunKind, BackupStore, BackupTarget};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::process::Command;
 use tracing::info;
@@ -127,6 +127,34 @@ pub async fn repo_for(ctx: &Ctx, dest: &mut BackupDestination, testing: bool) ->
                 env.push(("AWS_DEFAULT_REGION".into(), r.clone()));
             }
         }
+        BackupTarget::Directory { path } => {
+            if !Path::new(path.as_str()).is_absolute() {
+                bail!("the directory must be an absolute path here");
+            }
+        }
+        BackupTarget::Rest {
+            username, password, ..
+        } => {
+            // restic 0.17 reads these, so they stay off the URL.
+            if let Some(u) = username.clone().filter(|u| !u.is_empty()) {
+                env.push(("RESTIC_REST_USERNAME".into(), u));
+            }
+            if let Some(p) = password.clone().filter(|p| !p.is_empty()) {
+                env.push(("RESTIC_REST_PASSWORD".into(), p));
+            }
+        }
+        BackupTarget::Rclone { config, .. } => {
+            let dir = work.join("rclone");
+            tokio::fs::create_dir_all(&dir).await?;
+            let file = dir.join(format!("{id}.conf"));
+            tokio::fs::write(&file, config.clone().unwrap_or_default()).await?;
+            private(&file).await?;
+            env.push(("RCLONE_CONFIG".into(), file.display().to_string()));
+            options.push(format!(
+                "rclone.program={}",
+                ctx.config.backup.rclone.display()
+            ));
+        }
     }
     let cache_dir = work.join("cache");
     tokio::fs::create_dir_all(&cache_dir).await?;
@@ -166,6 +194,14 @@ pub async fn carry_out(ctx: &Ctx, dest: &BackupDestination, run: &BackupRun) -> 
             } else {
                 format!("Reached; the repository holds {n} snapshot(s)")
             },
+            ..Default::default()
+        });
+    }
+    if run.kind == BackupRunKind::Check {
+        // A share of the data read back each week; the structure always.
+        repo.run(&["check", "--read-data-subset=5%"]).await?;
+        return Ok(Outcome {
+            message: "Checked: the repository and 5% of its data read back".into(),
             ..Default::default()
         });
     }

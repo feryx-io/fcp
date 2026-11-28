@@ -1211,3 +1211,162 @@ async fn lost_files_are_put_back_and_a_tenant_reaches_only_its_own() {
     );
     app.finish().await;
 }
+
+/// `docs/SCHEDULED_BACKUPS.md` B4: a directory, a REST server and an rclone
+/// remote made through the API, their secrets write-only and kept on an
+/// edit; Check now; a scheduled destination with no good backup in 26 hours
+/// shown overdue; and the three metrics.
+#[tokio::test]
+async fn more_destinations_a_check_and_the_overdue_watch() {
+    let Some(mut app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let store = app.dyn_storage.backup_store().unwrap().clone();
+    app.state =
+        app.state
+            .clone()
+            .with_metrics_source(Arc::new(fcp_api_core::v1::backups::BackupMetrics {
+                store: Arc::clone(&store),
+            }));
+    app.router = create_router(app.state.clone(), &test_api_config());
+    let made = |name: &str, target: Value| json!({ "name": name, "target": target, "keep": { "daily": 7, "weekly": 4, "monthly": 6 } });
+    // A relative directory, and a REST URL with credentials in it, refused.
+    for bad in [
+        json!({ "type": "directory", "path": "backups" }),
+        json!({ "type": "rest", "url": "https://fcp:pw@backup.example.com/fcp/" }),
+        json!({ "type": "rclone", "remote": "no-colon" }),
+    ] {
+        let r = app
+            .admin(
+                Method::POST,
+                "/api/v1/system/backups/destinations",
+                Some(made("bad", bad)),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.text);
+    }
+    let dir = app
+        .admin(
+            Method::POST,
+            "/api/v1/system/backups/destinations",
+            Some(made(
+                "Share",
+                json!({ "type": "directory", "path": "/mnt/backups/fcp" }),
+            )),
+        )
+        .await;
+    assert_eq!(dir.status, StatusCode::CREATED, "{}", dir.text);
+    assert_eq!(dir.json["repository"], "/mnt/backups/fcp");
+    let rest = app
+        .admin(
+            Method::POST,
+            "/api/v1/system/backups/destinations",
+            Some(made(
+                "REST",
+                json!({ "type": "rest", "url": "https://backup.example.com:8000/fcp/",
+                        "username": "fcp", "password": "rest-secret" }),
+            )),
+        )
+        .await;
+    assert_eq!(rest.status, StatusCode::CREATED, "{}", rest.text);
+    assert_eq!(rest.json["target"]["has_password"], true);
+    assert_eq!(
+        rest.json["repository"],
+        "rest:https://backup.example.com:8000/fcp/"
+    );
+    assert!(!rest.text.contains("rest-secret"));
+    let rclone = app
+        .admin(
+            Method::POST,
+            "/api/v1/system/backups/destinations",
+            Some(made(
+                "B2",
+                json!({ "type": "rclone", "remote": "b2:bucket/fcp",
+                        "config": "[b2]\ntype = b2\naccount = id\nkey = secret\n" }),
+            )),
+        )
+        .await;
+    assert_eq!(rclone.status, StatusCode::CREATED, "{}", rclone.text);
+    assert_eq!(rclone.json["target"]["has_config"], true);
+    assert!(!rclone.text.contains("key = secret"));
+    // An edit without the secret keeps it.
+    let rest_id = rest.json["id"].as_str().unwrap().to_string();
+    let edited = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/system/backups/destinations/{rest_id}"),
+            Some(made("REST, Ohio", json!({ "type": "rest", "url": "https://backup.example.com:8000/fcp/", "username": "fcp" }))),
+        )
+        .await;
+    assert_eq!(edited.status, StatusCode::OK, "{}", edited.text);
+    assert_eq!(edited.json["target"]["has_password"], true);
+    let kept = store
+        .get_backup_destination(&rest_id.trim_start_matches("bkd-").parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(kept.target, fcp_core::backup::BackupTarget::Rest { password: Some(ref p), .. } if p == "rest-secret")
+    );
+    // Sealed at rest: the column does not hold the secret as given.
+    let raw: Option<String> =
+        sqlx::query_scalar("SELECT target_secret FROM backup_destinations WHERE id = $1")
+            .bind(rest_id.trim_start_matches("bkd-"))
+            .fetch_one(app.storage.pool())
+            .await
+            .unwrap();
+    assert!(raw.is_some());
+
+    // Check now.
+    let dir_id = dir.json["id"].as_str().unwrap().to_string();
+    let check = app
+        .admin(
+            Method::POST,
+            &format!("/api/v1/system/backups/destinations/{dir_id}/check"),
+            None,
+        )
+        .await;
+    assert_eq!(check.status, StatusCode::ACCEPTED, "{}", check.text);
+    assert_eq!(check.json["kind"], "check");
+
+    // A scheduled destination made two days ago, never backed up: overdue.
+    let mut old = kept.clone();
+    old.id = uuid::Uuid::new_v4();
+    old.name = "Old".into();
+    old.schedule.daily_at = Some("02:00".into());
+    old.created_at = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 86_400);
+    store.put_backup_destination(&old).await.unwrap();
+    let list = app
+        .admin(Method::GET, "/api/v1/system/backups/destinations", None)
+        .await;
+    assert_eq!(list.status, StatusCode::OK, "{}", list.text);
+    let by_name = |n: &str| {
+        list.json
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["name"] == n)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(by_name("Old")["overdue"], true);
+    assert_eq!(by_name("Share")["overdue"], false, "not scheduled");
+    assert_eq!(by_name("Share")["last_check"]["kind"], "check");
+
+    let metrics = app.admin(Method::GET, "/metrics", None).await;
+    assert_eq!(metrics.status, StatusCode::OK, "{}", metrics.text);
+    assert!(
+        metrics.text.contains(&format!(
+            "fcp_backup_overdue{{destination=\"bkd-{}\",name=\"Old\",type=\"rest\"}} 1",
+            old.id
+        )),
+        "{}",
+        metrics.text
+    );
+    assert!(
+        metrics.text.contains("fcp_backup_last_success_timestamp{"),
+        "{}",
+        metrics.text
+    );
+    app.finish().await;
+}

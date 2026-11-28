@@ -139,6 +139,12 @@ pub(crate) const SEALED_COLUMNS: &[SealedColumn] = &[
         column: "secret_access_key",
         json_field: None,
     },
+    // A REST server's password or an rclone configuration (B4).
+    SealedColumn {
+        table: "backup_destinations",
+        column: "target_secret",
+        json_field: None,
+    },
 ];
 
 /// Live encryption state for one backend instance.

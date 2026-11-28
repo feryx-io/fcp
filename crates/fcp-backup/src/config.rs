@@ -91,6 +91,9 @@ pub struct BackupSection {
     /// `ssh-keyscan`, which a destination's test pins its host key with.
     #[serde(default = "default_ssh_keyscan")]
     pub ssh_keyscan: PathBuf,
+    /// `rclone`, which restic runs for an rclone destination.
+    #[serde(default = "default_rclone")]
+    pub rclone: PathBuf,
     /// Where keys, known hosts and restic's cache are kept.
     #[serde(default = "default_work_dir")]
     pub work_dir: PathBuf,
@@ -128,6 +131,7 @@ impl Default for BackupSection {
             pg_dump: default_pg_dump(),
             ssh: default_ssh(),
             ssh_keyscan: default_ssh_keyscan(),
+            rclone: default_rclone(),
             work_dir: default_work_dir(),
             poll_secs: default_poll(),
             paths: BTreeMap::new(),
@@ -149,6 +153,9 @@ fn default_ssh() -> PathBuf {
 }
 fn default_ssh_keyscan() -> PathBuf {
     "ssh-keyscan".into()
+}
+fn default_rclone() -> PathBuf {
+    "rclone".into()
 }
 fn default_work_dir() -> PathBuf {
     "/var/lib/fcp-backup".into()

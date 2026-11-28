@@ -73,6 +73,16 @@ pub enum TargetView {
         access_key_id: String,
         has_secret_access_key: bool,
     },
+    /// A directory mounted into the backup service (B4).
+    Directory { path: String },
+    /// A restic REST server.
+    Rest {
+        url: String,
+        username: Option<String>,
+        has_password: bool,
+    },
+    /// An rclone remote.
+    Rclone { remote: String, has_config: bool },
 }
 
 #[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
@@ -104,6 +114,12 @@ pub struct DestinationView {
     pub repository: String,
     /// The last run of a backup, if any.
     pub last_run: Option<RunView>,
+    /// The last weekly check, if any (B4).
+    pub last_check: Option<RunView>,
+    /// When the last good backup finished.
+    pub last_success_at: Option<String>,
+    /// Scheduled, and no good backup for a day and two hours.
+    pub overdue: bool,
     /// Shown once, when a destination is made without a password and one
     /// is generated: keep it, it opens every snapshot.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -150,7 +166,7 @@ impl RunView {
     }
 }
 
-fn view(d: &BackupDestination, last_run: Option<&BackupRun>) -> DestinationView {
+fn view(d: &BackupDestination, watch: &Watch) -> DestinationView {
     let t = crate::time::format_system_time;
     DestinationView {
         id: format!("{DESTINATION_PREFIX}{}", d.id),
@@ -186,6 +202,20 @@ fn view(d: &BackupDestination, last_run: Option<&BackupRun>) -> DestinationView 
                 access_key_id: access_key_id.clone(),
                 has_secret_access_key: secret_access_key.as_deref().is_some_and(|k| !k.is_empty()),
             },
+            BackupTarget::Directory { path } => TargetView::Directory { path: path.clone() },
+            BackupTarget::Rest {
+                url,
+                username,
+                password,
+            } => TargetView::Rest {
+                url: url.clone(),
+                username: username.clone(),
+                has_password: password.as_deref().is_some_and(|p| !p.is_empty()),
+            },
+            BackupTarget::Rclone { remote, config } => TargetView::Rclone {
+                remote: remote.clone(),
+                has_config: config.as_deref().is_some_and(|c| !c.trim().is_empty()),
+            },
         },
         has_password: d.password.as_deref().is_some_and(|p| !p.is_empty()),
         schedule: ScheduleView {
@@ -199,7 +229,10 @@ fn view(d: &BackupDestination, last_run: Option<&BackupRun>) -> DestinationView 
         include_key: d.include_key,
         enabled: d.enabled,
         repository: d.target.repository(),
-        last_run: last_run.map(RunView::of),
+        last_run: watch.last_run.as_ref().map(RunView::of),
+        last_check: watch.last_check.as_ref().map(RunView::of),
+        last_success_at: watch.last_success.map(t),
+        overdue: fcp_core::backup::overdue(d, watch.last_success, SystemTime::now()),
         password: None,
         created_at: t(d.created_at),
         updated_at: t(d.updated_at),
@@ -232,6 +265,25 @@ pub enum TargetRequest {
         /// Write-only.
         #[serde(default)]
         secret_access_key: Option<String>,
+    },
+    /// An absolute path in the backup service: a share or a disk mounted
+    /// into it.
+    Directory { path: String },
+    Rest {
+        /// `https://host:8000/path/`.
+        url: String,
+        #[serde(default)]
+        username: Option<String>,
+        /// Write-only.
+        #[serde(default)]
+        password: Option<String>,
+    },
+    Rclone {
+        /// `<remote>:<path>`.
+        remote: String,
+        /// The `rclone.conf` text defining the remote; write-only.
+        #[serde(default)]
+        config: Option<String>,
     },
 }
 
@@ -373,6 +425,67 @@ fn destination_from(
                 secret_access_key,
             }
         }
+        TargetRequest::Directory { path } => {
+            let path = text("The path", &path, 1024)?;
+            let p = std::path::Path::new(&path);
+            if !p.is_absolute()
+                || p.components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                return Err(ApiError::BadRequest(
+                    "The path is an absolute path in the backup service".into(),
+                ));
+            }
+            BackupTarget::Directory { path }
+        }
+        TargetRequest::Rest {
+            url,
+            username,
+            password,
+        } => {
+            let url = text("The URL", &url, 512)?;
+            let parsed = url::Url::parse(&url)
+                .map_err(|_| ApiError::BadRequest("The URL is a URL".into()))?;
+            if !matches!(parsed.scheme(), "https" | "http")
+                || !parsed.username().is_empty()
+                || parsed.password().is_some()
+            {
+                return Err(ApiError::BadRequest(
+                    "The URL is https (or http), with the user and password given apart".into(),
+                ));
+            }
+            let kept_password = match kept.map(|k| &k.target) {
+                Some(BackupTarget::Rest { password, .. }) => password.clone(),
+                _ => None,
+            };
+            BackupTarget::Rest {
+                url,
+                username: username
+                    .map(|u| u.trim().to_string())
+                    .filter(|u| !u.is_empty()),
+                password: secret(password).or(kept_password),
+            }
+        }
+        TargetRequest::Rclone { remote, config } => {
+            let remote = text("The remote", &remote, 512)?;
+            if !remote.contains(':') {
+                return Err(ApiError::BadRequest("The remote is <name>:<path>".into()));
+            }
+            let kept_config = match kept.map(|k| &k.target) {
+                Some(BackupTarget::Rclone { config, .. }) => config.clone(),
+                _ => None,
+            };
+            let config = config
+                .map(|c| c.trim().to_string())
+                .filter(|c| !c.is_empty())
+                .or(kept_config);
+            if config.as_deref().is_some_and(|c| c.len() > 64 * 1024) {
+                return Err(ApiError::BadRequest(
+                    "The rclone configuration is at most 64 KiB".into(),
+                ));
+            }
+            BackupTarget::Rclone { remote, config }
+        }
     };
     let daily_at = req
         .schedule
@@ -453,16 +566,34 @@ async fn name_taken(
         .any(|d| d.name.eq_ignore_ascii_case(name) && Some(d.id) != except))
 }
 
-async fn last_backup(
-    store: &Arc<dyn BackupStore>,
-    id: &uuid::Uuid,
-) -> Result<Option<BackupRun>, ApiError> {
-    Ok(store
-        .list_backup_runs(Some(id), 20)
+/// What a destination's runs say of it.
+#[derive(Default)]
+struct Watch {
+    last_run: Option<BackupRun>,
+    last_check: Option<BackupRun>,
+    last_success: Option<SystemTime>,
+}
+
+async fn last_backup(store: &Arc<dyn BackupStore>, id: &uuid::Uuid) -> Result<Watch, ApiError> {
+    let runs = store
+        .list_backup_runs(Some(id), 500)
         .await
-        .map_err(internal)?
-        .into_iter()
-        .find(|r| r.kind == BackupRunKind::Backup))
+        .map_err(internal)?;
+    Ok(Watch {
+        last_run: runs
+            .iter()
+            .find(|r| r.kind == BackupRunKind::Backup)
+            .cloned(),
+        last_check: runs
+            .iter()
+            .find(|r| r.kind == BackupRunKind::Check)
+            .cloned(),
+        last_success: runs
+            .iter()
+            .filter(|r| r.kind == BackupRunKind::Backup && r.state == BackupRunState::Succeeded)
+            .filter_map(|r| r.finished_at)
+            .max(),
+    })
 }
 
 /// GET /system/backups/destinations
@@ -485,7 +616,7 @@ pub async fn list_destinations(
     let mut list = Vec::new();
     for d in store.list_backup_destinations().await.map_err(internal)? {
         let last = last_backup(store, &d.id).await?;
-        list.push(view(&d, last.as_ref()));
+        list.push(view(&d, &last));
     }
     let total = list.len() as u64;
     Ok(Json(crate::page::Page::new(list, None, Some(total))))
@@ -518,7 +649,7 @@ pub async fn create_destination(
         )));
     }
     store.put_backup_destination(&d).await.map_err(internal)?;
-    let mut v = view(&d, None);
+    let mut v = view(&d, &Watch::default());
     v.password = generated;
     Ok((StatusCode::CREATED, Json(v)))
 }
@@ -559,7 +690,7 @@ pub async fn update_destination(
     }
     store.put_backup_destination(&d).await.map_err(internal)?;
     let last = last_backup(store, &d.id).await?;
-    Ok(Json(view(&d, last.as_ref())))
+    Ok(Json(view(&d, &last)))
 }
 
 /// DELETE /system/backups/destinations/{id} — what is stored there stays.
@@ -612,6 +743,7 @@ async fn request(
         trigger: match kind {
             BackupRunKind::Backup => "now".into(),
             BackupRunKind::Test => "test".into(),
+            BackupRunKind::Check => "now".into(),
         },
         requested_at: SystemTime::now(),
         started_at: None,
@@ -666,6 +798,28 @@ pub async fn run_destination(
 ) -> Result<(StatusCode, Json<RunView>), ApiError> {
     require_platform(&identity)?;
     request(&state, &id, BackupRunKind::Backup).await
+}
+
+/// POST /system/backups/destinations/{id}/check — read a share of the
+/// stored data back now, as the weekly check does (B4).
+#[utoipa::path(
+    post,
+    path = "/api/v1/system/backups/destinations/{id}/check",
+    tag = "backups",
+    operation_id = "backups_check_destination",
+    params(("id" = String, Path, description = "The destination")),
+    responses(
+        (status = 202, description = "Asked for; follow the run", body = RunView),
+        (status = "default", description = "An error", body = crate::error::ErrorResponse),
+    ),
+)]
+pub async fn check_destination(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<AuthIdentity>,
+    Path(id): Path<String>,
+) -> Result<(StatusCode, Json<RunView>), ApiError> {
+    require_platform(&identity)?;
+    request(&state, &id, BackupRunKind::Check).await
 }
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -1788,3 +1942,71 @@ fn restore_view(body: serde_json::Value) -> Result<SystemRestore, ApiError> {
 
 /// A full restore's id.
 const RESTORE_PREFIX: &str = "bks-";
+
+// ── Metrics (B4) ───────────────────────────────────────────────────────────
+
+/// `fcp_backup_last_success_timestamp`, `fcp_backup_bytes_added` and
+/// `fcp_backup_overdue` per destination, on the admin's `/metrics`.
+pub struct BackupMetrics {
+    pub store: Arc<dyn BackupStore>,
+}
+
+#[async_trait::async_trait]
+impl crate::MetricsSource for BackupMetrics {
+    async fn render(&self) -> String {
+        let Ok(dests) = self.store.list_backup_destinations().await else {
+            return String::new();
+        };
+        let label = |v: &str| {
+            v.replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', " ")
+        };
+        let mut success = String::new();
+        let mut added = String::new();
+        let mut overdue = String::new();
+        let now = SystemTime::now();
+        for d in &dests {
+            let Ok(runs) = self.store.list_backup_runs(Some(&d.id), 500).await else {
+                continue;
+            };
+            let last = runs
+                .iter()
+                .filter(|r| r.kind == BackupRunKind::Backup && r.state == BackupRunState::Succeeded)
+                .max_by_key(|r| r.finished_at);
+            let labels = format!(
+                "destination=\"{DESTINATION_PREFIX}{}\",name=\"{}\",type=\"{}\"",
+                d.id,
+                label(&d.name),
+                d.target.kind()
+            );
+            let at = last
+                .and_then(|r| r.finished_at)
+                .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_secs());
+            success.push_str(&format!(
+                "fcp_backup_last_success_timestamp{{{labels}}} {at}\n"
+            ));
+            added.push_str(&format!(
+                "fcp_backup_bytes_added{{{labels}}} {}\n",
+                last.map_or(0, |r| r.bytes_added)
+            ));
+            overdue.push_str(&format!(
+                "fcp_backup_overdue{{{labels}}} {}\n",
+                u8::from(fcp_core::backup::overdue(
+                    d,
+                    last.and_then(|r| r.finished_at),
+                    now
+                ))
+            ));
+        }
+        format!(
+            "# HELP fcp_backup_last_success_timestamp When a destination's last good backup finished (Unix seconds; 0 if never)\n\
+             # TYPE fcp_backup_last_success_timestamp gauge\n{success}\
+             # HELP fcp_backup_bytes_added What a destination's last good backup added to its repository\n\
+             # TYPE fcp_backup_bytes_added gauge\n{added}\
+             # HELP fcp_backup_overdue A scheduled destination has had no good backup for 26 hours (1) or not (0)\n\
+             # TYPE fcp_backup_overdue gauge\n{overdue}"
+        )
+    }
+}

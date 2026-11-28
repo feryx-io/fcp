@@ -1426,7 +1426,8 @@ fn process_event_for_state(
                 SystemEvent::DeviceFirmwareBehind { .. }
                 | SystemEvent::DevicePushFailed { .. }
                 | SystemEvent::BackupCompleted { .. }
-                | SystemEvent::BackupFailed { .. } => {
+                | SystemEvent::BackupFailed { .. }
+                | SystemEvent::BackupOverdue { .. } => {
                     // Delivered to the tenant's webhooks and live views.
                 }
                 SystemEvent::NodeJoined { node_id, .. } => {

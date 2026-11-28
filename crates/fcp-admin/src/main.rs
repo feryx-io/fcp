@@ -927,6 +927,14 @@ async fn main() -> Result<()> {
         None => api_state,
     };
 
+    // Backups on /metrics (docs/SCHEDULED_BACKUPS.md B4).
+    let api_state = match storage.backup_store() {
+        Some(store) => api_state
+            .with_metrics_source(Arc::new(fcp_api_core::v1::backups::BackupMetrics { store: Arc::clone(store) })
+                as Arc<dyn fcp_api_core::MetricsSource>),
+        None => api_state,
+    };
+
     // What every node sees of its trunks, once there is somewhere to read
     // it from.
     let api_state = match trunk_reports {
