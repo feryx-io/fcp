@@ -36,7 +36,7 @@ async fn private(path: &std::path::Path) -> Result<()> {
 
 /// The repository a destination names, with its secrets in place. An SFTP
 /// destination's host key is pinned by its test and required after.
-async fn repo_for(ctx: &Ctx, dest: &mut BackupDestination, testing: bool) -> Result<Repo> {
+pub async fn repo_for(ctx: &Ctx, dest: &mut BackupDestination, testing: bool) -> Result<Repo> {
     let work = &ctx.config.backup.work_dir;
     let id = dest.id.to_string();
     let password = dest
@@ -171,13 +171,25 @@ pub async fn carry_out(ctx: &Ctx, dest: &BackupDestination, run: &BackupRun) -> 
     }
     let host = ctx.config.service.node_id.clone();
     let release = format!("release:{}", env!("CARGO_PKG_VERSION"));
+    let kek = ctx
+        .store
+        .active_kek_id()
+        .await
+        .unwrap_or(None)
+        .map(|k| format!("kek:{k}"));
     let run_tag = format!("run:{}", run.id);
     let mut out = Outcome::default();
 
     // The database, streamed: never on this service's disk.
     let mut dump = Command::new(&ctx.config.backup.pg_dump);
-    dump.args(["--format=custom", "--no-password"])
-        .arg(format!("--dbname={}", ctx.config.storage.database_url));
+    // As backup.sh dumps, so restore.sh takes it.
+    dump.args([
+        "--format=custom",
+        "--no-owner",
+        "--no-privileges",
+        "--no-password",
+    ])
+    .arg(format!("--dbname={}", ctx.config.storage.database_url));
     let db = repo
         .backup_stdin(
             "fcp.dump",
@@ -186,7 +198,10 @@ pub async fn carry_out(ctx: &Ctx, dest: &BackupDestination, run: &BackupRun) -> 
                 "part:db".into(),
                 run_tag.clone(),
                 release.clone(),
-            ],
+            ]
+            .into_iter()
+            .chain(kek.clone())
+            .collect::<Vec<String>>(),
             &host,
             dump,
         )
@@ -194,29 +209,33 @@ pub async fn carry_out(ctx: &Ctx, dest: &BackupDestination, run: &BackupRun) -> 
     out.snapshots.push(db.snapshot_id.clone());
     out.bytes_added += db.data_added;
 
-    // The files, read in place.
-    let mut paths: Vec<PathBuf> = ctx
-        .config
-        .backup
-        .paths
-        .values()
-        .filter(|p| p.exists())
-        .cloned()
-        .collect();
-    if dest.include_key {
-        match &ctx.config.backup.key_ring {
-            Some(k) if k.exists() => paths.push(k.clone()),
-            _ => bail!("the destination includes the key, and [backup] key_ring is not there"),
+    // The files, read in place, each volume tagged with where it was so a
+    // download can put it back in backup.sh's layout. The master key is
+    // left out unless the destination asks for it (Q4).
+    let mut paths: Vec<PathBuf> = Vec::new();
+    let mut tags: Vec<String> = vec!["fcp".into(), "part:files".into(), run_tag, release];
+    tags.extend(kek);
+    for (name, path) in &ctx.config.backup.paths {
+        if path.exists() {
+            paths.push(path.clone());
+            tags.push(format!("vol:{name}:{}", path.display()));
         }
     }
+    let mut excludes = Vec::new();
+    match (&ctx.config.backup.key_ring, dest.include_key) {
+        (Some(k), true) if !paths.iter().any(|p| k.starts_with(p)) => {
+            if !k.exists() {
+                bail!("the destination includes the key, and [backup] key_ring is not there");
+            }
+            paths.push(k.clone());
+        }
+        (Some(_), true) => {}
+        (Some(k), false) => excludes.push(k.clone()),
+        (None, true) => bail!("the destination includes the key, and [backup] key_ring is not set"),
+        (None, false) => {}
+    }
     if !paths.is_empty() {
-        let files = repo
-            .backup_paths(
-                &paths,
-                &["fcp".into(), "part:files".into(), run_tag, release],
-                &host,
-            )
-            .await?;
+        let files = repo.backup_paths(&paths, &excludes, &tags, &host).await?;
         out.snapshots.push(files.snapshot_id.clone());
         out.bytes_added += files.data_added;
     }

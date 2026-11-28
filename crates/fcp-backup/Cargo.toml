@@ -17,6 +17,9 @@ fcp-events = { path = "../fcp-events" }
 fcp-cluster = { path = "../fcp-cluster" }
 fcp-storage-postgres = { path = "../fcp-storage-postgres" }
 fcp-storage-redis = { path = "../fcp-storage-redis" }
+fcp-crypto = { path = "../fcp-crypto" }
+tokio-util = { version = "0.7", features = ["io"] }
+futures-util = "0.3"
 tokio = { workspace = true, features = ["full"] }
 anyhow = { workspace = true }
 serde = { workspace = true }

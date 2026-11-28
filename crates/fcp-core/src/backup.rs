@@ -273,6 +273,12 @@ pub trait BackupStore: Send + Sync {
         destination: &uuid::Uuid,
     ) -> anyhow::Result<Option<BackupRun>>;
 
+    /// The key ring's active KEK id, which a snapshot is tagged with so a
+    /// restore can check the key it is given (`docs/SCHEDULED_BACKUPS.md`).
+    async fn active_kek_id(&self) -> anyhow::Result<Option<String>> {
+        Ok(None)
+    }
+
     /// The master key downloaded from the page for `kek_id`, by `actor`.
     async fn record_key_export(&self, _kek_id: &str, _actor: &str) -> anyhow::Result<()> {
         Ok(())

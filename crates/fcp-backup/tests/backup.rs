@@ -176,8 +176,15 @@ fn request(dest: uuid::Uuid, kind: BackupRunKind) -> BackupRun {
     }
 }
 
-/// The service, set to back up `files` from `db`.
-async fn service(db: &TestDatabase, restic: &Path, files: &Path, work: &Path) -> Service {
+/// The service, set to back up `files` (and `certs`, its master key left
+/// out) from `db`; the port its API answers on.
+async fn service(
+    db: &TestDatabase,
+    restic: &Path,
+    files: &Path,
+    certs: &Path,
+    work: &Path,
+) -> (Service, u16) {
     let http = free_port();
     let config = format!(
         r#"[service]
@@ -185,6 +192,7 @@ node_id = "backup-test"
 
 [http]
 bind_address = "127.0.0.1:{http}"
+token = "backup-api-token"
 
 [storage]
 database_url = "{db}"
@@ -194,9 +202,11 @@ restic = "{restic}"
 pg_dump = "{pg_dump}"
 work_dir = "{work}"
 poll_secs = 1
+key_ring = "{certs}/master.key"
 
 [backup.paths]
 recordings = "{files}"
+fcp-certs = "{certs}"
 
 [logging]
 level = "info"
@@ -207,14 +217,27 @@ format = "compact"
         pg_dump = pg_dump().display(),
         work = work.display(),
         files = files.display(),
+        certs = certs.display(),
     );
-    Service::start(
+    let svc = Service::start(
         "fcp-backup",
         BIN,
         &config,
         &fcp_testkit::smoke::loopback(http, "/health"),
     )
-    .await
+    .await;
+    (svc, http)
+}
+
+fn certs_dir() -> tempfile::TempDir {
+    let certs = tempfile::tempdir().unwrap();
+    std::fs::write(
+        certs.path().join("ca.pem"),
+        "-----BEGIN CERTIFICATE-----\nca\n",
+    )
+    .unwrap();
+    std::fs::write(certs.path().join("master.key"), "the-running-key\n").unwrap();
+    certs
 }
 
 /// The database and a recording, backed up over SFTP and read back.
@@ -269,7 +292,8 @@ async fn the_database_and_the_files_go_to_an_sftp_server() {
         updated_at: now,
     };
     store.put_backup_destination(&dest).await.unwrap();
-    let svc = service(&db, &restic, files.path(), work.path()).await;
+    let certs = certs_dir();
+    let (svc, http) = service(&db, &restic, files.path(), certs.path(), work.path()).await;
 
     // A backup before the host key is pinned is refused.
     let early = request(dest.id, BackupRunKind::Backup);
@@ -356,6 +380,170 @@ async fn the_database_and_the_files_go_to_an_sftp_server() {
         .iter()
         .any(|t| t == &format!("run:{}", run.id))));
 
+    // The snapshot leaves the master key out (Q4) but keeps the rest of
+    // the certs volume.
+    let listing = String::from_utf8(restic_cmd(&["ls", &run.snapshots[1]])).unwrap();
+    assert!(listing.contains("ca.pem"), "{listing}");
+    assert!(!listing.contains("master.key"), "{listing}");
+
+    // B3a: the point listed through the service's API, then a download in
+    // backup.sh's layout.
+    let client = reqwest::Client::new();
+    let api = |path: &str| format!("http://127.0.0.1:{http}{path}");
+    let unauthorized = client
+        .get(api(&format!("/v1/destinations/{}/snapshots", dest.id)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), 401);
+    let points: serde_json::Value = client
+        .get(api(&format!("/v1/destinations/bkd-{}/snapshots", dest.id)))
+        .bearer_auth("backup-api-token")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(points.as_array().map(Vec::len), Some(1), "{points}");
+    assert_eq!(points[0]["run"], run.id.to_string());
+    assert!(points[0]["volumes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v == "fcp-certs"));
+    let download = |master_key: Option<&str>| {
+        let client = client.clone();
+        let body = serde_json::json!({
+            "destination_id": format!("bkd-{}", dest.id),
+            "run": format!("bkr-{}", run.id),
+            "master_key": master_key,
+        });
+        let url = api("/v1/downloads");
+        async move {
+            let started: serde_json::Value = client
+                .post(url)
+                .bearer_auth("backup-api-token")
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            let id = started["id"].as_str().unwrap().to_string();
+            let token = started["token"].as_str().unwrap().to_string();
+            for _ in 0..240 {
+                let state: serde_json::Value = client
+                    .get(format!("http://127.0.0.1:{http}/v1/downloads/{id}"))
+                    .bearer_auth("backup-api-token")
+                    .send()
+                    .await
+                    .unwrap()
+                    .json()
+                    .await
+                    .unwrap();
+                if state["state"] != "building" {
+                    return (state, id, token);
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            panic!("the download never finished");
+        }
+    };
+    // Without a key: this system has none to lend.
+    let (state, _, _) = download(None).await;
+    assert_eq!(state["state"], "failed", "{state}");
+    assert!(
+        state["error"]
+            .as_str()
+            .unwrap()
+            .contains("needs the master key"),
+        "{state}"
+    );
+    // With the key from the file the admin was given.
+    let (state, id, token) = download(Some("dGhlLWtleS1naXZlbg==")).await;
+    assert_eq!(state["state"], "ready", "{state}");
+    let tar = client
+        .get(api(&format!("/v1/downloads/{id}/file?token={token}")))
+        .bearer_auth("backup-api-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(tar.status(), 200);
+    let bytes = tar.bytes().await.unwrap();
+    let out = tempfile::tempdir().unwrap();
+    std::fs::write(out.path().join("b.tar"), &bytes).unwrap();
+    let untar = Command::new("tar")
+        .arg("-C")
+        .arg(out.path())
+        .arg("-xf")
+        .arg(out.path().join("b.tar"))
+        .output()
+        .unwrap();
+    assert!(
+        untar.status.success(),
+        "{} bytes: {} | {:?}",
+        bytes.len(),
+        String::from_utf8_lossy(&untar.stderr),
+        &bytes[..bytes.len().min(120)]
+    );
+    let bundle = std::fs::read_dir(out.path())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.is_dir())
+        .expect("the bundle's directory");
+    // restore.sh's checks: the checksums, the manifest, the key, the volumes.
+    let sums = Command::new("sha256sum")
+        .arg("-c")
+        .arg("SHA256SUMS")
+        .current_dir(&bundle)
+        .output()
+        .unwrap();
+    assert!(
+        sums.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sums.stdout)
+    );
+    let manifest = std::fs::read_to_string(bundle.join("manifest")).unwrap();
+    assert!(manifest.contains("fcp_backup = 1"), "{manifest}");
+    assert!(manifest.contains("database = fcp.dump"), "{manifest}");
+    assert!(
+        manifest.contains(" fcp-certs") && manifest.contains(" recordings"),
+        "{manifest}"
+    );
+    assert!(std::fs::read(bundle.join("fcp.dump"))
+        .unwrap()
+        .starts_with(b"PGDMP"));
+    let key = Command::new("tar")
+        .arg("-xzOf")
+        .arg(bundle.join("fcp-certs.tar.gz"))
+        .arg("./master.key")
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&key.stdout).trim(),
+        "dGhlLWtleS1naXZlbg=="
+    );
+    let rec = Command::new("tar")
+        .arg("-tzf")
+        .arg(bundle.join("recordings.tar.gz"))
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&rec.stdout).contains("./tenant-a/call-1.wav"),
+        "{}",
+        String::from_utf8_lossy(&rec.stdout)
+    );
+    // Fetched once.
+    let again = client
+        .get(api(&format!("/v1/downloads/{id}/file?token={token}")))
+        .bearer_auth("backup-api-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(again.status(), 404);
+
     svc.kill().await;
     drop(sftp);
     db.drop_db().await;
@@ -415,7 +603,8 @@ async fn the_database_goes_to_an_s3_compatible_bucket() {
         updated_at: now,
     };
     store.put_backup_destination(&dest).await.unwrap();
-    let svc = service(&db, &restic, files.path(), work.path()).await;
+    let certs = certs_dir();
+    let (svc, _) = service(&db, &restic, files.path(), certs.path(), work.path()).await;
     for kind in [BackupRunKind::Test, BackupRunKind::Backup] {
         let run = request(dest.id, kind);
         store.request_backup_run(&run).await.unwrap();

@@ -227,6 +227,14 @@ impl BackupStore for PostgresStorage {
         rows.iter().map(run_from).collect()
     }
 
+    async fn active_kek_id(&self) -> anyhow::Result<Option<String>> {
+        Ok(sqlx::query_scalar::<_, String>(
+            "SELECT kek_id FROM data_encryption_keys WHERE active ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_optional(self.reads())
+        .await?)
+    }
+
     async fn record_key_export(&self, kek_id: &str, actor: &str) -> anyhow::Result<()> {
         sqlx::query("INSERT INTO backup_key_exports (kek_id, actor) VALUES ($1, $2)")
             .bind(kek_id)
