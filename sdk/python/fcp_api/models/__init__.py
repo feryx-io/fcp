@@ -193,6 +193,8 @@ from .import_devices_request import ImportDevicesRequest
 from .import_devices_response import ImportDevicesResponse
 from .join_role import JoinRole
 from .join_token_response import JoinTokenResponse
+from .key_export_request import KeyExportRequest
+from .key_status import KeyStatus
 from .lcr_route_response import LcrRouteResponse
 from .library_template_response import LibraryTemplateResponse
 from .line_binding_response import LineBindingResponse
@@ -877,6 +879,8 @@ __all__ = (
     "ImportDevicesResponse",
     "JoinRole",
     "JoinTokenResponse",
+    "KeyExportRequest",
+    "KeyStatus",
     "LcrRouteResponse",
     "LibraryTemplateResponse",
     "LineBindingResponse",

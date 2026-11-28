@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import {
-  LayoutDashboard, Users, UsersRound, Phone, Boxes, MonitorSmartphone, Link2, Building2, MapPin, Settings, LogOut, Moon, Sun, Monitor, Menu, ChevronLeft, PhoneCall, FileText, Headphones, Voicemail, Radio, Activity, Server, Shield, Workflow, Globe, Key, ScrollText, Scale, Search, X, FileAudio, Video, Disc, Siren, Coins, Cable, CalendarClock, ShieldCheck, BedDouble, Webhook, KeyRound, Palette, HeartPulse, CircleParking, Mic, FileSearch,
+  Archive, LayoutDashboard, Users, UsersRound, Phone, Boxes, MonitorSmartphone, Link2, Building2, MapPin, Settings, LogOut, Moon, Sun, Monitor, Menu, ChevronLeft, PhoneCall, FileText, Headphones, Voicemail, Radio, Activity, Server, Shield, Workflow, Globe, Key, ScrollText, Scale, Search, X, FileAudio, Video, Disc, Siren, Coins, Cable, CalendarClock, ShieldCheck, BedDouble, Webhook, KeyRound, Palette, HeartPulse, CircleParking, Mic, FileSearch,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -70,6 +70,7 @@ const navItems: NavItem[] = [
   // System (docs/SERVICES.md §3)
   { label: 'Services', href: '/admin/services', icon: HeartPulse, section: 'System', platformOnly: true },
   { label: 'Cluster', href: '/admin/cluster', icon: Globe, section: 'System', platformOnly: true },
+  { label: 'Backups', href: '/admin/backups', icon: Archive, section: 'System', platformOnly: true },
   { label: 'Sites', href: '/admin/sites', icon: Cable, section: 'System' },
   { label: 'System Settings', href: '/admin/system-settings', icon: Settings, section: 'System' },
   { label: 'Logs', href: '/admin/logs', icon: FileSearch, section: 'System' },

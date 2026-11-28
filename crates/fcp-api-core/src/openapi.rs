@@ -418,6 +418,8 @@ use utoipa::{Modify, OpenApi};
         crate::v1::backups::delete_destination,
         crate::v1::backups::test_destination,
         crate::v1::backups::run_destination,
+        crate::v1::backups::key_status,
+        crate::v1::backups::export_key,
         crate::v1::backups::list_runs,
         crate::v1::backups::get_run,
         crate::v1::speech::list_caps,

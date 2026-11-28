@@ -373,6 +373,8 @@ impl App {
             .clone()
             .with_encryption_store(sealed as Arc<dyn fcp_core::encryption::EncryptionStore>);
         self.state.storage = Some(Arc::new(storage));
+        self.state.encryption =
+            Some(fcp_crypto::EncryptionSettings::local_from_base64(MASTER_KEY).unwrap());
         self.router = create_router(self.state.clone(), &test_api_config());
         self
     }
@@ -698,5 +700,92 @@ async fn backup_destinations_are_kept_and_runs_asked_for() {
         )
         .await;
     assert_eq!(twice.status, StatusCode::NOT_FOUND, "{}", twice.text);
+    app.finish().await;
+}
+
+/// `docs/SCHEDULED_BACKUPS.md` B2: the master key downloaded once from the
+/// backup page — only where it is local, wrapped in the passphrase as an
+/// age file that opens back to the key, the download recorded.
+#[tokio::test]
+async fn the_master_key_is_downloaded_wrapped_in_a_passphrase() {
+    use std::io::Read;
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    // Encryption off here: nothing to download.
+    let off = app
+        .admin(Method::GET, "/api/v1/system/backups/key", None)
+        .await;
+    assert_eq!(off.status, StatusCode::OK, "{}", off.text);
+    assert_eq!(off.json["exportable"], false, "{}", off.text);
+
+    let app = app.with_encryption().await;
+    let status = app
+        .admin(Method::GET, "/api/v1/system/backups/key", None)
+        .await;
+    assert_eq!(status.status, StatusCode::OK, "{}", status.text);
+    assert_eq!(status.json["provider"], "local");
+    assert_eq!(status.json["exportable"], true);
+    assert!(status.json["last_exported_at"].is_null());
+    let kek_id = status.json["kek_id"].as_str().unwrap().to_string();
+    assert!(kek_id.starts_with("local:"), "{kek_id}");
+
+    let short = app
+        .admin(
+            Method::POST,
+            "/api/v1/system/backups/key",
+            Some(json!({ "passphrase": "short" })),
+        )
+        .await;
+    assert_eq!(short.status, StatusCode::BAD_REQUEST, "{}", short.text);
+    let file = app
+        .admin(
+            Method::POST,
+            "/api/v1/system/backups/key",
+            Some(json!({ "passphrase": "correct horse battery staple" })),
+        )
+        .await;
+    assert_eq!(file.status, StatusCode::OK, "{}", file.text);
+    assert!(
+        file.text.starts_with("-----BEGIN AGE ENCRYPTED FILE-----"),
+        "{}",
+        file.text
+    );
+    assert!(!file.text.contains(MASTER_KEY));
+
+    // It opens with the passphrase, as `age -d` would.
+    let reader = age::armor::ArmoredReader::new(file.text.as_bytes());
+    let decryptor = age::Decryptor::new(reader).expect("an age file");
+    let identity = age::scrypt::Identity::new(age::secrecy::SecretString::from(
+        "correct horse battery staple".to_string(),
+    ));
+    let mut plain = String::new();
+    decryptor
+        .decrypt(std::iter::once(&identity as &dyn age::Identity))
+        .expect("the passphrase opens it")
+        .read_to_string(&mut plain)
+        .unwrap();
+    let opened: Value = serde_json::from_str(&plain).unwrap();
+    assert_eq!(opened["master_key"], MASTER_KEY);
+    assert_eq!(opened["kek_id"], kek_id.as_str());
+
+    let after = app
+        .admin(Method::GET, "/api/v1/system/backups/key", None)
+        .await;
+    assert!(after.json["last_exported_at"].is_string(), "{}", after.text);
+    assert_eq!(after.json["last_exported_by"], "static_token");
+
+    app.create_user_with_role("keyta", "tenant_admin").await;
+    let login = app.login("keyta", PASSWORD).await;
+    let ta = login.json["token"].as_str().unwrap().to_string();
+    let refused = app
+        .send_as(
+            &ta,
+            Method::POST,
+            "/api/v1/system/backups/key",
+            Some(json!({ "passphrase": "correct horse battery staple" })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
     app.finish().await;
 }

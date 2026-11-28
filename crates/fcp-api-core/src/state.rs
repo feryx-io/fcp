@@ -133,6 +133,10 @@ pub struct ApiState {
     /// The shared speech server's recognition, for a tenant's preview
     /// (`docs/TENANT_RECOGNITION.md` R2b); the same server as `tts_service`.
     pub stt_service: Option<Arc<fcp_media::stt::SttService>>,
+    /// The deployment's encryption settings, for the backup page's key
+    /// download (`docs/SCHEDULED_BACKUPS.md` B2); unset, read from the
+    /// environment as every binary's are.
+    pub encryption: Option<fcp_crypto::EncryptionSettings>,
 
     /// Auth config for WebSocket first-message authentication (optional).
     /// When set, WebSocket endpoints require a valid token in the first message.
@@ -281,6 +285,7 @@ impl ApiState {
             security_policy: SecurityPolicy::default(),
             tts_service: None,
             stt_service: None,
+            encryption: None,
             auth_config: None,
             session_keys: None,
             session_ttl: fcp_core::session::DEFAULT_SESSION_TTL,

@@ -258,6 +258,32 @@ is the one dangerous power in the design.
   - **Left to later phases:** the cron expression (B4) and the
     `restore.sh`-layout download (B3).
 - **B2: the page,** with the key download, and a Playwright spec.
+
+  **Done (v0.25.671):**
+  - **The key download:**
+    - `GET /system/backups/key` says whether the master key can be
+      downloaded (a local key can; a KMS key never leaves the KMS) and when
+      its KEK last was.
+    - `POST` with a passphrase of 12 or more characters answers an
+      ASCII-armored age file, `fcp-master-key-<kek>.age`, wrapped in that
+      passphrase (age's scrypt recipient, so `age -d` opens it without
+      FCP). It holds `{format, kek_id, master_key}`, the key as
+      `FCP_MASTER_KEY` takes it.
+    - The download is recorded in `backup_key_exports` (migration 162; the
+      key itself is kept nowhere new) and logged at WARN.
+    - `ApiState.encryption` carries the settings, read from the
+      environment when unset; `EncryptionSettings::exportable_master_key`.
+  - **System › Backups** (`BackupsPage`):
+    - The key card, amber until the current KEK has been downloaded.
+    - Destinations, with their repository, schedule, retention and last
+      backup, and Test, Back up now, Edit and Delete. The add and edit
+      dialog covers SFTP and S3; secrets are kept when left empty, and
+      "include the master key" is spelled out.
+    - The password made for a destination, shown once.
+    - The runs table, followed while a run waits or runs.
+  - **Proved by:** `the_master_key_is_downloaded_wrapped_in_a_passphrase`
+    (the file opened with the passphrase gives the key back) and
+    `e2e/backups.spec.ts`.
 - **B3: restoring from the admin.**
   - Download in `backup.sh` layout; partial restores, the tenant's own
     included.

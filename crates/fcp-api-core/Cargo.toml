@@ -68,6 +68,10 @@ serde_urlencoded = "0.7"
 
 # Secure random for token generation
 rand = "0.8"
+# The master key downloaded wrapped in a passphrase, an age file any age
+# tool opens (docs/SCHEDULED_BACKUPS.md B2).
+age = { version = "0.11", features = ["armor"] }
+fcp-crypto = { path = "../fcp-crypto" }
 
 # Utilities
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

@@ -227,6 +227,35 @@ impl BackupStore for PostgresStorage {
         rows.iter().map(run_from).collect()
     }
 
+    async fn record_key_export(&self, kek_id: &str, actor: &str) -> anyhow::Result<()> {
+        sqlx::query("INSERT INTO backup_key_exports (kek_id, actor) VALUES ($1, $2)")
+            .bind(kek_id)
+            .bind(actor)
+            .execute(self.writes())
+            .await?;
+        Ok(())
+    }
+
+    async fn last_key_export(
+        &self,
+        kek_id: &str,
+    ) -> anyhow::Result<Option<(std::time::SystemTime, String)>> {
+        let row = sqlx::query(
+            "SELECT exported_at, actor FROM backup_key_exports WHERE kek_id = $1
+              ORDER BY exported_at DESC LIMIT 1",
+        )
+        .bind(kek_id)
+        .fetch_optional(self.reads())
+        .await?;
+        row.map(|r| {
+            Ok((
+                datetime_to_system_time(r.try_get::<DateTime<Utc>, _>("exported_at")?),
+                r.try_get("actor")?,
+            ))
+        })
+        .transpose()
+    }
+
     async fn last_scheduled_run(
         &self,
         destination: &uuid::Uuid,

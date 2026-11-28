@@ -47,6 +47,19 @@ impl fmt::Debug for EncryptionSettings {
 }
 
 impl EncryptionSettings {
+    /// A local master key as an operator keeps it — base64, with its KEK
+    /// id — for the backup page's one download (`docs/SCHEDULED_BACKUPS.md`
+    /// §2); `None` for a KMS key, which never leaves the KMS, or none.
+    pub fn exportable_master_key(&self) -> Option<(String, String)> {
+        match self {
+            Self::Local { master_key } => {
+                let id = LocalKek::new(master_key).ok()?.id().to_string();
+                Some((B64.encode(master_key.as_slice()), id))
+            }
+            _ => None,
+        }
+    }
+
     /// Read the settings from the process environment (see module docs).
     pub fn from_env() -> Result<Self> {
         let provider = std::env::var("FCP_ENCRYPTION_PROVIDER")
