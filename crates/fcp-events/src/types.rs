@@ -870,6 +870,33 @@ pub enum SystemEvent {
         timestamp: SystemTime,
     },
 
+    /// A backup finished (`docs/SCHEDULED_BACKUPS.md`): the destination,
+    /// the snapshots it made and what it added.
+    BackupCompleted {
+        /// `bkd-<uuid>`.
+        destination_id: String,
+        destination: String,
+        /// `bkr-<uuid>`.
+        run_id: String,
+        snapshots: Vec<String>,
+        bytes_added: u64,
+        duration_secs: u64,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
+    /// A backup or a destination's test failed, and why.
+    BackupFailed {
+        destination_id: String,
+        destination: String,
+        run_id: String,
+        /// `backup` or `test`.
+        kind: String,
+        error: String,
+        #[serde(with = "system_time_serde")]
+        timestamp: SystemTime,
+    },
+
     /// A service stopped saying it is there (`docs/SERVICES.md` §2). Said
     /// once, by the admin, when its beacon expired; never while Redis
     /// itself cannot be read.
@@ -2230,6 +2257,8 @@ impl PlatformEvent {
         "system.site_link_changed",
         "system.service_up",
         "system.service_down",
+        "system.backup_completed",
+        "system.backup_failed",
         "device.firmware_behind",
         "device.push_failed",
         "user.created",
@@ -2405,6 +2434,8 @@ impl PlatformEvent {
                 SystemEvent::SiteLinkChanged { .. } => "system.site_link_changed",
                 SystemEvent::ServiceUp { .. } => "system.service_up",
                 SystemEvent::ServiceDown { .. } => "system.service_down",
+                SystemEvent::BackupCompleted { .. } => "system.backup_completed",
+                SystemEvent::BackupFailed { .. } => "system.backup_failed",
                 SystemEvent::DeviceFirmwareBehind { .. } => "device.firmware_behind",
                 SystemEvent::DevicePushFailed { .. } => "device.push_failed",
             },
@@ -2686,7 +2717,9 @@ impl PlatformEvent {
                 | SystemEvent::VersionSkew { .. }
                 | SystemEvent::SiteLinkChanged { .. }
                 | SystemEvent::ServiceUp { .. }
-                | SystemEvent::ServiceDown { .. } => None,
+                | SystemEvent::ServiceDown { .. }
+                | SystemEvent::BackupCompleted { .. }
+                | SystemEvent::BackupFailed { .. } => None,
             },
             PlatformEvent::Voicemail(e) => match e {
                 VoicemailEvent::MessageTranscribed { tenant_id, .. }
@@ -2958,6 +2991,8 @@ impl SystemEvent {
             | SystemEvent::SiteLinkChanged { timestamp, .. }
             | SystemEvent::ServiceUp { timestamp, .. }
             | SystemEvent::ServiceDown { timestamp, .. }
+            | SystemEvent::BackupCompleted { timestamp, .. }
+            | SystemEvent::BackupFailed { timestamp, .. }
             | SystemEvent::DeviceFirmwareBehind { timestamp, .. }
             | SystemEvent::DevicePushFailed { timestamp, .. } => *timestamp,
         }

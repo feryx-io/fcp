@@ -1,0 +1,41 @@
+# fcp-backup in the compose stack (docs/SCHEDULED_BACKUPS.md). Destinations,
+# schedules and retention are set on the admin's System › Backups page; this
+# names what is backed up and where it is mounted. The database URL comes
+# from FCP_BACKUP_DATABASE_URL.
+
+[service]
+node_id = "backup-1"
+
+[http]
+bind_address = "0.0.0.0:8096"
+
+[storage]
+database_url = "postgresql://fcp:change-me@postgres:5432/fcp"
+
+[backup]
+restic = "/usr/local/bin/restic"
+pg_dump = "/usr/lib/postgresql/16/bin/pg_dump"
+work_dir = "/var/lib/fcp-backup"
+poll_secs = 30
+# Put in a snapshot only for a destination that asks for the key.
+key_ring = "/var/lib/fcp/certs/master.key"
+
+# Each stateful volume, mounted read-only (docs/BACKUP_AND_RESTORE.md §1).
+[backup.paths]
+call-manager = "/data/call-manager"
+admin = "/data/admin"
+voicemail = "/data/voicemail"
+conference-recordings = "/data/conference-recordings"
+conference-cdr-spool = "/data/conference-cdr-spool"
+media-recordings = "/data/media-recordings"
+media-prompts = "/data/media-prompts"
+
+[events]
+server_url = "http://fcp-events-server:8081"
+
+[cluster]
+redis_url = "redis://redis:6379"
+
+[logging]
+level = "info"
+format = "compact"

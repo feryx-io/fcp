@@ -285,6 +285,9 @@ impl App {
                     .with_speech_usage_store(
                         Arc::clone(&storage) as Arc<dyn fcp_core::speech::SpeechUsageStore>
                     )
+                    .with_backup_store(
+                        Arc::clone(&storage) as Arc<dyn fcp_core::backup::BackupStore>
+                    )
                     .with_contact_store(
                         Arc::clone(&storage) as Arc<dyn fcp_core::contact::ContactStore>
                     )

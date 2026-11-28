@@ -5414,6 +5414,113 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/system/backups/destinations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /system/backups/destinations */
+        get: operations["backups_list_destinations"];
+        put?: never;
+        /** POST /system/backups/destinations */
+        post: operations["backups_create_destination"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/backups/destinations/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** PUT /system/backups/destinations/{id} */
+        put: operations["backups_update_destination"];
+        post?: never;
+        /** DELETE /system/backups/destinations/{id} — what is stored there stays. */
+        delete: operations["backups_delete_destination"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/backups/destinations/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * POST /system/backups/destinations/{id}/test — reach it, pin its host
+         *     key, write and remove a probe; the run says how it went.
+         */
+        post: operations["backups_test_destination"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/backups/destinations/{id}/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** POST /system/backups/destinations/{id}/run — back up now. */
+        post: operations["backups_run_destination"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/backups/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /system/backups/runs */
+        get: operations["backups_list_runs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/system/backups/runs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GET /system/backups/runs/{id} */
+        get: operations["backups_get_run"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/speech/caps": {
         parameters: {
             query?: never;
@@ -7813,6 +7920,16 @@ export interface components {
         BackchannelLogoutForm: {
             logout_token: string;
         };
+        /**
+         * @description What a run did.
+         * @enum {string}
+         */
+        BackupRunKind: "backup" | "test";
+        /**
+         * @description Where a run is.
+         * @enum {string}
+         */
+        BackupRunState: "requested" | "running" | "succeeded" | "failed";
         /** @description Balance response. */
         BalanceResponse: {
             tenant_id: string;
@@ -9234,6 +9351,42 @@ export interface components {
         DestinationOverride: {
             prefix: string;
             class: components["schemas"]["DestinationClass"];
+        };
+        /** @description A destination to make or change. */
+        DestinationRequest: {
+            name: string;
+            target: components["schemas"]["TargetRequest"];
+            /**
+             * @description The repository password; write-only. Left out when a destination is
+             *     made, one is generated and shown once.
+             */
+            password?: string | null;
+            schedule?: components["schemas"]["ScheduleView"] | null;
+            keep?: components["schemas"]["RetentionView"] | null;
+            include_key?: boolean;
+            enabled?: boolean;
+        };
+        /** @description A backup destination. */
+        DestinationView: {
+            /** @description `bkd-<uuid>`. */
+            id: string;
+            name: string;
+            target: components["schemas"]["TargetView"];
+            has_password: boolean;
+            schedule: components["schemas"]["ScheduleView"];
+            keep: components["schemas"]["RetentionView"];
+            include_key: boolean;
+            enabled: boolean;
+            /** @description The repository's address as restic names it, for restoring by hand. */
+            repository: string;
+            last_run?: components["schemas"]["RunView"] | null;
+            /**
+             * @description Shown once, when a destination is made without a password and one
+             *     is generated: keep it, it opens every snapshot.
+             */
+            password?: string | null;
+            created_at: string;
+            updated_at: string;
         };
         /** @description An app install's session, on its device. */
         DeviceAppResponse: {
@@ -11165,6 +11318,37 @@ export interface components {
             total?: number | null;
         };
         /** @description A page of a list. */
+        Page_DestinationView: {
+            data: {
+                /** @description `bkd-<uuid>`. */
+                id: string;
+                name: string;
+                target: components["schemas"]["TargetView"];
+                has_password: boolean;
+                schedule: components["schemas"]["ScheduleView"];
+                keep: components["schemas"]["RetentionView"];
+                include_key: boolean;
+                enabled: boolean;
+                /** @description The repository's address as restic names it, for restoring by hand. */
+                repository: string;
+                last_run?: components["schemas"]["RunView"] | null;
+                /**
+                 * @description Shown once, when a destination is made without a password and one
+                 *     is generated: keep it, it opens every snapshot.
+                 */
+                password?: string | null;
+                created_at: string;
+                updated_at: string;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
         Page_DeviceFetchResponse: {
             data: {
                 file: string;
@@ -12787,6 +12971,32 @@ export interface components {
                 created_at: string;
                 /** Format: date-time */
                 updated_at: string;
+            }[];
+            /** @description The cursor for the next page; null on the last. */
+            next_cursor?: string | null;
+            /**
+             * Format: int64
+             * @description How many items the whole list holds, where that is known.
+             */
+            total?: number | null;
+        };
+        /** @description A page of a list. */
+        Page_RunView: {
+            data: {
+                /** @description `bkr-<uuid>`. */
+                id: string;
+                destination_id: string;
+                kind: components["schemas"]["BackupRunKind"];
+                state: components["schemas"]["BackupRunState"];
+                trigger: string;
+                requested_at: string;
+                started_at?: string | null;
+                finished_at?: string | null;
+                snapshots: string[];
+                /** Format: int64 */
+                bytes_added: number;
+                message?: string | null;
+                node?: string | null;
             }[];
             /** @description The cursor for the next page; null on the last. */
             next_cursor?: string | null;
@@ -14677,6 +14887,14 @@ export interface components {
             total_deleted: number;
             errors: string[];
         };
+        RetentionView: {
+            /** Format: int32 */
+            daily: number;
+            /** Format: int32 */
+            weekly: number;
+            /** Format: int32 */
+            monthly: number;
+        };
         /** @description Where a parked call is sent. */
         RetrieveParkedRequest: {
             /**
@@ -14771,6 +14989,23 @@ export interface components {
             /** Format: date-time */
             updated_at?: string | null;
         };
+        /** @description A run of a destination. */
+        RunView: {
+            /** @description `bkr-<uuid>`. */
+            id: string;
+            destination_id: string;
+            kind: components["schemas"]["BackupRunKind"];
+            state: components["schemas"]["BackupRunState"];
+            trigger: string;
+            requested_at: string;
+            started_at?: string | null;
+            finished_at?: string | null;
+            snapshots: string[];
+            /** Format: int64 */
+            bytes_added: number;
+            message?: string | null;
+            node?: string | null;
+        };
         /**
          * @description What a SAML provider posts to ask for a logout, or to answer FCP's
          *     (the HTTP-POST binding).
@@ -14845,6 +15080,10 @@ export interface components {
             state: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        ScheduleView: {
+            /** @description A daily backup at `HH:MM`, UTC; unset, none is scheduled. */
+            time_of_day?: string | null;
         };
         SealRequest: {
             /** @description The credential to seal, in plaintext. */
@@ -15677,6 +15916,53 @@ export interface components {
             voice?: string | null;
             /** Format: int64 */
             expires_in_hours?: number | null;
+        };
+        /**
+         * @description A destination's target to keep; a secret left out on a change keeps the
+         *     one kept.
+         */
+        TargetRequest: {
+            host: string;
+            /** Format: int32 */
+            port?: number | null;
+            user: string;
+            path: string;
+            /** @description An OpenSSH private key; write-only. */
+            private_key?: string | null;
+            /** @enum {string} */
+            type: "sftp";
+        } | {
+            endpoint: string;
+            bucket: string;
+            region?: string | null;
+            prefix?: string | null;
+            access_key_id: string;
+            /** @description Write-only. */
+            secret_access_key?: string | null;
+            /** @enum {string} */
+            type: "s3";
+        };
+        /** @description A destination's target, its secrets never shown. */
+        TargetView: {
+            host: string;
+            /** Format: int32 */
+            port: number;
+            user: string;
+            path: string;
+            has_private_key: boolean;
+            /** @description The server's host key as pinned by the first test. */
+            host_key?: string | null;
+            /** @enum {string} */
+            type: "sftp";
+        } | {
+            endpoint: string;
+            bucket: string;
+            region?: string | null;
+            prefix?: string | null;
+            access_key_id: string;
+            has_secret_access_key: boolean;
+            /** @enum {string} */
+            type: "s3";
         };
         /** @description What a template's resync did. */
         TemplateResyncResponse: {
@@ -17065,7 +17351,7 @@ export interface components {
              * @description A name from `/api/v1/webhooks/event-types`, or `webhook.test`
              * @enum {string}
              */
-            event_type: "call.initiated" | "call.ringing" | "call.progress" | "call.answered" | "call.ended" | "call.failed" | "call.emergency" | "call.emergency_completed" | "emergency.notification_failed" | "call.parked" | "call.unparked" | "call.park_timed_out" | "call.quality_poor" | "call.held" | "call.resumed" | "call.transcript" | "call.party_joined" | "call.party_left" | "media.session_started" | "media.session_ended" | "media.dtmf_received" | "media.quality_warning" | "ivr.prompt_started" | "ivr.prompt_completed" | "ivr.input_gathered" | "ivr.gather_timeout" | "recording.started" | "recording.completed" | "recording.failed" | "flow.started" | "flow.node_executed" | "flow.waiting_for_input" | "flow.completed" | "flow.failed" | "system.started" | "system.stopping" | "system.health_check" | "system.config_changed" | "system.node_draining" | "system.node_drained" | "system.node_joined" | "system.node_left" | "system.cluster_view_changed" | "system.version_skew" | "system.site_link_changed" | "system.service_up" | "system.service_down" | "device.firmware_behind" | "device.push_failed" | "user.created" | "user.updated" | "user.deleted" | "user.deprovisioned" | "user.restored" | "user.renamed" | "user.enabled" | "user.disabled" | "user.calling_changed" | "user.contact_changed" | "user.signed_in" | "user.sign_in_failed" | "hoteling.login" | "hoteling.logout" | "registration.registered" | "registration.refreshed" | "registration.unregistered" | "registration.expired" | "registration.failed" | "voicemail.message_recorded" | "voicemail.transcribed" | "voicemail.message_deleted" | "voicemail.message_played" | "voicemail.mwi_updated" | "voicemail.mailbox_created" | "voicemail.mailbox_updated" | "voicemail.mailbox_deleted" | "conference.participant_joined" | "conference.participant_left" | "conference.room_locked" | "conference.room_unlocked" | "conference.recording_started" | "conference.recording_stopped" | "conference.pin_failed" | "conference.room_destroyed" | "conference.meeting_created" | "conference.meeting_updated" | "conference.meeting_deleted" | "conference.meeting_started" | "conference.meeting_ended" | "conference.dial_out_invited" | "conference.dial_out_failed" | "conference.video_state_changed" | "conference.content_started" | "conference.content_stopped" | "conference.video_overload" | "conference.video_layout_changed" | "conference.active_speaker_changed" | "conference.hand_raised" | "conference.hand_lowered" | "conference.stage_joined" | "conference.stage_left" | "conference.question_asked" | "conference.question_published" | "conference.question_answered" | "conference.question_dismissed" | "conference.chat_deleted" | "conference.chat_muted" | "conference.webinar_live" | "conference.webinar_ended" | "conference.rtmp_live" | "conference.rtmp_failed" | "queue.caller_enqueued" | "queue.caller_dequeued" | "queue.caller_abandoned" | "queue.caller_overflowed" | "queue.agent_logged_in" | "queue.agent_logged_out" | "queue.agent_state_changed" | "queue.agent_kicked" | "queue.callback_initiated" | "queue.stats_snapshot" | "queue.caller_transferred" | "queue.supervisor_joined" | "queue.supervisor_left" | "queue.callback_attempted" | "queue.callback_completed" | "queue.callback_failed" | "queue.service_level_warning" | "queue.queue_draining" | "queue.queue_drained" | "queue.campaign_call_placed" | "queue.campaign_call_connected" | "queue.campaign_call_failed" | "presence.status_changed" | "presence.watcher_added" | "presence.watcher_removed" | "presence.publish_received" | "presence.dialog_changed" | "presence.user_changed" | "presence.user_call" | "presence.publish_expiry_warning" | "presence.publish_expired" | "line.appearance_changed" | "sip.message_captured" | "billing.call_rated" | "billing.balance_changed" | "billing.balance_low" | "billing.balance_depleted" | "billing.call_rejected" | "billing.call_cut_off" | "cdr.written" | "cdr.archived" | "trunk.registered" | "trunk.registration_failed" | "trunk.health_changed" | "compliance.hold_placed" | "compliance.hold_released" | "compliance.subject_request_completed" | "speech.cap_near" | "speech.cap_reached" | "webhook.test";
+            event_type: "call.initiated" | "call.ringing" | "call.progress" | "call.answered" | "call.ended" | "call.failed" | "call.emergency" | "call.emergency_completed" | "emergency.notification_failed" | "call.parked" | "call.unparked" | "call.park_timed_out" | "call.quality_poor" | "call.held" | "call.resumed" | "call.transcript" | "call.party_joined" | "call.party_left" | "media.session_started" | "media.session_ended" | "media.dtmf_received" | "media.quality_warning" | "ivr.prompt_started" | "ivr.prompt_completed" | "ivr.input_gathered" | "ivr.gather_timeout" | "recording.started" | "recording.completed" | "recording.failed" | "flow.started" | "flow.node_executed" | "flow.waiting_for_input" | "flow.completed" | "flow.failed" | "system.started" | "system.stopping" | "system.health_check" | "system.config_changed" | "system.node_draining" | "system.node_drained" | "system.node_joined" | "system.node_left" | "system.cluster_view_changed" | "system.version_skew" | "system.site_link_changed" | "system.service_up" | "system.service_down" | "system.backup_completed" | "system.backup_failed" | "device.firmware_behind" | "device.push_failed" | "user.created" | "user.updated" | "user.deleted" | "user.deprovisioned" | "user.restored" | "user.renamed" | "user.enabled" | "user.disabled" | "user.calling_changed" | "user.contact_changed" | "user.signed_in" | "user.sign_in_failed" | "hoteling.login" | "hoteling.logout" | "registration.registered" | "registration.refreshed" | "registration.unregistered" | "registration.expired" | "registration.failed" | "voicemail.message_recorded" | "voicemail.transcribed" | "voicemail.message_deleted" | "voicemail.message_played" | "voicemail.mwi_updated" | "voicemail.mailbox_created" | "voicemail.mailbox_updated" | "voicemail.mailbox_deleted" | "conference.participant_joined" | "conference.participant_left" | "conference.room_locked" | "conference.room_unlocked" | "conference.recording_started" | "conference.recording_stopped" | "conference.pin_failed" | "conference.room_destroyed" | "conference.meeting_created" | "conference.meeting_updated" | "conference.meeting_deleted" | "conference.meeting_started" | "conference.meeting_ended" | "conference.dial_out_invited" | "conference.dial_out_failed" | "conference.video_state_changed" | "conference.content_started" | "conference.content_stopped" | "conference.video_overload" | "conference.video_layout_changed" | "conference.active_speaker_changed" | "conference.hand_raised" | "conference.hand_lowered" | "conference.stage_joined" | "conference.stage_left" | "conference.question_asked" | "conference.question_published" | "conference.question_answered" | "conference.question_dismissed" | "conference.chat_deleted" | "conference.chat_muted" | "conference.webinar_live" | "conference.webinar_ended" | "conference.rtmp_live" | "conference.rtmp_failed" | "queue.caller_enqueued" | "queue.caller_dequeued" | "queue.caller_abandoned" | "queue.caller_overflowed" | "queue.agent_logged_in" | "queue.agent_logged_out" | "queue.agent_state_changed" | "queue.agent_kicked" | "queue.callback_initiated" | "queue.stats_snapshot" | "queue.caller_transferred" | "queue.supervisor_joined" | "queue.supervisor_left" | "queue.callback_attempted" | "queue.callback_completed" | "queue.callback_failed" | "queue.service_level_warning" | "queue.queue_draining" | "queue.queue_drained" | "queue.campaign_call_placed" | "queue.campaign_call_connected" | "queue.campaign_call_failed" | "presence.status_changed" | "presence.watcher_added" | "presence.watcher_removed" | "presence.publish_received" | "presence.dialog_changed" | "presence.user_changed" | "presence.user_call" | "presence.publish_expiry_warning" | "presence.publish_expired" | "line.appearance_changed" | "sip.message_captured" | "billing.call_rated" | "billing.balance_changed" | "billing.balance_low" | "billing.balance_depleted" | "billing.call_rejected" | "billing.call_cut_off" | "cdr.written" | "cdr.archived" | "trunk.registered" | "trunk.registration_failed" | "trunk.health_changed" | "compliance.hold_placed" | "compliance.hold_released" | "compliance.subject_request_completed" | "speech.cap_near" | "speech.cap_reached" | "webhook.test";
             /**
              * Format: date-time
              * @description When the event happened, RFC 3339.
@@ -29924,6 +30210,264 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Heard"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backups_list_destinations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_DestinationView"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backups_create_destination: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DestinationRequest"];
+            };
+        };
+        responses: {
+            /** @description Made; a generated password is shown this once */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DestinationView"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backups_update_destination: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The destination */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DestinationRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DestinationView"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backups_delete_destination: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The destination */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed; the snapshots at the destination are not touched */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backups_test_destination: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The destination */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Asked for; follow the run */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunView"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backups_run_destination: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The destination */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Asked for; follow the run */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunView"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backups_list_runs: {
+        parameters: {
+            query?: {
+                /** @description One destination's runs (`bkd-<uuid>`). */
+                destination?: string;
+                /** @description At most this many, newest first (100 by default, 1000 at most). */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_RunView"];
+                };
+            };
+            /** @description An error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    backups_get_run: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The run */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunView"];
                 };
             };
             /** @description An error */

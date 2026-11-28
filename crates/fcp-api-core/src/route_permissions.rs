@@ -205,6 +205,26 @@ pub const ROUTES: &[(&str, &str, Gate)] = &[
     // Encryption at rest (the handlers also require a platform admin).
     (GET, "/system/speech", Needs(SystemConfig)),
     (PUT, "/system/speech", Needs(SystemConfig)),
+    (GET, "/system/backups/destinations", Needs(SystemConfig)),
+    (POST, "/system/backups/destinations", Needs(SystemConfig)),
+    (PUT, "/system/backups/destinations/:id", Needs(SystemConfig)),
+    (
+        DELETE,
+        "/system/backups/destinations/:id",
+        Needs(SystemConfig),
+    ),
+    (
+        POST,
+        "/system/backups/destinations/:id/test",
+        Needs(SystemConfig),
+    ),
+    (
+        POST,
+        "/system/backups/destinations/:id/run",
+        Needs(SystemConfig),
+    ),
+    (GET, "/system/backups/runs", Needs(SystemConfig)),
+    (GET, "/system/backups/runs/:id", Needs(SystemConfig)),
     (GET, "/system/speech/caps", Needs(SystemConfig)),
     (PUT, "/system/speech/caps/:provider", Needs(SystemConfig)),
     (DELETE, "/system/speech/caps/:provider", Needs(SystemConfig)),

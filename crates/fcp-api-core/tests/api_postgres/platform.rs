@@ -4,6 +4,7 @@
 
 use super::*;
 use fcp_api_core::{CallSupervisor, SupervisionRequest};
+use fcp_core::backup::BackupStore;
 
 /// A record of a call from Alice to `to`, `age` ago.
 async fn call_to(app: &App, tenant: TenantId, to: &str, answered_ms: Option<u64>, age: Duration) {
@@ -500,4 +501,202 @@ async fn creates_racing_for_one_tenant_name_conflict() {
         );
     }
     assert_eq!(made, 1, "exactly one create wins");
+}
+
+/// `docs/SCHEDULED_BACKUPS.md` B1: a platform administrator keeps backup
+/// destinations — secrets written and never read back, a password made and
+/// shown once when none is given, names unique — and asks for a test and a
+/// run, which wait for `fcp-backup`; a tenant's administrator may not.
+#[tokio::test]
+async fn backup_destinations_are_kept_and_runs_asked_for() {
+    let Some(app) = App::build(DeploymentMode::default(), None).await else {
+        return;
+    };
+    let sftp = json!({
+        "name": "Off site",
+        "target": { "type": "sftp", "host": "backup.example.com", "user": "fcp",
+                    "path": "/srv/fcp",
+                    "private_key": "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n" },
+        "schedule": { "time_of_day": "02:30" },
+        "keep": { "daily": 7, "weekly": 4, "monthly": 6 },
+    });
+    let made = app
+        .admin(
+            Method::POST,
+            "/api/v1/system/backups/destinations",
+            Some(sftp.clone()),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.text);
+    let id = made.json["id"].as_str().unwrap().to_string();
+    assert!(id.starts_with("bkd-"), "{id}");
+    let generated = made.json["password"].as_str().unwrap().to_string();
+    assert_eq!(generated.len(), 64, "a generated password, shown once");
+    assert_eq!(made.json["target"]["has_private_key"], true);
+    assert_eq!(made.json["target"]["port"], 22);
+    assert_eq!(
+        made.json["repository"],
+        "sftp:fcp@backup.example.com:/srv/fcp"
+    );
+    assert!(!made.text.contains("abc\n"), "{}", made.text);
+
+    let listed = app
+        .admin(Method::GET, "/api/v1/system/backups/destinations", None)
+        .await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
+    assert_eq!(listed.json[0]["has_password"], true);
+    assert!(listed.json[0].get("password").is_none(), "{}", listed.text);
+    assert!(!listed.text.contains(&generated) && !listed.text.contains("PRIVATE KEY"));
+
+    // Changed without its secrets: they stay.
+    let mut change = sftp.clone();
+    change["name"] = json!("Off site, Ohio");
+    change["target"]
+        .as_object_mut()
+        .unwrap()
+        .remove("private_key");
+    let changed = app
+        .admin(
+            Method::PUT,
+            &format!("/api/v1/system/backups/destinations/{id}"),
+            Some(change),
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.text);
+    assert_eq!(changed.json["target"]["has_private_key"], true);
+    assert_eq!(changed.json["has_password"], true);
+    let kept = app
+        .storage
+        .get_backup_destination(&id.trim_start_matches("bkd-").parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        kept.password.as_deref(),
+        Some(generated.as_str()),
+        "the password kept"
+    );
+
+    // Refused: a second of the same name, a bad time, no key, nothing kept.
+    for (body, want) in [
+        (
+            json!({ "name": "off site, ohio", "target": sftp["target"] }),
+            StatusCode::CONFLICT,
+        ),
+        (
+            json!({ "name": "B", "target": sftp["target"], "schedule": { "time_of_day": "25:00" } }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({ "name": "C", "target": { "type": "sftp", "host": "h", "user": "u", "path": "/p" } }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({ "name": "D", "target": sftp["target"], "keep": { "daily": 0, "weekly": 0, "monthly": 0 } }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            json!({ "name": "E", "target": sftp["target"], "password": "short" }),
+            StatusCode::BAD_REQUEST,
+        ),
+    ] {
+        let r = app
+            .admin(
+                Method::POST,
+                "/api/v1/system/backups/destinations",
+                Some(body.clone()),
+            )
+            .await;
+        assert_eq!(r.status, want, "{body}: {}", r.text);
+    }
+
+    // An S3 bucket, with a password given.
+    let s3 = app
+        .admin(
+            Method::POST,
+            "/api/v1/system/backups/destinations",
+            Some(json!({
+                "name": "Bucket",
+                "target": { "type": "s3", "endpoint": "https://s3.example.com", "bucket": "fcp",
+                            "prefix": "nightly", "access_key_id": "AKIA",
+                            "secret_access_key": "secret-value" },
+                "password": "a password of my own choosing",
+            })),
+        )
+        .await;
+    assert_eq!(s3.status, StatusCode::CREATED, "{}", s3.text);
+    assert!(
+        s3.json.get("password").is_none(),
+        "only a generated one is shown"
+    );
+    assert_eq!(
+        s3.json["repository"],
+        "s3:https://s3.example.com/fcp/nightly"
+    );
+    assert!(!s3.text.contains("secret-value"));
+
+    // A test and a run: asked for, waiting for the service.
+    for (path, kind) in [("test", "test"), ("run", "backup")] {
+        let r = app
+            .admin(
+                Method::POST,
+                &format!("/api/v1/system/backups/destinations/{id}/{path}"),
+                None,
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.text);
+        assert_eq!(r.json["kind"], kind);
+        assert_eq!(r.json["state"], "requested");
+        let run = r.json["id"].as_str().unwrap().to_string();
+        assert!(run.starts_with("bkr-"));
+        let one = app
+            .admin(
+                Method::GET,
+                &format!("/api/v1/system/backups/runs/{run}"),
+                None,
+            )
+            .await;
+        assert_eq!(one.status, StatusCode::OK, "{}", one.text);
+    }
+    let runs = app
+        .admin(
+            Method::GET,
+            &format!("/api/v1/system/backups/runs?destination={id}"),
+            None,
+        )
+        .await;
+    assert_eq!(runs.status, StatusCode::OK, "{}", runs.text);
+    assert_eq!(runs.json.as_array().map(Vec::len), Some(2), "{}", runs.text);
+
+    // Not a tenant's to see.
+    app.create_user_with_role("backupta", "tenant_admin").await;
+    let login = app.login("backupta", PASSWORD).await;
+    let ta = login.json["token"].as_str().unwrap().to_string();
+    let refused = app
+        .send_as(
+            &ta,
+            Method::GET,
+            "/api/v1/system/backups/destinations",
+            None,
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+
+    let gone = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/system/backups/destinations/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT, "{}", gone.text);
+    let twice = app
+        .admin(
+            Method::DELETE,
+            &format!("/api/v1/system/backups/destinations/{id}"),
+            None,
+        )
+        .await;
+    assert_eq!(twice.status, StatusCode::NOT_FOUND, "{}", twice.text);
+    app.finish().await;
 }

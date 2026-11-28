@@ -1,0 +1,33 @@
+[package]
+name = "fcp-backup"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Backups from the admin: the database and the files to restic repositories off the box (docs/SCHEDULED_BACKUPS.md)"
+
+[[bin]]
+name = "fcp-backup"
+path = "src/main.rs"
+
+[dependencies]
+fcp-core = { path = "../fcp-core" }
+fcp-events = { path = "../fcp-events" }
+fcp-cluster = { path = "../fcp-cluster" }
+fcp-storage-postgres = { path = "../fcp-storage-postgres" }
+fcp-storage-redis = { path = "../fcp-storage-redis" }
+tokio = { workspace = true, features = ["full"] }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+clap = { version = "4", features = ["derive", "env"] }
+axum = "0.7"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[dev-dependencies]
+fcp-testkit = { path = "../fcp-testkit" }
+tempfile = "3"

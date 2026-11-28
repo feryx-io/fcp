@@ -218,6 +218,45 @@ is the one dangerous power in the design.
     now, runs and events.
   - Proved against a stand-in SFTP server (OpenSSH in a container) and
     Garage, plus a snapshot `restore.sh` takes.
+
+  **Done (v0.25.670):**
+  - **Core and storage:** `fcp_core::backup` holds destinations (SFTP or
+    S3-compatible, a daily `time_of_day` in UTC, keep daily, weekly and
+    monthly, `include_key`), runs (backup or test; requested, running,
+    succeeded or failed) and `daily_due`. Migration 161 adds
+    `backup_destinations` and `backup_runs`; the password, the SFTP
+    private key and the S3 secret are sealed (`SEALED_COLUMNS`), and a run
+    is claimed `FOR UPDATE SKIP LOCKED`.
+  - **The service:** the `fcp-backup` binary and crate, with restic 0.17.3
+    pinned by checksum in `Dockerfile.backup` on `postgres:16`, so its
+    `pg_dump` matches the stack's server. It polls for runs and for each
+    destination's due schedule.
+    - A test pins an SFTP server's host key (`ssh-keyscan`; required
+      after, `StrictHostKeyChecking=yes`) and makes the repository.
+    - A backup streams `pg_dump --format=custom` into one snapshot
+      (`/fcp.dump`, tagged `part:db`) and reads `[backup.paths]` in place
+      into another (`part:files`). Both are tagged `fcp`, `run:<id>` and
+      `release:<v>`. Then `forget --prune` keeps each part's daily, weekly
+      and monthly.
+    - Secrets reach restic only through its environment
+      (`RESTIC_PASSWORD`, `AWS_*`). An SFTP key is a 0600 file in
+      `work_dir`, used through `sftp.command`.
+    - Each run's outcome is kept, and `system.backup_completed` or
+      `system.backup_failed` goes to the events server.
+  - **The API:** `/system/backups/destinations` (list, create, update,
+    delete, `…/test`, `…/run`) and `/system/backups/runs[/{id}]`, for
+    platform administrators. Secrets are write-only; a generated password
+    is shown once.
+  - **Compose:** the `fcp-backup` service mounts every stateful volume
+    read-only under `/data` and keeps its cache and keys in
+    `backup-data`.
+  - **Proved by:** `fcp-backup/tests/backup.rs`, against an `sshd` of the
+    test's own (refused before the host key is pinned; tested; backed up;
+    the dump read back as a `pg_dump` archive and the recording listed,
+    with restic as an operator runs it) and Garage
+    (`FCP_TEST_S3_*`); and `backup_destinations_are_kept_and_runs_asked_for`.
+  - **Left to later phases:** the cron expression (B4) and the
+    `restore.sh`-layout download (B3).
 - **B2: the page,** with the key download, and a Playwright spec.
 - **B3: restoring from the admin.**
   - Download in `backup.sh` layout; partial restores, the tenant's own
