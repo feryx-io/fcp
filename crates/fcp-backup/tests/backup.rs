@@ -597,7 +597,7 @@ async fn the_database_and_the_files_go_to_an_sftp_server() {
         }),
     )
     .await;
-    let snap = found["/srv/recordings/tenant-a/call-1.wav"][0]
+    let snap = found["/srv/recordings/tenant-a/call-1.wav"][0]["snapshot"]
         .as_str()
         .unwrap()
         .to_string();
