@@ -278,7 +278,8 @@ async fn seed_tenant_b(app: &App) -> Seeded {
         make_in_b(
             app,
             "/api/v1/extensions",
-            json!({"number": "2999", "target": {"type": "user", "id": user_id}}),
+            // Long enough that no timestamp's fraction contains it by chance.
+            json!({"number": "29473816", "target": {"type": "user", "id": user_id}}),
             "number",
         )
         .await,
